@@ -11,6 +11,7 @@ type HuntState = {
   showLabels: boolean;
   terrain: boolean;
   showMarks: boolean;
+  showUnits: boolean;
   showShade: boolean;
   showScent: boolean;
   showRings: boolean;
@@ -32,6 +33,7 @@ type HuntState = {
   setShowLabels: (showLabels: boolean) => void;
   setTerrain: (terrain: boolean) => void;
   setShowMarks: (showMarks: boolean) => void;
+  setShowUnits: (showUnits: boolean) => void;
   setShowShade: (showShade: boolean) => void;
   setShowScent: (showScent: boolean) => void;
   setShowRings: (showRings: boolean) => void;
@@ -53,6 +55,7 @@ export const useHunt = create<HuntState>()(
       showLabels: true,
       terrain: false,
       showMarks: true,
+      showUnits: true,
       showShade: true,
       showScent: true,
       showRings: true,
@@ -84,6 +87,7 @@ export const useHunt = create<HuntState>()(
       setShowLabels: (showLabels) => set({ showLabels }),
       setTerrain: (terrain) => set({ terrain }),
       setShowMarks: (showMarks) => set({ showMarks }),
+      setShowUnits: (showUnits) => set({ showUnits }),
       setShowShade: (showShade) => set({ showShade }),
       setShowScent: (showScent) => set({ showScent }),
       setShowRings: (showRings) => set({ showRings }),
@@ -106,6 +110,7 @@ export const useHunt = create<HuntState>()(
         showLabels: s.showLabels,
         terrain: s.terrain,
         showMarks: s.showMarks,
+        showUnits: s.showUnits,
         showShade: s.showShade,
         showScent: s.showScent,
         showRings: s.showRings,

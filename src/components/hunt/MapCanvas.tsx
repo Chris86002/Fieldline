@@ -32,6 +32,9 @@ type Props = {
   showShade: boolean;
   showScent: boolean;
   showRings: boolean;
+  showUnits: boolean;
+  unitsGeo: FC;
+  unitLabels: { gmu: string; lng: number; lat: number }[];
   windFrom: number | null;
   windMps: number;
   scentAt: LngLat;
@@ -56,6 +59,7 @@ type Props = {
 type JsonGeometry =
   | { type: "LineString"; coordinates: number[][] }
   | { type: "Polygon"; coordinates: number[][][] }
+  | { type: "MultiPolygon"; coordinates: number[][][][] }
   | { type: "Point"; coordinates: number[] };
 
 type JsonFeature = {
@@ -100,6 +104,7 @@ function buildStyle(opts: {
       accuracy: { type: "geojson", data: EMPTY },
       scent: { type: "geojson", data: EMPTY },
       rings: { type: "geojson", data: EMPTY },
+      units: { type: "geojson", data: EMPTY },
     },
     layers: [
       { id: "land", type: "background", paint: { "background-color": "#1c2418" } },
@@ -110,6 +115,8 @@ function buildStyle(opts: {
       { id: "sma", type: "raster", source: "sma", layout: { visibility: vis(opts.showPublic) }, paint: { "raster-opacity": opts.publicOpacity } },
       { id: "roads", type: "raster", source: "roads", layout: { visibility: vis(hybrid) } },
       { id: "places", type: "raster", source: "places", layout: { visibility: vis(hybrid && opts.showLabels) } },
+      { id: "units-casing", type: "line", source: "units", paint: { "line-color": "#1a1408", "line-width": 3.25, "line-opacity": 0.55 } },
+      { id: "units-line", type: "line", source: "units", paint: { "line-color": "#e7d7a8", "line-width": 1.6, "line-opacity": 0.92 } },
       { id: "scent-fill", type: "fill", source: "scent", paint: { "fill-color": "#d7e2c8", "fill-opacity": 0.28 } },
       { id: "scent-line", type: "line", source: "scent", paint: { "line-color": "#f3f1ea", "line-width": 1.5, "line-opacity": 0.9 } },
       { id: "rings", type: "line", source: "rings", paint: { "line-color": "#f3f1ea", "line-width": 1.25, "line-opacity": 0.8, "line-dasharray": [1.4, 1.1] } },
@@ -427,6 +434,42 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
       marker.remove();
     };
   }, [ready, props.gps]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    setGeo(map, "units", props.unitsGeo);
+    const on = props.showUnits && props.unitsGeo.features.length > 0;
+    if (map.getLayer("units-casing")) map.setLayoutProperty("units-casing", "visibility", vis(on));
+    if (map.getLayer("units-line")) map.setLayoutProperty("units-line", "visibility", vis(on));
+  }, [ready, props.showUnits, props.unitsGeo]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    const ml = mlRef.current;
+    if (!ready || !map || !ml || !props.showUnits || props.unitLabels.length === 0) return;
+    const entries = props.unitLabels.map((label) => {
+      const el = document.createElement("div");
+      el.className = "unit-tag";
+      el.textContent = label.gmu;
+      const marker = new ml.Marker({ element: el, anchor: "center" }).setLngLat([label.lng, label.lat]).addTo(map);
+      return { marker, el, lng: label.lng, lat: label.lat };
+    });
+    const apply = () => {
+      const zoom = map.getZoom();
+      const bounds = map.getBounds();
+      const show = zoom >= 8;
+      for (const entry of entries) {
+        entry.el.style.display = show && bounds.contains([entry.lng, entry.lat]) ? "" : "none";
+      }
+    };
+    apply();
+    map.on("move", apply);
+    return () => {
+      map.off("move", apply);
+      for (const entry of entries) entry.marker.remove();
+    };
+  }, [ready, props.showUnits, props.unitLabels]);
 
   useEffect(() => {
     const map = mapRef.current;

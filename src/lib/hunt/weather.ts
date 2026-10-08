@@ -1,3 +1,12 @@
+export type WindHour = {
+  at: number;
+  time: string;
+  tempC: number;
+  windMps: number;
+  gustMps: number;
+  windFrom: number;
+};
+
 export type FieldWeather = {
   tempC: number;
   windMps: number;
@@ -8,9 +17,11 @@ export type FieldWeather = {
   elevationM: number | null;
   slopePct: number | null;
   fallsDeg: number | null;
+  hours: WindHour[];
 };
 
 type Forecast = {
+  utc_offset_seconds?: number;
   current?: {
     temperature_2m?: number;
     wind_speed_10m?: number;
@@ -18,16 +29,31 @@ type Forecast = {
     wind_gusts_10m?: number;
   };
   daily?: { sunrise?: string[]; sunset?: string[] };
+  hourly?: {
+    time?: string[];
+    temperature_2m?: number[];
+    wind_speed_10m?: number[];
+    wind_direction_10m?: number[];
+    wind_gusts_10m?: number[];
+  };
 };
+
+function localToUtc(iso: string, offsetSeconds: number): number {
+  const stamp = iso.length === 16 ? `${iso}:00Z` : iso.endsWith("Z") ? iso : `${iso}Z`;
+  const parsed = Date.parse(stamp);
+  if (!Number.isFinite(parsed)) return Number.NaN;
+  return parsed - offsetSeconds * 1000;
+}
 
 export async function fetchFieldWeather(lng: number, lat: number, signal?: AbortSignal): Promise<FieldWeather> {
   const forecastUrl = new URL("https://api.open-meteo.com/v1/forecast");
   forecastUrl.searchParams.set("latitude", lat.toFixed(4));
   forecastUrl.searchParams.set("longitude", lng.toFixed(4));
   forecastUrl.searchParams.set("current", "temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m");
+  forecastUrl.searchParams.set("hourly", "temperature_2m,wind_speed_10m,wind_direction_10m,wind_gusts_10m");
   forecastUrl.searchParams.set("daily", "sunrise,sunset");
   forecastUrl.searchParams.set("timezone", "auto");
-  forecastUrl.searchParams.set("forecast_days", "1");
+  forecastUrl.searchParams.set("forecast_days", "2");
   forecastUrl.searchParams.set("wind_speed_unit", "ms");
 
   const elevUrl = new URL("https://api.open-meteo.com/v1/elevation");
@@ -58,6 +84,22 @@ export async function fetchFieldWeather(lng: number, lat: number, signal?: Abort
     }
   }
   const current = forecast.current ?? {};
+  const offset = forecast.utc_offset_seconds ?? 0;
+  const times = forecast.hourly?.time ?? [];
+  const now = Date.now() - 20 * 60 * 1000;
+  const hours: WindHour[] = [];
+  for (let i = 0; i < times.length && hours.length < 14; i++) {
+    const at = localToUtc(times[i], offset);
+    if (!Number.isFinite(at) || at < now) continue;
+    hours.push({
+      at,
+      time: times[i],
+      tempC: forecast.hourly?.temperature_2m?.[i] ?? 0,
+      windMps: forecast.hourly?.wind_speed_10m?.[i] ?? 0,
+      gustMps: forecast.hourly?.wind_gusts_10m?.[i] ?? 0,
+      windFrom: forecast.hourly?.wind_direction_10m?.[i] ?? 0,
+    });
+  }
   return {
     tempC: current.temperature_2m ?? 0,
     windMps: current.wind_speed_10m ?? 0,
@@ -68,5 +110,6 @@ export async function fetchFieldWeather(lng: number, lat: number, signal?: Abort
     elevationM,
     slopePct,
     fallsDeg,
+    hours,
   };
 }

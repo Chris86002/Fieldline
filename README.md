@@ -14,3 +14,5 @@ npm run dev
 Open http://localhost:8080. Edit a file and the page reloads.
 
 Marks stay in that browser. They do not hop to your phone on their own. Export GPX from the desk and import that file on the phone.
+
+Search a unit number (22, 5BN, unit 12A) to frame that Arizona game management unit. A tap on the map names the unit and who manages the ground. Wind shows the next hours and Arizona shooting light, a half hour either side of sunrise and sunset.

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import * as Switch from "@radix-ui/react-switch";
 import {
   Bookmark,
@@ -16,6 +16,7 @@ import {
 import { MapCanvas, type GpsFix, type MapHandle } from "@/components/hunt/MapCanvas";
 import { MARK_ORDER, MARKS } from "@/components/hunt/marks";
 import {
+  AZ_SHOOT_LEAD_MIN,
   bearingDeg,
   cardinal,
   cToF,
@@ -31,6 +32,7 @@ import {
   mpsToMph,
   pathLength,
   ringArea,
+  shiftLocalIso,
   WIND_CHOICES,
   windFits,
 } from "@/lib/hunt/format";
@@ -41,7 +43,9 @@ import { searchPlaces, type PlaceHit } from "@/lib/hunt/search.functions";
 import { useHunt } from "@/lib/hunt/store";
 import { packTiles, TILES, tileCacheLabel } from "@/lib/hunt/tiles";
 import { DEFAULT_VIEW, JUMPS, type Basemap, type LandHit, type LngLat, type MapView, type MarkKind, type Track, type TrackPoint, type Waypoint } from "@/lib/hunt/types";
-import { fetchFieldWeather, type FieldWeather } from "@/lib/hunt/weather";
+import { loadFieldWeather } from "@/lib/hunt/weather.functions";
+import type { FieldWeather, WindHour } from "@/lib/hunt/weather";
+import { identifyUnit, loadUnits, matchUnit, unitsCollection, type HuntUnit, type UnitHit } from "@/lib/hunt/units";
 
 type Tool = "none" | "drop" | "measure";
 type Sheet = null | "layers" | "saved" | "wind" | "edit";
@@ -67,6 +71,7 @@ export function HuntApp() {
   const fileRef = useRef<HTMLInputElement>(null);
   const searchReq = useRef(0);
   const landAbort = useRef<AbortController | null>(null);
+  const unitAbort = useRef<AbortController | null>(null);
 
   const [hydrated, setHydrated] = useState(false);
   const [view, setView] = useState<MapView>(DEFAULT_VIEW);
@@ -83,6 +88,9 @@ export function HuntApp() {
   const [recStart, setRecStart] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [land, setLand] = useState<LandState | null>(null);
+  const [spotUnit, setSpotUnit] = useState<UnitHit | null>(null);
+  const [unitPending, setUnitPending] = useState(false);
+  const [units, setUnits] = useState<HuntUnit[]>([]);
   const [weather, setWeather] = useState<FieldWeather | null>(null);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<PlaceHit[]>([]);
@@ -133,6 +141,25 @@ export function HuntApp() {
     });
   }, [hydrated]);
 
+  useEffect(() => {
+    if (!hydrated) return;
+    let live = true;
+    void loadUnits()
+      .then((rows) => {
+        if (live) setUnits(rows);
+      })
+      .catch(() => {
+        /* the unit layer stays off if the service is down */
+      });
+    return () => {
+      live = false;
+    };
+  }, [hydrated]);
+
+  const unitsGeo = useMemo(() => unitsCollection(units), [units]);
+  const unitLabels = useMemo(() => units.map((unit) => ({ gmu: unit.gmu, lng: unit.label.lng, lat: unit.label.lat })), [units]);
+  const unitMatch = query.trim() ? matchUnit(units, query) : null;
+
   const weatherKey = `${view.lat.toFixed(2)},${view.lng.toFixed(2)}`;
 
   useEffect(() => {
@@ -140,8 +167,10 @@ export function HuntApp() {
     const [lat, lng] = weatherKey.split(",").map(Number);
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
-      void fetchFieldWeather(lng, lat, controller.signal)
-        .then(setWeather)
+      void loadFieldWeather({ data: { lng, lat } })
+        .then((next) => {
+          if (!controller.signal.aborted) setWeather(next);
+        })
         .catch(() => {
           if (!controller.signal.aborted) setWeather(null);
         });
@@ -185,7 +214,11 @@ export function HuntApp() {
       if (event.key !== "Escape") return;
       if (sheet) setSheet(null);
       else if (tool !== "none") setTool("none");
-      else setLand(null);
+      else {
+        setLand(null);
+        setSpotUnit(null);
+        setUnitPending(false);
+      }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -254,6 +287,8 @@ export function HuntApp() {
     setSheet("edit");
     setTool("none");
     setLand(null);
+    setSpotUnit(null);
+    setUnitPending(false);
   }
 
   function runIdentify(lng: number, lat: number) {
@@ -269,6 +304,21 @@ export function HuntApp() {
         if (controller.signal.aborted) return;
         if (error instanceof DOMException && error.name === "AbortError") return;
         setLand({ status: "error", lng, lat });
+      });
+    unitAbort.current?.abort();
+    const unitController = new AbortController();
+    unitAbort.current = unitController;
+    setUnitPending(true);
+    setSpotUnit(null);
+    void identifyUnit(lng, lat, unitController.signal)
+      .then((hit) => {
+        if (!unitController.signal.aborted) setSpotUnit(hit);
+      })
+      .catch(() => {
+        if (!unitController.signal.aborted) setSpotUnit(null);
+      })
+      .finally(() => {
+        if (!unitController.signal.aborted) setUnitPending(false);
       });
   }
 
@@ -334,6 +384,16 @@ export function HuntApp() {
     setHits([]);
   }
 
+  function goToUnit(unit: HuntUnit) {
+    mapRef.current?.fit([
+      { lng: unit.west, lat: unit.south },
+      { lng: unit.east, lat: unit.north },
+    ]);
+    setSearchOpen(false);
+    setQuery("");
+    setHits([]);
+  }
+
   async function saveArea() {
     const bounds = mapRef.current?.getBounds();
     if (!bounds || packing) return;
@@ -394,6 +454,9 @@ export function HuntApp() {
       : `${weather.windMps.toFixed(1)} m/s`
     : null;
   const tempLabel = weather ? `${Math.round(store.imperial ? cToF(weather.tempC) : weather.tempC)}°` : null;
+  const shootStart = weather ? formatClock(shiftLocalIso(weather.sunrise, -AZ_SHOOT_LEAD_MIN)) : null;
+  const shootEnd = weather ? formatClock(shiftLocalIso(weather.sunset, AZ_SHOOT_LEAD_MIN)) : null;
+  const shootLabel = shootStart && shootEnd && shootStart !== "—" && shootEnd !== "—" ? `${shootStart}–${shootEnd}` : null;
   const measureLength = pathLength(measureClosed && measurePts.length > 2 ? [...measurePts, measurePts[0]] : measurePts);
   const measureArea = measureClosed ? ringArea(measurePts) : 0;
   const hunts = [...new Set(store.waypoints.map((waypoint) => waypoint.hunt).filter(Boolean))];
@@ -403,6 +466,7 @@ export function HuntApp() {
     <main className="map-shell relative h-dvh w-full overflow-hidden bg-bg" data-sheet={sheet ? "1" : "0"}>
       <input
         ref={fileRef}
+        suppressHydrationWarning
         type="file"
         accept=".gpx,application/gpx+xml,.xml"
         className="hidden"
@@ -495,6 +559,9 @@ export function HuntApp() {
         showShade={store.showShade}
         showScent={store.showScent}
         showRings={store.showRings}
+        showUnits={store.showUnits}
+        unitsGeo={unitsGeo}
+        unitLabels={unitLabels}
         windFrom={weather?.windFrom ?? null}
         windMps={weather?.windMps ?? 0}
         scentAt={selected ? { lng: selected.lng, lat: selected.lat } : { lng: view.lng, lat: view.lat }}
@@ -523,12 +590,17 @@ export function HuntApp() {
             className="relative min-w-0 flex-1"
             onSubmit={(event) => {
               event.preventDefault();
+              if (unitMatch) {
+                goToUnit(unitMatch);
+                return;
+              }
               const first = hits[0];
               if (first) goTo(first.lng, first.lat, 12);
             }}
           >
             <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-subtle" />
             <input
+              suppressHydrationWarning
               value={query}
               onChange={(event) => {
                 setQuery(event.target.value);
@@ -556,6 +628,18 @@ export function HuntApp() {
             ) : null}
             {searchOpen ? (
               <div className="absolute inset-x-0 top-12 overflow-hidden rounded-lg border border-line bg-surface shadow-lg">
+                {unitMatch ? (
+                  <button
+                    type="button"
+                    className="flex min-h-11 w-full flex-col items-start justify-center px-3 text-left hover:bg-surface-2"
+                    onClick={() => goToUnit(unitMatch)}
+                  >
+                    <span>Unit {unitMatch.gmu}</span>
+                    <span className="text-sm text-muted">
+                      {[unitMatch.regionName, unitMatch.forest].filter(Boolean).join(" · ") || "Arizona game unit"}
+                    </span>
+                  </button>
+                ) : null}
                 {query.trim().length < 2 ? (
                   <div className="p-2">
                     <p className="px-2 py-1 text-xs tracking-wide text-subtle uppercase">Jump</p>
@@ -614,6 +698,8 @@ export function HuntApp() {
           >
             {coordMode === "dd" ? formatDd(view.lng, view.lat) : formatDms(view.lng, view.lat)}
             <span className="mt-0.5 block text-muted">
+              {shootLabel ? `Light ${shootLabel}` : null}
+              {shootLabel ? " · " : ""}
               {weather?.elevationM != null ? `${formatElev(weather.elevationM, store.imperial)} elev` : "Elev —"}
               {weather?.slopePct != null ? ` · ${Math.round(weather.slopePct)}%${weather.fallsDeg != null ? ` falls ${cardinal(weather.fallsDeg)}` : ""}` : ""}
               {tempLabel ? ` · ${tempLabel}` : ""}
@@ -706,7 +792,18 @@ export function HuntApp() {
           </div>
         ) : null}
         {land && tool === "none" && !sheet ? (
-          <LandCard land={land} onClose={() => setLand(null)} onCopy={copyText} onMark={() => dropAt(land.lng, land.lat)} />
+          <LandCard
+            land={land}
+            unit={spotUnit}
+            unitPending={unitPending}
+            onClose={() => {
+              setLand(null);
+              setSpotUnit(null);
+              setUnitPending(false);
+            }}
+            onCopy={copyText}
+            onMark={() => dropAt(land.lng, land.lat)}
+          />
         ) : null}
       </div>
 
@@ -776,6 +873,7 @@ export function HuntApp() {
             ))}
           </div>
           <Toggle checked={store.showPublic} onChange={store.setShowPublic} label="Public land" hint="BLM surface management. Blank ground is usually private." />
+          <Toggle checked={store.showUnits} onChange={store.setShowUnits} label="Hunt units" hint="Arizona game management units. Nothing draws outside the state." />
           {store.showPublic ? (
             <label className="block pb-2 text-sm text-muted">
               Overlay strength
@@ -812,7 +910,7 @@ export function HuntApp() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-sm text-subtle">Owner names are a paid dataset. Fieldline shows the managing agency, the wind that works for each stand, and an offline pack of ground you've already looked at.</p>
+          <p className="mt-3 text-sm text-subtle">Unit lines are Arizona Game and Fish reference geometry, not the legal description in Commission Rule R12-4-108. Owner names are a paid dataset. Fieldline shows the managing agency, the wind that works for each stand, and an offline pack of ground you've already looked at.</p>
           <button type="button" disabled={packing} onClick={() => void saveArea()} className="mt-3 h-11 w-full rounded-md bg-accent text-sm font-medium text-accent-fg disabled:opacity-50">
             {packing ? "Saving tiles…" : "Save this view offline"}
           </button>
@@ -839,8 +937,13 @@ export function HuntApp() {
             <Stat label="Scent drifts" value={cardinal(weather.windFrom + 180)} />
             <Stat label="Sunrise" value={formatClock(weather.sunrise)} />
             <Stat label="Sunset" value={formatClock(weather.sunset)} />
+            <Stat label="Shoot starts" value={shootStart ?? "—"} />
+            <Stat label="Shoot ends" value={shootEnd ?? "—"} />
           </dl>
-          <p className="mt-4 text-sm text-subtle">Legal shooting light is not the same as sunrise. Wind is the Open-Meteo model at the map center, not a ridgetop reading.</p>
+          <p className="mt-4 text-sm text-subtle">
+            Arizona big game shooting hours run a half hour before sunrise until a half hour after sunset. That is the clock at the map center, not a season or weapon check. Wind is the Open-Meteo model, not a ridgetop reading.
+          </p>
+          <HourStrip hours={weather.hours} imperial={store.imperial} goodWinds={selected?.goodWinds} standName={selected?.name ?? null} />
           <StandWind waypoints={store.waypoints} windFrom={weather.windFrom} onOpen={(id, lng, lat) => {
             setSelectedId(id);
             mapRef.current?.easeTo(lng, lat, 15);
@@ -1121,13 +1224,53 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
+function HourStrip({
+  hours,
+  imperial,
+  goodWinds,
+  standName,
+}: {
+  hours: WindHour[];
+  imperial: boolean;
+  goodWinds: number[] | undefined;
+  standName: string | null;
+}) {
+  if (hours.length === 0) return null;
+  const marked = (goodWinds?.length ?? 0) > 0;
+  return (
+    <div className="mt-4">
+      <p className="text-sm text-muted">{marked && standName ? `Green hours fit ${standName}.` : "Wind by the hour, from now."}</p>
+      <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+        {hours.map((hour) => {
+          const ok = marked ? windFits(hour.windFrom, goodWinds) : null;
+          const speed = imperial ? `${Math.round(mpsToMph(hour.windMps))}` : hour.windMps.toFixed(1);
+          return (
+            <div
+              key={hour.at}
+              className={`min-w-16 shrink-0 rounded-md px-2 py-2 text-center ${ok === true ? "bg-field text-accent-fg" : ok === false ? "bg-danger/25 text-fg" : "bg-bg"}`}
+            >
+              <p className="font-mono text-xs tabular-nums">{formatClock(hour.time)}</p>
+              <p className="text-sm">{cardinal(hour.windFrom)}</p>
+              <p className="font-mono text-xs tabular-nums">{speed}</p>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function LandCard({
   land,
+  unit,
+  unitPending,
   onClose,
   onCopy,
   onMark,
 }: {
   land: LandState;
+  unit: UnitHit | null;
+  unitPending: boolean;
   onClose: () => void;
   onCopy: (text: string) => void;
   onMark: () => void;
@@ -1147,6 +1290,18 @@ function LandCard({
           {place ? <p className="mt-0.5 text-sm text-muted">{place}</p> : null}
           <p className="mt-1 font-mono text-xs text-subtle tabular-nums">{formatPair(land.lng, land.lat)}</p>
           {land.status === "ready" ? <p className="mt-2 text-sm text-muted">{land.hit.note}</p> : null}
+          {unit ? (
+            <p className="mt-2 text-sm text-fg">
+              Unit {unit.gmu}
+              {unit.regionName ? ` · ${unit.regionName}` : ""}
+              {unit.sqMiles != null ? ` · ${Math.round(unit.sqMiles).toLocaleString("en-US")} sq mi` : ""}
+              {unit.approximate ? " · approximate" : ""}
+            </p>
+          ) : unitPending ? (
+            <p className="mt-2 text-sm text-muted">Looking up the unit…</p>
+          ) : null}
+          {unit?.forest ? <p className="mt-1 text-sm text-muted">{unit.forest}</p> : null}
+          {unit?.species ? <p className="mt-1 line-clamp-3 text-sm text-muted">{unit.species}</p> : null}
         </div>
         <button type="button" aria-label="Close land card" className="grid size-8 place-items-center text-muted" onClick={onClose}>
           <X className="size-4" />

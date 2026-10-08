@@ -186,3 +186,20 @@ export function cToF(c: number): number {
 export function mpsToMph(mps: number): number {
   return mps * 2.236936;
 }
+
+export function shiftLocalIso(iso: string | null, deltaMin: number): string | null {
+  if (!iso) return null;
+  const time = iso.split("T")[1]?.slice(0, 5);
+  if (!time) return null;
+  const [hRaw, mRaw] = time.split(":");
+  const h = Number(hRaw);
+  const m = Number(mRaw);
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  const total = (((h * 60 + m + deltaMin) % 1440) + 1440) % 1440;
+  const hh = Math.floor(total / 60);
+  const mm = total % 60;
+  return `2000-01-01T${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+/** Arizona big game is a half hour either side of sunrise and sunset. */
+export const AZ_SHOOT_LEAD_MIN = 30;
