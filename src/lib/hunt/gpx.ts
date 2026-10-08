@@ -15,7 +15,7 @@ export function toGpx(waypoints: Waypoint[], tracks: Track[]): string {
   const wpts = waypoints
     .map(
       (w) =>
-        `  <wpt lat="${w.lat}" lon="${w.lng}"><name>${esc(w.name)}</name><desc>${esc(w.notes)}</desc><type>${w.kind}</type>${w.hunt ? `<cmt>${esc(w.hunt)}</cmt>` : ""}</wpt>`,
+        `  <wpt lat="${w.lat}" lon="${w.lng}"><name>${esc(w.name)}</name><desc>${esc(w.notes)}</desc><type>${w.kind}</type>${w.hunt ? `<cmt>${esc(w.hunt)}</cmt>` : ""}${w.goodWinds?.length ? `<extensions>winds:${w.goodWinds.join(",")}</extensions>` : ""}</wpt>`,
     )
     .join("\n");
   const trks = tracks
@@ -38,6 +38,14 @@ export function parseGpx(text: string): { waypoints: Omit<Waypoint, "id" | "crea
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) return [];
     const kindRaw = (node.getElementsByTagName("type")[0]?.textContent ?? "pin").trim().toLowerCase();
     const kind = KINDS.has(kindRaw as MarkKind) ? (kindRaw as MarkKind) : "pin";
+    const windText = node.getElementsByTagName("extensions")[0]?.textContent ?? "";
+    const windMatch = /winds:([0-9,\s]+)/.exec(windText);
+    const goodWinds = windMatch
+      ? windMatch[1]
+          .split(",")
+          .map((part) => Number(part.trim()))
+          .filter((n) => Number.isFinite(n) && n >= 0 && n < 360)
+      : [];
     return [
       {
         name: (node.getElementsByTagName("name")[0]?.textContent ?? "Mark").trim().slice(0, 60) || "Mark",
@@ -46,6 +54,7 @@ export function parseGpx(text: string): { waypoints: Omit<Waypoint, "id" | "crea
         lat,
         notes: (node.getElementsByTagName("desc")[0]?.textContent ?? "").trim().slice(0, 500),
         hunt: (node.getElementsByTagName("cmt")[0]?.textContent ?? "").trim().slice(0, 40),
+        goodWinds,
       },
     ];
   });

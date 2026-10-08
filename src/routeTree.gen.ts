@@ -10,33 +10,43 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiDemZXYRouteImport } from './routes/api/dem/$z/$x/$y'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDemZXYRoute = ApiDemZXYRouteImport.update({
+  id: '/api/dem/$z/$x/$y',
+  path: '/api/dem/$z/$x/$y',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/api/dem/$z/$x/$y': typeof ApiDemZXYRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/api/dem/$z/$x/$y': typeof ApiDemZXYRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/api/dem/$z/$x/$y': typeof ApiDemZXYRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths: '/' | '/api/dem/$z/$x/$y'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to: '/' | '/api/dem/$z/$x/$y'
+  id: '__root__' | '/' | '/api/dem/$z/$x/$y'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ApiDemZXYRoute: typeof ApiDemZXYRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +58,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/dem/$z/$x/$y': {
+      id: '/api/dem/$z/$x/$y'
+      path: '/api/dem/$z/$x/$y'
+      fullPath: '/api/dem/$z/$x/$y'
+      preLoaderRoute: typeof ApiDemZXYRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ApiDemZXYRoute: ApiDemZXYRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

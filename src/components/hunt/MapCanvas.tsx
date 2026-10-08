@@ -2,18 +2,22 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { createRoot, type Root } from "react-dom/client";
 import type { GeoJSONSource, Map as MlMap, Marker, StyleSpecification } from "maplibre-gl";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
-import { circlePolygon } from "@/lib/hunt/format";
+import { circlePolygon, scentReach, sectorPolygon, windFits } from "@/lib/hunt/format";
 import { MARKS } from "@/components/hunt/marks";
+import { cachedTile, installTileProtocol, TILES } from "@/lib/hunt/tiles";
 import type { Basemap, LngLat, MapView, Track, TrackPoint, Waypoint } from "@/lib/hunt/types";
 import { DEFAULT_VIEW } from "@/lib/hunt/types";
 import { useHunt } from "@/lib/hunt/store";
 
 export type GpsFix = { lng: number; lat: number; accuracy: number; heading: number | null };
 
+export type MapBounds = { west: number; south: number; east: number; north: number; zoom: number };
+
 export type MapHandle = {
   easeTo: (lng: number, lat: number, zoom?: number) => void;
   fit: (points: LngLat[]) => void;
   getCenter: () => LngLat;
+  getBounds: () => MapBounds | null;
   resetNorth: () => void;
 };
 
@@ -25,6 +29,13 @@ type Props = {
   showPublic: boolean;
   publicOpacity: number;
   showLabels: boolean;
+  showShade: boolean;
+  showScent: boolean;
+  showRings: boolean;
+  windFrom: number | null;
+  windMps: number;
+  scentAt: LngLat;
+  ringAt: LngLat | null;
   terrain: boolean;
   imperial: boolean;
   showMarks: boolean;
@@ -65,99 +76,49 @@ function buildStyle(opts: {
   basemap: Basemap;
   showPublic: boolean;
   showLabels: boolean;
+  showShade: boolean;
   publicOpacity: number;
 }): StyleSpecification {
   const hybrid = opts.basemap === "hybrid";
+  const imagery = opts.basemap === "satellite" || hybrid;
+  const shade = opts.showShade && imagery;
+  const dem = `${window.location.origin}/api/dem/{z}/{x}/{y}`;
   return {
     version: 8,
     sources: {
-      satellite: {
-        type: "raster",
-        tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
-        tileSize: 256,
-        maxzoom: 19,
-        attribution: "Imagery © Esri, Maxar, Earthstar Geographics",
-      },
-      topo: {
-        type: "raster",
-        tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/{z}/{y}/{x}"],
-        tileSize: 256,
-        maxzoom: 16,
-        attribution: "Topo © Esri, USGS, NOAA",
-      },
-      street: {
-        type: "raster",
-        tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-        tileSize: 256,
-        maxzoom: 19,
-        attribution: "© OpenStreetMap",
-      },
-      roads: {
-        type: "raster",
-        tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}"],
-        tileSize: 256,
-        maxzoom: 19,
-      },
-      places: {
-        type: "raster",
-        tiles: ["https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"],
-        tileSize: 256,
-        maxzoom: 19,
-      },
-      sma: {
-        type: "raster",
-        tiles: ["https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_Cached_without_PriUnk/MapServer/tile/{z}/{y}/{x}"],
-        tileSize: 256,
-        maxzoom: 16,
-        attribution: "Public land © BLM Surface Management Agency",
-      },
-      dem: {
-        type: "raster-dem",
-        tiles: ["https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png"],
-        encoding: "terrarium",
-        tileSize: 256,
-        maxzoom: 15,
-        attribution: "Terrain © AWS Terrain Tiles",
-      },
+      satellite: { type: "raster", tiles: [cachedTile(TILES.satellite)], tileSize: 256, maxzoom: 19, attribution: "Imagery © Esri, Maxar, Earthstar Geographics" },
+      hillshade: { type: "raster", tiles: [cachedTile(TILES.hillshade)], tileSize: 256, maxzoom: 16, attribution: "Hillshade © Esri" },
+      topo: { type: "raster", tiles: [cachedTile(TILES.topo)], tileSize: 256, maxzoom: 16, attribution: "Topo © USGS" },
+      street: { type: "raster", tiles: [cachedTile(TILES.street)], tileSize: 256, maxzoom: 19, attribution: "Streets © Esri" },
+      roads: { type: "raster", tiles: [cachedTile(TILES.roads)], tileSize: 256, maxzoom: 19 },
+      places: { type: "raster", tiles: [cachedTile(TILES.places)], tileSize: 256, maxzoom: 19 },
+      sma: { type: "raster", tiles: [cachedTile(TILES.sma)], tileSize: 256, maxzoom: 16, attribution: "Public land © BLM" },
+      dem: { type: "raster-dem", tiles: [dem], encoding: "terrarium", tileSize: 256, maxzoom: 14, attribution: "Terrain © AWS Terrain Tiles" },
       tracks: { type: "geojson", data: EMPTY },
       live: { type: "geojson", data: EMPTY },
       measure: { type: "geojson", data: EMPTY },
       accuracy: { type: "geojson", data: EMPTY },
+      scent: { type: "geojson", data: EMPTY },
+      rings: { type: "geojson", data: EMPTY },
     },
     layers: [
-      { id: "satellite", type: "raster", source: "satellite", layout: { visibility: vis(opts.basemap === "satellite" || hybrid) } },
+      { id: "land", type: "background", paint: { "background-color": "#1c2418" } },
+      { id: "hillshade", type: "raster", source: "hillshade", layout: { visibility: vis(shade) }, paint: { "raster-opacity": 0.95 } },
+      { id: "satellite", type: "raster", source: "satellite", layout: { visibility: vis(imagery) }, paint: { "raster-opacity": shade ? 0.78 : 1 } },
       { id: "topo", type: "raster", source: "topo", layout: { visibility: vis(opts.basemap === "topo") } },
       { id: "street", type: "raster", source: "street", layout: { visibility: vis(opts.basemap === "street") } },
-      {
-        id: "sma",
-        type: "raster",
-        source: "sma",
-        layout: { visibility: vis(opts.showPublic) },
-        paint: { "raster-opacity": opts.publicOpacity },
-      },
+      { id: "sma", type: "raster", source: "sma", layout: { visibility: vis(opts.showPublic) }, paint: { "raster-opacity": opts.publicOpacity } },
       { id: "roads", type: "raster", source: "roads", layout: { visibility: vis(hybrid) } },
       { id: "places", type: "raster", source: "places", layout: { visibility: vis(hybrid && opts.showLabels) } },
-      {
-        id: "accuracy",
-        type: "fill",
-        source: "accuracy",
-        paint: { "fill-color": "#d7e2c8", "fill-opacity": 0.18 },
-      },
-      {
-        id: "accuracy-line",
-        type: "line",
-        source: "accuracy",
-        paint: { "line-color": "#d7e2c8", "line-width": 1, "line-opacity": 0.75 },
-      },
+      { id: "scent-fill", type: "fill", source: "scent", paint: { "fill-color": "#d7e2c8", "fill-opacity": 0.28 } },
+      { id: "scent-line", type: "line", source: "scent", paint: { "line-color": "#f3f1ea", "line-width": 1.5, "line-opacity": 0.9 } },
+      { id: "rings", type: "line", source: "rings", paint: { "line-color": "#f3f1ea", "line-width": 1.25, "line-opacity": 0.8, "line-dasharray": [1.4, 1.1] } },
+      { id: "accuracy", type: "fill", source: "accuracy", paint: { "fill-color": "#d7e2c8", "fill-opacity": 0.18 } },
+      { id: "accuracy-line", type: "line", source: "accuracy", paint: { "line-color": "#d7e2c8", "line-width": 1, "line-opacity": 0.75 } },
       { id: "tracks-casing", type: "line", source: "tracks", paint: { "line-color": "#121410", "line-width": 5 } },
       { id: "tracks", type: "line", source: "tracks", paint: { "line-color": "#d7e2c8", "line-width": 2.5 } },
       { id: "live-casing", type: "line", source: "live", paint: { "line-color": "#121410", "line-width": 5 } },
-      {
-        id: "live",
-        type: "line",
-        source: "live",
-        paint: { "line-color": "#f3f1ea", "line-width": 2.5, "line-dasharray": [1.4, 1.2] },
-      },
+      { id: "live", type: "line", source: "live", paint: { "line-color": "#f3f1ea", "line-width": 2.5, "line-dasharray": [1.4, 1.2] } },
       {
         id: "measure-fill",
         type: "fill",
@@ -172,12 +133,7 @@ function buildStyle(opts: {
         type: "circle",
         source: "measure",
         filter: ["==", ["geometry-type"], "Point"],
-        paint: {
-          "circle-radius": 4,
-          "circle-color": "#f3f1ea",
-          "circle-stroke-width": 2,
-          "circle-stroke-color": "#121410",
-        },
+        paint: { "circle-radius": 4, "circle-color": "#f3f1ea", "circle-stroke-width": 2, "circle-stroke-color": "#121410" },
       },
     ],
   };
@@ -188,7 +144,19 @@ function setGeo(map: MlMap, id: string, data: FC) {
   source?.setData(data);
 }
 
+function fitStage(map: MlMap, el: HTMLElement) {
+  const stage = el.parentElement;
+  if (!stage) return;
+  const width = stage.clientWidth;
+  const height = stage.clientHeight;
+  if (width < 2 || height < 2) return;
+  el.style.width = `${width}px`;
+  el.style.height = `${height}px`;
+  map.resize();
+}
+
 export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, ref) {
+  const stageRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<MlMap | null>(null);
   const mlRef = useRef<typeof import("maplibre-gl") | null>(null);
@@ -211,11 +179,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     easeTo(lng, lat, zoom) {
       const map = mapRef.current;
       if (!map) return;
-      map.easeTo({
-        center: [lng, lat],
-        zoom: zoom ?? Math.max(map.getZoom(), 13),
-        duration: 700,
-      });
+      map.easeTo({ center: [lng, lat], zoom: zoom ?? Math.max(map.getZoom(), 13), duration: 700 });
     },
     fit(points) {
       const map = mapRef.current;
@@ -246,14 +210,22 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
       const center = mapRef.current?.getCenter();
       return center ? { lng: center.lng, lat: center.lat } : { lng: DEFAULT_VIEW.lng, lat: DEFAULT_VIEW.lat };
     },
+    getBounds() {
+      const map = mapRef.current;
+      if (!map) return null;
+      const bounds = map.getBounds();
+      return {
+        west: bounds.getWest(),
+        south: bounds.getSouth(),
+        east: bounds.getEast(),
+        north: bounds.getNorth(),
+        zoom: map.getZoom(),
+      };
+    },
     resetNorth() {
       const map = mapRef.current;
       if (!map) return;
-      map.easeTo({
-        bearing: 0,
-        pitch: terrainRef.current ? Math.max(map.getPitch(), 48) : 0,
-        duration: 450,
-      });
+      map.easeTo({ bearing: 0, pitch: terrainRef.current ? Math.max(map.getPitch(), 48) : 0, duration: 450 });
     },
   }));
 
@@ -262,12 +234,14 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     const el = containerRef.current;
     let map: MlMap | null = null;
     let dead = false;
+    let observer: ResizeObserver | null = null;
 
     void (async () => {
       try {
         const ml = await import("maplibre-gl");
         if (dead) return;
         ml.setWorkerUrl(maplibreWorkerUrl);
+        installTileProtocol(ml);
         mlRef.current = ml;
         const saved = useHunt.getState().lastView ?? DEFAULT_VIEW;
         const state = useHunt.getState();
@@ -277,6 +251,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
             basemap: state.basemap,
             showPublic: state.showPublic,
             showLabels: state.showLabels,
+            showShade: state.showShade,
             publicOpacity: state.publicOpacity,
           }),
           center: [saved.lng, saved.lat],
@@ -287,14 +262,21 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           attributionControl: { compact: true },
           maplibreLogo: false,
           fadeDuration: 0,
+          canvasContextAttributes: { failIfMajorPerformanceCaveat: false, preserveDrawingBuffer: true },
         });
         map.touchPitch.disable();
         const scale = new ml.ScaleControl({ maxWidth: 110, unit: state.imperial ? "imperial" : "metric" });
         scaleRef.current = scale;
         map.addControl(scale, "bottom-left");
+        const fit = () => {
+          if (map && !dead) fitStage(map, el);
+        };
+        observer = new ResizeObserver(fit);
+        if (stageRef.current) observer.observe(stageRef.current);
         map.on("load", () => {
           if (dead || !map) return;
           mapRef.current = map;
+          fit();
           if (useHunt.getState().terrain) {
             map.setTerrain({ source: "dem", exaggeration: 1.15 });
             map.touchPitch.enable();
@@ -308,14 +290,13 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
             pitch: map.getPitch(),
           });
           setReady(true);
+          window.setTimeout(fit, 60);
         });
         map.on("error", (event) => {
           const message = event.error?.message ?? "";
-          if (/webgl/i.test(message)) setMapError("This browser can't draw the map.");
+          if (/webgl|failed to initialize/i.test(message)) setMapError("This browser can't draw the map.");
         });
-        map.on("click", (event) => {
-          onMapClickRef.current(event.lngLat.lng, event.lngLat.lat);
-        });
+        map.on("click", (event) => onMapClickRef.current(event.lngLat.lng, event.lngLat.lat));
         map.on("dragstart", () => onDragRef.current());
         let last = 0;
         const publish = () => {
@@ -337,6 +318,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           last = 0;
           publish();
         });
+        fit();
       } catch (error) {
         if (!dead) setMapError(error instanceof Error ? error.message : "Map failed to start.");
       }
@@ -345,6 +327,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     return () => {
       dead = true;
       setReady(false);
+      observer?.disconnect();
       mapRef.current = null;
       scaleRef.current = null;
       map?.remove();
@@ -356,14 +339,18 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     if (!ready || !map) return;
     const show = (id: string, on: boolean) => map.setLayoutProperty(id, "visibility", vis(on));
     const hybrid = props.basemap === "hybrid";
-    show("satellite", props.basemap === "satellite" || hybrid);
+    const imagery = props.basemap === "satellite" || hybrid;
+    const shade = props.showShade && imagery;
+    show("hillshade", shade);
+    show("satellite", imagery);
     show("topo", props.basemap === "topo");
     show("street", props.basemap === "street");
     show("roads", hybrid);
     show("places", hybrid && props.showLabels);
     show("sma", props.showPublic);
     map.setPaintProperty("sma", "raster-opacity", props.publicOpacity);
-  }, [ready, props.basemap, props.showPublic, props.showLabels, props.publicOpacity]);
+    map.setPaintProperty("satellite", "raster-opacity", shade ? 0.78 : 1);
+  }, [ready, props.basemap, props.showPublic, props.showLabels, props.showShade, props.publicOpacity]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -398,9 +385,10 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     if (props.showMarks) {
       for (const waypoint of props.waypoints) {
         const meta = MARKS[waypoint.kind];
+        const verdict = props.windFrom == null ? null : windFits(props.windFrom, waypoint.goodWinds);
         const button = document.createElement("button");
         button.type = "button";
-        button.className = `mark-pin ${meta.pinClass}${waypoint.id === props.selectedId ? " mark-pin-on" : ""}`;
+        button.className = `mark-pin ${meta.pinClass}${waypoint.id === props.selectedId ? " mark-pin-on" : ""}${verdict === true ? " mark-go" : ""}${verdict === false ? " mark-hold" : ""}`;
         button.setAttribute("aria-label", waypoint.name);
         const slot = document.createElement("span");
         slot.className = "grid place-items-center";
@@ -422,7 +410,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
         entry.marker.remove();
       }
     };
-  }, [ready, props.waypoints, props.showMarks, props.selectedId]);
+  }, [ready, props.waypoints, props.showMarks, props.selectedId, props.windFrom]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -458,13 +446,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     if (!ready || !map) return;
     const features: JsonFeature[] =
       props.livePoints.length > 1
-        ? [
-            {
-              type: "Feature",
-              properties: {},
-              geometry: { type: "LineString", coordinates: props.livePoints.map((point) => [point.lng, point.lat]) },
-            },
-          ]
+        ? [{ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: props.livePoints.map((point) => [point.lng, point.lat]) } }]
         : [];
     setGeo(map, "live", { type: "FeatureCollection", features });
   }, [ready, props.livePoints]);
@@ -475,21 +457,11 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     const features: JsonFeature[] = [];
     const coords = props.measurePoints.map((point) => [point.lng, point.lat] as [number, number]);
     if (props.measureClosed && coords.length >= 3) {
-      features.push({
-        type: "Feature",
-        properties: {},
-        geometry: { type: "Polygon", coordinates: [[...coords, coords[0]]] },
-      });
+      features.push({ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [[...coords, coords[0]]] } });
     } else if (coords.length >= 2) {
-      features.push({
-        type: "Feature",
-        properties: {},
-        geometry: { type: "LineString", coordinates: coords },
-      });
+      features.push({ type: "Feature", properties: {}, geometry: { type: "LineString", coordinates: coords } });
     }
-    for (const coord of coords) {
-      features.push({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: coord } });
-    }
+    for (const coord of coords) features.push({ type: "Feature", properties: {}, geometry: { type: "Point", coordinates: coord } });
     setGeo(map, "measure", { type: "FeatureCollection", features });
   }, [ready, props.measurePoints, props.measureClosed]);
 
@@ -499,23 +471,48 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     const accuracy = props.gps?.accuracy ?? 0;
     const features: JsonFeature[] =
       props.gps && accuracy > 0 && accuracy < 4000
-        ? [
-            {
-              type: "Feature",
-              properties: {},
-              geometry: { type: "Polygon", coordinates: [circlePolygon(props.gps.lng, props.gps.lat, accuracy)] },
-            },
-          ]
+        ? [{ type: "Feature", properties: {}, geometry: { type: "Polygon", coordinates: [circlePolygon(props.gps.lng, props.gps.lat, accuracy)] } }]
         : [];
     setGeo(map, "accuracy", { type: "FeatureCollection", features });
   }, [ready, props.gps]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    const features: JsonFeature[] = [];
+    if (props.showScent && props.windFrom != null) {
+      const drift = (props.windFrom + 180) % 360;
+      features.push({
+        type: "Feature",
+        properties: {},
+        geometry: {
+          type: "Polygon",
+          coordinates: [sectorPolygon(props.scentAt.lng, props.scentAt.lat, scentReach(props.windMps), drift, 42)],
+        },
+      });
+    }
+    setGeo(map, "scent", { type: "FeatureCollection", features });
+  }, [ready, props.showScent, props.windFrom, props.windMps, props.scentAt]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    const radii = props.imperial ? [91.44, 182.88, 365.76] : [100, 200, 400];
+    const features: JsonFeature[] =
+      props.showRings && props.ringAt
+        ? radii.map((radius) => ({
+            type: "Feature",
+            properties: {},
+            geometry: { type: "Polygon", coordinates: [circlePolygon(props.ringAt!.lng, props.ringAt!.lat, radius)] },
+          }))
+        : [];
+    setGeo(map, "rings", { type: "FeatureCollection", features });
+  }, [ready, props.showRings, props.ringAt, props.imperial]);
+
   return (
-    <div className="absolute inset-0">
-      <div ref={containerRef} className={`absolute inset-0 ${props.tool === "none" ? "" : "cursor-crosshair"}`} />
-      {mapError ? (
-        <p className="absolute inset-x-6 top-1/2 -translate-y-1/2 text-center text-muted">{mapError}</p>
-      ) : null}
+    <div ref={stageRef} className="map-stage">
+      <div ref={containerRef} className={props.tool === "none" ? "h-full w-full" : "h-full w-full cursor-crosshair"} />
+      {mapError ? <p className="absolute inset-x-6 top-1/2 z-10 -translate-y-1/2 text-center text-muted">{mapError}</p> : null}
     </div>
   );
 });

@@ -19,6 +19,7 @@ export type Waypoint = {
   lat: number;
   notes: string;
   hunt: string;
+  goodWinds: number[];
   createdAt: number;
 };
 

@@ -11,6 +11,9 @@ type HuntState = {
   showLabels: boolean;
   terrain: boolean;
   showMarks: boolean;
+  showShade: boolean;
+  showScent: boolean;
+  showRings: boolean;
   imperial: boolean;
   lastKind: MarkKind;
   activeHunt: string;
@@ -29,6 +32,9 @@ type HuntState = {
   setShowLabels: (showLabels: boolean) => void;
   setTerrain: (terrain: boolean) => void;
   setShowMarks: (showMarks: boolean) => void;
+  setShowShade: (showShade: boolean) => void;
+  setShowScent: (showScent: boolean) => void;
+  setShowRings: (showRings: boolean) => void;
   setImperial: (imperial: boolean) => void;
   setLastKind: (lastKind: MarkKind) => void;
   setActiveHunt: (activeHunt: string) => void;
@@ -47,6 +53,9 @@ export const useHunt = create<HuntState>()(
       showLabels: true,
       terrain: false,
       showMarks: true,
+      showShade: true,
+      showScent: true,
+      showRings: true,
       imperial: true,
       lastKind: "stand",
       activeHunt: "",
@@ -75,6 +84,9 @@ export const useHunt = create<HuntState>()(
       setShowLabels: (showLabels) => set({ showLabels }),
       setTerrain: (terrain) => set({ terrain }),
       setShowMarks: (showMarks) => set({ showMarks }),
+      setShowShade: (showShade) => set({ showShade }),
+      setShowScent: (showScent) => set({ showScent }),
+      setShowRings: (showRings) => set({ showRings }),
       setImperial: (imperial) => set({ imperial }),
       setLastKind: (lastKind) => set({ lastKind }),
       setActiveHunt: (activeHunt) => set({ activeHunt }),
@@ -94,6 +106,9 @@ export const useHunt = create<HuntState>()(
         showLabels: s.showLabels,
         terrain: s.terrain,
         showMarks: s.showMarks,
+        showShade: s.showShade,
+        showScent: s.showScent,
+        showRings: s.showRings,
         imperial: s.imperial,
         lastKind: s.lastKind,
         activeHunt: s.activeHunt,
