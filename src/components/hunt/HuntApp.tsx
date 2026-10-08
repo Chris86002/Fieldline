@@ -31,13 +31,16 @@ import {
   mpsToMph,
   pathLength,
   ringArea,
+  WIND_CHOICES,
+  windFits,
 } from "@/lib/hunt/format";
 import { parseGpx, toGpx } from "@/lib/hunt/gpx";
 import { identifyLand } from "@/lib/hunt/land";
 import { LEGEND } from "@/lib/hunt/land";
 import { searchPlaces, type PlaceHit } from "@/lib/hunt/search.functions";
 import { useHunt } from "@/lib/hunt/store";
-import { DEFAULT_VIEW, JUMPS, type Basemap, type LandHit, type LngLat, type MapView, type MarkKind, type TrackPoint } from "@/lib/hunt/types";
+import { packTiles, TILES, tileCacheLabel } from "@/lib/hunt/tiles";
+import { DEFAULT_VIEW, JUMPS, type Basemap, type LandHit, type LngLat, type MapView, type MarkKind, type Track, type TrackPoint, type Waypoint } from "@/lib/hunt/types";
 import { fetchFieldWeather, type FieldWeather } from "@/lib/hunt/weather";
 
 type Tool = "none" | "drop" | "measure";
@@ -87,6 +90,8 @@ export function HuntApp() {
   const [searching, setSearching] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [coordMode, setCoordMode] = useState<"dd" | "dms">("dd");
+  const [packNote, setPackNote] = useState<string | null>(null);
+  const [packing, setPacking] = useState(false);
 
   const selected = store.waypoints.find((waypoint) => waypoint.id === selectedId) ?? null;
 
@@ -120,6 +125,13 @@ export function HuntApp() {
     const timer = window.setTimeout(() => useHunt.getState().setLastView(view), 700);
     return () => window.clearTimeout(timer);
   }, [view, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    void tileCacheLabel().then((label) => {
+      if (label) setPackNote(label);
+    });
+  }, [hydrated]);
 
   const weatherKey = `${view.lat.toFixed(2)},${view.lng.toFixed(2)}`;
 
@@ -235,6 +247,7 @@ export function HuntApp() {
       lat,
       notes: "",
       hunt: store.activeHunt,
+      goodWinds: [],
       createdAt: Date.now(),
     });
     setSelectedId(id);
@@ -321,6 +334,25 @@ export function HuntApp() {
     setHits([]);
   }
 
+  async function saveArea() {
+    const bounds = mapRef.current?.getBounds();
+    if (!bounds || packing) return;
+    const templates: string[] = [TILES.satellite, TILES.hillshade];
+    if (store.basemap === "topo") templates.push(TILES.topo);
+    if (store.basemap === "street") templates.push(TILES.street);
+    if (store.showPublic) templates.push(TILES.sma);
+    setPacking(true);
+    setPackNote("Saving this view…");
+    try {
+      const result = await packTiles({ ...bounds, templates });
+      setPackNote(result.skipped ? "Zoom in, then save. That view is too wide." : `Saved ${result.saved} tiles for when you lose service.`);
+    } catch {
+      setPackNote("Couldn't save tiles from here.");
+    } finally {
+      setPacking(false);
+    }
+  }
+
   async function copyText(text: string) {
     try {
       await navigator.clipboard.writeText(text);
@@ -369,6 +401,79 @@ export function HuntApp() {
 
   return (
     <main className="map-shell relative h-dvh w-full overflow-hidden bg-bg" data-sheet={sheet ? "1" : "0"}>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".gpx,application/gpx+xml,.xml"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0];
+          event.target.value = "";
+          if (file) onImport(file);
+        }}
+      />
+      {sheet === null ? (
+        <aside className="absolute inset-y-0 left-0 z-20 hidden w-96 flex-col border-r border-line bg-bg lg:flex">
+          <div className="shrink-0 border-b border-line px-4 pt-4 pb-3">
+            <p className="font-display text-3xl leading-none tracking-widest">FIELDLINE</p>
+            <p className="mt-2 text-sm leading-snug text-muted">Plan the hunt here. The phone is the copy you take into the field.</p>
+            <button
+              type="button"
+              onClick={() => {
+                setSheet("wind");
+                setSearchOpen(false);
+              }}
+              className="mt-3 flex h-11 w-full items-center justify-between rounded-md border border-line bg-surface px-3 text-left text-sm"
+            >
+              <span className="flex items-center gap-2">
+                <WindArrow deg={weather?.windFrom ?? 0} />
+                <span className="font-mono tabular-nums">{weather ? `${cardinal(weather.windFrom)} · ${windSpeed}` : "Wind"}</span>
+              </span>
+              <span className="text-muted">{tempLabel ?? ""}</span>
+            </button>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                className="h-11 rounded-md border border-line bg-surface text-sm"
+                onClick={() => {
+                  setSheet("layers");
+                  setSearchOpen(false);
+                }}
+              >
+                Layers
+              </button>
+              <button
+                type="button"
+                onClick={onExport}
+                disabled={store.waypoints.length + store.tracks.length === 0}
+                className="h-11 rounded-md border border-line bg-surface text-sm disabled:opacity-40"
+              >
+                Export GPX
+              </button>
+            </div>
+            <button type="button" onClick={() => fileRef.current?.click()} className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-md border border-line text-sm">
+              <Upload className="size-4" /> Import GPX
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3">
+            <h2 className="font-display text-xl tracking-wide">Marks</h2>
+            <WaypointRows
+              waypoints={store.waypoints}
+              gps={gps}
+              imperial={store.imperial}
+              onOpen={(id, lng, lat) => {
+                setSelectedId(id);
+                setSheet("edit");
+                mapRef.current?.easeTo(lng, lat, 15);
+              }}
+            />
+            <h2 className="mt-4 font-display text-xl tracking-wide">Tracks</h2>
+            <TrackRows tracks={store.tracks} imperial={store.imperial} onFit={(points) => mapRef.current?.fit(points)} onToggle={store.toggleTrack} onDelete={store.removeTrack} />
+            <p className="mt-4 text-sm text-subtle">This browser keeps its own marks. Export GPX, then import it on the phone.</p>
+          </div>
+        </aside>
+      ) : null}
+      <div className="absolute inset-0 lg:left-96">
       <MapCanvas
         ref={mapRef}
         hydrated={hydrated}
@@ -387,6 +492,13 @@ export function HuntApp() {
         measureClosed={measureClosed}
         gps={gps}
         tool={tool}
+        showShade={store.showShade}
+        showScent={store.showScent}
+        showRings={store.showRings}
+        windFrom={weather?.windFrom ?? null}
+        windMps={weather?.windMps ?? 0}
+        scentAt={selected ? { lng: selected.lng, lat: selected.lat } : { lng: view.lng, lat: view.lat }}
+        ringAt={selected ? { lng: selected.lng, lat: selected.lat } : null}
         onMapClick={onMapClick}
         onMarkerClick={(id) => {
           setSelectedId(id);
@@ -406,7 +518,7 @@ export function HuntApp() {
         <div className="pointer-events-auto flex flex-col gap-2">
           <p className="font-display text-lg leading-none tracking-widest text-fg sm:hidden">FIELDLINE</p>
           <div className="flex items-center gap-2">
-            <p className="hidden font-display text-xl tracking-widest text-fg sm:block">FIELDLINE</p>
+            <p className="hidden font-display text-xl tracking-widest text-fg sm:block lg:hidden">FIELDLINE</p>
           <form
             className="relative min-w-0 flex-1"
             onSubmit={(event) => {
@@ -423,7 +535,7 @@ export function HuntApp() {
                 setSearchOpen(true);
               }}
               onFocus={() => setSearchOpen(true)}
-              placeholder="Search town or country"
+              placeholder="Search a unit, town, or ridge"
               aria-label="Search places"
               autoCapitalize="off"
               autoCorrect="off"
@@ -485,7 +597,7 @@ export function HuntApp() {
               setSheet(sheet === "wind" ? null : "wind");
               setSearchOpen(false);
             }}
-            className="flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface px-3 text-sm text-fg"
+            className="flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface px-3 text-sm text-fg lg:hidden"
             aria-label="Wind and light"
           >
             <WindArrow deg={weather?.windFrom ?? 0} />
@@ -503,6 +615,7 @@ export function HuntApp() {
             {coordMode === "dd" ? formatDd(view.lng, view.lat) : formatDms(view.lng, view.lat)}
             <span className="mt-0.5 block text-muted">
               {weather?.elevationM != null ? `${formatElev(weather.elevationM, store.imperial)} elev` : "Elev —"}
+              {weather?.slopePct != null ? ` · ${Math.round(weather.slopePct)}%${weather.fallsDeg != null ? ` falls ${cardinal(weather.fallsDeg)}` : ""}` : ""}
               {tempLabel ? ` · ${tempLabel}` : ""}
             </span>
           </button>
@@ -519,9 +632,9 @@ export function HuntApp() {
         </div>
 
         {hydrated && !store.introDismissed ? (
-          <div className="pointer-events-auto flex items-start gap-3 rounded-lg border border-line bg-surface px-3 py-2.5 text-sm text-muted">
+          <div className="pointer-events-auto flex items-start gap-3 rounded-lg border border-line bg-surface px-3 py-2.5 text-sm text-muted lg:hidden">
             <p>
-              Color is federal, state, or tribal surface from the BLM. Blank ground is usually private. Owner names are not in this free map.
+              Color shows who manages the surface. A pale cone is where your scent is drifting. Green rings on a stand mean today's wind matches the directions you saved.
             </p>
             <button type="button" aria-label="Dismiss" className="grid size-8 shrink-0 place-items-center text-fg" onClick={store.dismissIntro}>
               <X className="size-4" />
@@ -626,6 +739,7 @@ export function HuntApp() {
               label="Layers"
               on={false}
               icon={Layers}
+              className="lg:hidden"
               onClick={() => {
                 setSheet("layers");
                 setSearchOpen(false);
@@ -635,6 +749,7 @@ export function HuntApp() {
               label="Saved"
               on={false}
               icon={Bookmark}
+              className="lg:hidden"
               onClick={() => {
                 setSheet("saved");
                 setSearchOpen(false);
@@ -643,6 +758,7 @@ export function HuntApp() {
           </div>
         </nav>
       ) : null}
+      </div>
 
       {sheet === "layers" ? (
         <Panel title="Layers" onClose={() => setSheet(null)}>
@@ -659,7 +775,7 @@ export function HuntApp() {
               </button>
             ))}
           </div>
-          <Toggle checked={store.showPublic} onChange={store.setShowPublic} label="Public land" hint="BLM surface management. Not a survey." />
+          <Toggle checked={store.showPublic} onChange={store.setShowPublic} label="Public land" hint="BLM surface management. Blank ground is usually private." />
           {store.showPublic ? (
             <label className="block pb-2 text-sm text-muted">
               Overlay strength
@@ -674,6 +790,9 @@ export function HuntApp() {
               />
             </label>
           ) : null}
+          <Toggle checked={store.showShade} onChange={store.setShowShade} label="Hillshade" hint="Terrain under the satellite so ridges and draws read at a glance." />
+          <Toggle checked={store.showScent} onChange={store.setShowScent} label="Scent cone" hint="Downwind of the selected stand, or the map center." />
+          <Toggle checked={store.showRings} onChange={store.setShowRings} label="Range rings" hint={store.imperial ? "100, 200, and 400 yards around the selected mark." : "100, 200, and 400 meters around the selected mark."} />
           <Toggle checked={store.showLabels} onChange={store.setShowLabels} label="Place names" hint="Roads and labels on the hybrid map." />
           <Toggle checked={store.terrain} onChange={store.setTerrain} label="3D terrain" hint="Tilt the map. Heavier on a phone." />
           <Toggle checked={store.showMarks} onChange={store.setShowMarks} label="My marks" />
@@ -693,7 +812,11 @@ export function HuntApp() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-sm text-subtle">Private land stays uncolored. This is not onX, and it is not legal advice. Confirm boundaries and seasons before you hunt.</p>
+          <p className="mt-3 text-sm text-subtle">Owner names are a paid dataset. Fieldline shows the managing agency, the wind that works for each stand, and an offline pack of ground you've already looked at.</p>
+          <button type="button" disabled={packing} onClick={() => void saveArea()} className="mt-3 h-11 w-full rounded-md bg-accent text-sm font-medium text-accent-fg disabled:opacity-50">
+            {packing ? "Saving tiles…" : "Save this view offline"}
+          </button>
+          {packNote ? <p className="mt-2 text-sm text-muted">{packNote}</p> : null}
         </Panel>
       ) : null}
 
@@ -717,7 +840,12 @@ export function HuntApp() {
             <Stat label="Sunrise" value={formatClock(weather.sunrise)} />
             <Stat label="Sunset" value={formatClock(weather.sunset)} />
           </dl>
-          <p className="mt-4 text-sm text-subtle">Legal shooting light is not the same as sunrise. Check your state wildlife agency. Wind is the Open-Meteo model at the map center, not a ridge-top reading.</p>
+          <p className="mt-4 text-sm text-subtle">Legal shooting light is not the same as sunrise. Wind is the Open-Meteo model at the map center, not a ridgetop reading.</p>
+          <StandWind waypoints={store.waypoints} windFrom={weather.windFrom} onOpen={(id, lng, lat) => {
+            setSelectedId(id);
+            mapRef.current?.easeTo(lng, lat, 15);
+            setSheet("edit");
+          }} />
         </Panel>
       ) : null}
       {sheet === "wind" && !weather ? (
@@ -735,81 +863,27 @@ export function HuntApp() {
             <button type="button" onClick={() => fileRef.current?.click()} className="flex h-11 flex-1 items-center justify-center gap-2 rounded-md border border-line text-sm">
               <Upload className="size-4" /> Import
             </button>
-            <input
-              ref={fileRef}
-              type="file"
-              accept=".gpx,application/gpx+xml,.xml"
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                event.target.value = "";
-                if (file) onImport(file);
-              }}
-            />
           </div>
           <h3 className="font-display text-xl tracking-wide">Marks</h3>
-          {store.waypoints.length === 0 ? (
-            <p className="py-3 text-sm text-muted">No marks yet. Tap Mark, then tap the stand, gate, or camp.</p>
-          ) : (
-            <ul className="mt-1">
-              {store.waypoints.map((waypoint) => {
-                const meta = MARKS[waypoint.kind];
-                const Icon = meta.icon;
-                const away = gps ? formatDistance(haversine(gps, waypoint), store.imperial) : null;
-                const heading = gps ? cardinal(bearingDeg(gps, waypoint)) : null;
-                return (
-                  <li key={waypoint.id}>
-                    <button
-                      type="button"
-                      className="flex min-h-12 w-full items-center gap-3 rounded-md px-1 text-left hover:bg-surface-2"
-                      onClick={() => {
-                        setSelectedId(waypoint.id);
-                        setSheet("edit");
-                        mapRef.current?.easeTo(waypoint.lng, waypoint.lat, 15);
-                      }}
-                    >
-                      <span className={`grid size-8 shrink-0 place-items-center rounded-full ${meta.pinClass}`}>
-                        <Icon className="size-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate">{waypoint.name}</span>
-                        <span className="block truncate text-sm text-muted">
-                          {waypoint.hunt || meta.label}
-                          {away && heading ? ` · ${away} ${heading}` : ""}
-                        </span>
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
+          <WaypointRows
+            waypoints={store.waypoints}
+            gps={gps}
+            imperial={store.imperial}
+            onOpen={(id, lng, lat) => {
+              setSelectedId(id);
+              setSheet("edit");
+              mapRef.current?.easeTo(lng, lat, 15);
+            }}
+          />
           <h3 className="mt-4 font-display text-xl tracking-wide">Tracks</h3>
-          {store.tracks.length === 0 ? (
-            <p className="py-3 text-sm text-muted">No tracks yet. Tap Track and walk. Stop saves it here.</p>
-          ) : (
-            <ul className="mt-1">
-              {store.tracks.map((track) => (
-                <li key={track.id} className="flex min-h-12 items-center gap-2">
-                  <button
-                    type="button"
-                    className="min-w-0 flex-1 truncate text-left"
-                    onClick={() => mapRef.current?.fit(track.points)}
-                  >
-                    <span className="block truncate">{track.name}</span>
-                    <span className="text-sm text-muted">{formatDistance(pathLength(track.points), store.imperial)}</span>
-                  </button>
-                  <button type="button" className="h-9 px-2 text-sm text-muted" onClick={() => store.toggleTrack(track.id)}>
-                    {track.visible ? "Hide" : "Show"}
-                  </button>
-                  <button type="button" className="h-9 px-2 text-sm text-danger" onClick={() => store.removeTrack(track.id)}>
-                    Delete
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-          <p className="mt-4 text-sm text-subtle">Marks and tracks stay on this phone or browser. Export GPX if you want a copy.</p>
+          <TrackRows
+            tracks={store.tracks}
+            imperial={store.imperial}
+            onFit={(points) => mapRef.current?.fit(points)}
+            onToggle={store.toggleTrack}
+            onDelete={store.removeTrack}
+          />
+          <p className="mt-4 text-sm text-subtle">Marks stay in this browser. Export GPX on the computer, then import that file on the phone you hunt with.</p>
         </Panel>
       ) : null}
 
@@ -821,6 +895,7 @@ export function HuntApp() {
             kind={selected.kind}
             hunt={selected.hunt}
             notes={selected.notes}
+            goodWinds={selected.goodWinds ?? []}
             hunts={hunts}
             lng={selected.lng}
             lat={selected.lat}
@@ -840,6 +915,118 @@ export function HuntApp() {
         </Panel>
       ) : null}
     </main>
+  );
+}
+
+function WaypointRows({
+  waypoints,
+  gps,
+  imperial,
+  onOpen,
+}: {
+  waypoints: Waypoint[];
+  gps: GpsFix | null;
+  imperial: boolean;
+  onOpen: (id: string, lng: number, lat: number) => void;
+}) {
+  if (waypoints.length === 0) {
+    return <p className="py-3 text-sm text-muted">No marks yet. Use Mark, then the stand, gate, or camp.</p>;
+  }
+  return (
+    <ul className="mt-1">
+      {waypoints.map((waypoint) => {
+        const meta = MARKS[waypoint.kind];
+        const Icon = meta.icon;
+        const away = gps ? formatDistance(haversine(gps, waypoint), imperial) : null;
+        const heading = gps ? cardinal(bearingDeg(gps, waypoint)) : null;
+        return (
+          <li key={waypoint.id}>
+            <button
+              type="button"
+              className="flex min-h-12 w-full items-center gap-3 rounded-md px-1 text-left hover:bg-surface-2"
+              onClick={() => onOpen(waypoint.id, waypoint.lng, waypoint.lat)}
+            >
+              <span className={`grid size-8 shrink-0 place-items-center rounded-full ${meta.pinClass}`}>
+                <Icon className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate">{waypoint.name}</span>
+                <span className="block truncate text-sm text-muted">
+                  {waypoint.hunt || meta.label}
+                  {away && heading ? ` · ${away} ${heading}` : ""}
+                </span>
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function TrackRows({
+  tracks,
+  imperial,
+  onFit,
+  onToggle,
+  onDelete,
+}: {
+  tracks: Track[];
+  imperial: boolean;
+  onFit: (points: TrackPoint[]) => void;
+  onToggle: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  if (tracks.length === 0) {
+    return <p className="py-3 text-sm text-muted">No tracks yet. Track a walk, then stop to keep it.</p>;
+  }
+  return (
+    <ul className="mt-1">
+      {tracks.map((track) => (
+        <li key={track.id} className="flex min-h-12 items-center gap-2">
+          <button type="button" className="min-w-0 flex-1 truncate text-left" onClick={() => onFit(track.points)}>
+            <span className="block truncate">{track.name}</span>
+            <span className="text-sm text-muted">{formatDistance(pathLength(track.points), imperial)}</span>
+          </button>
+          <button type="button" className="h-9 px-2 text-sm text-muted" onClick={() => onToggle(track.id)}>
+            {track.visible ? "Hide" : "Show"}
+          </button>
+          <button type="button" className="h-9 px-2 text-sm text-danger" onClick={() => onDelete(track.id)}>
+            Delete
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function StandWind({
+  waypoints,
+  windFrom,
+  onOpen,
+}: {
+  waypoints: { id: string; name: string; kind: MarkKind; lng: number; lat: number; goodWinds?: number[] }[];
+  windFrom: number;
+  onOpen: (id: string, lng: number, lat: number) => void;
+}) {
+  const marked = waypoints.filter((waypoint) => (waypoint.goodWinds?.length ?? 0) > 0);
+  if (marked.length === 0) {
+    return <p className="mt-4 text-sm text-muted">Open a stand and tick the winds you can hunt. Matching stands get a green ring.</p>;
+  }
+  return (
+    <ul className="mt-4">
+      {marked.map((waypoint) => {
+        const ok = windFits(windFrom, waypoint.goodWinds);
+        return (
+          <li key={waypoint.id}>
+            <button type="button" className="flex min-h-11 w-full items-center justify-between gap-3 text-left" onClick={() => onOpen(waypoint.id, waypoint.lng, waypoint.lat)}>
+              <span className="truncate">{waypoint.name}</span>
+              <span className={ok ? "text-field" : "text-danger"}>{ok ? "Sit it" : "Stay off"}</span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -868,12 +1055,14 @@ function DockButton({
   danger = false,
   icon: Icon,
   onClick,
+  className = "",
 }: {
   label: string;
   on: boolean;
   danger?: boolean;
   icon: typeof LocateFixed;
   onClick: () => void;
+  className?: string;
 }) {
   return (
     <button
@@ -882,7 +1071,7 @@ function DockButton({
       onClick={onClick}
       className={`flex min-w-12 flex-col items-center justify-center gap-0.5 rounded-full px-2 py-1.5 text-xs ${
         on ? (danger ? "bg-danger text-fg" : "bg-accent text-accent-fg") : "text-muted"
-      }`}
+      } ${className}`}
     >
       <Icon className="size-5" />
       {label}
@@ -892,7 +1081,7 @@ function DockButton({
 
 function Panel({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <section role="dialog" aria-label={title} className="fixed inset-x-0 bottom-0 z-30 flex max-h-[min(78dvh,40rem)] flex-col rounded-t-xl border border-line bg-surface shadow-lg md:inset-y-4 md:left-4 md:w-96 md:rounded-xl">
+    <section role="dialog" aria-label={title} className="fixed inset-x-0 bottom-0 z-30 flex max-h-[min(78dvh,40rem)] flex-col rounded-t-xl border border-line bg-surface shadow-lg md:inset-y-4 md:left-4 md:w-96 md:max-h-none md:rounded-xl lg:inset-y-0 lg:left-0 lg:w-96 lg:rounded-none lg:border-y-0 lg:border-l-0 lg:shadow-none">
       <header className="flex items-center justify-between gap-3 px-4 pt-4 pb-2">
         <h2 className="font-display text-2xl leading-none tracking-wide">{title}</h2>
         <button type="button" onClick={onClose} aria-label="Close" className="grid size-11 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-fg">
@@ -980,6 +1169,7 @@ function EditMark({
   kind,
   hunt,
   notes,
+  goodWinds,
   hunts,
   lng,
   lat,
@@ -992,11 +1182,12 @@ function EditMark({
   kind: MarkKind;
   hunt: string;
   notes: string;
+  goodWinds: number[];
   hunts: string[];
   lng: number;
   lat: number;
   away: string | null;
-  onChange: (patch: Partial<{ name: string; kind: MarkKind; hunt: string; notes: string }>) => void;
+  onChange: (patch: Partial<{ name: string; kind: MarkKind; hunt: string; notes: string; goodWinds: number[] }>) => void;
   onCopy: () => void;
   onDelete: () => void;
 }) {
@@ -1034,6 +1225,29 @@ function EditMark({
           ))}
         </datalist>
       </label>
+      <div className="text-sm text-muted">
+        Good wind from
+        <div className="mt-1 grid grid-cols-4 gap-1">
+          {WIND_CHOICES.map((choice) => {
+            const on = goodWinds.includes(choice.deg);
+            return (
+              <button
+                key={choice.deg}
+                type="button"
+                data-on={on}
+                onClick={() =>
+                  onChange({
+                    goodWinds: on ? goodWinds.filter((deg) => deg !== choice.deg) : [...goodWinds, choice.deg].sort((a, b) => a - b),
+                  })
+                }
+                className="h-10 rounded-md bg-bg text-sm text-muted data-[on=true]:bg-field data-[on=true]:text-accent-fg"
+              >
+                {choice.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
       <label className="text-sm text-muted">
         Notes
         <textarea className="field mt-1" rows={3} maxLength={500} value={notes} onChange={(event) => onChange({ notes: event.target.value })} />
