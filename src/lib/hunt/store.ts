@@ -1,6 +1,58 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import type { Basemap, HuntRegion, MapView, MarkKind, Track, Waypoint } from "@/lib/hunt/types";
+import { isValidPersistedHuntState } from "./persistence.ts";
+
+let canWriteStorage = false;
+let storageWarning: string | null = null;
+
+function notifyStorageWarning(message: string) {
+  storageWarning = message;
+  if (typeof window !== "undefined") window.dispatchEvent(new Event("fieldline:storage-error"));
+}
+
+const huntStorage = createJSONStorage(() => ({
+  getItem(name: string) {
+    try {
+      const value = globalThis.localStorage.getItem(name);
+      if (!isValidPersistedHuntState(value)) {
+        canWriteStorage = false;
+        notifyStorageWarning("Saved data couldn't be read. Its stored copy was left untouched.");
+        throw new Error("Invalid saved hunt data.");
+      }
+      canWriteStorage = true;
+      storageWarning = null;
+      return value;
+    } catch (error) {
+      canWriteStorage = false;
+      if (!storageWarning) {
+        notifyStorageWarning("Browser storage is unavailable. Changes may not be saved on this device.");
+      }
+      throw error;
+    }
+  },
+  setItem(name: string, value: string) {
+    if (!canWriteStorage) return;
+    try {
+      globalThis.localStorage.setItem(name, value);
+    } catch {
+      canWriteStorage = false;
+      notifyStorageWarning("Browser storage is full or unavailable. Changes may not be saved on this device.");
+    }
+  },
+  removeItem(name: string) {
+    if (!canWriteStorage) return;
+    try {
+      globalThis.localStorage.removeItem(name);
+    } catch {
+      notifyStorageWarning("Browser storage is unavailable.");
+    }
+  },
+}));
+
+export function getHuntStorageWarning() {
+  return storageWarning;
+}
 
 type HuntState = {
   waypoints: Waypoint[];
@@ -127,8 +179,16 @@ export const useHunt = create<HuntState>()(
     }),
     {
       name: "fieldline-v1",
-      storage: createJSONStorage(() => localStorage),
+      storage: huntStorage,
       skipHydration: true,
+      onRehydrateStorage: () => (_state, error) => {
+        if (error) {
+          canWriteStorage = false;
+          if (!storageWarning) {
+            notifyStorageWarning("Browser storage is unavailable. Changes may not be saved on this device.");
+          }
+        }
+      },
       partialize: (s) => ({
         waypoints: s.waypoints,
         tracks: s.tracks,

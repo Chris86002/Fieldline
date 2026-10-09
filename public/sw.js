@@ -1,10 +1,6 @@
 const CACHE_NAME = "fieldline-shell-v1";
 const SHELL_CACHE_PREFIX = "fieldline-shell-";
 
-self.addEventListener("install", (event) => {
-  event.waitUntil(self.skipWaiting());
-});
-
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
@@ -16,7 +12,9 @@ self.addEventListener("activate", (event) => {
             .map((name) => caches.delete(name)),
         ),
       )
-      .then(() => self.clients.claim()),
+      .catch(() => undefined)
+      .then(() => self.clients.claim())
+      .catch(() => undefined),
   );
 });
 
@@ -42,7 +40,13 @@ self.addEventListener("fetch", (event) => {
           }
           return response;
         })
-        .catch(async () => (await caches.open(CACHE_NAME)).match("/") || Response.error()),
+        .catch(async () => {
+          try {
+            return (await caches.open(CACHE_NAME)).match("/") || Response.error();
+          } catch {
+            return Response.error();
+          }
+        }),
     );
     return;
   }

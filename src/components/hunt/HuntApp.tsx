@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
 import * as Switch from "@radix-ui/react-switch";
 import {
   Bookmark,
@@ -52,7 +52,7 @@ import { LEGEND } from "@/lib/hunt/land";
 import { azBorder } from "@/lib/hunt/az-border";
 import { idBorder } from "@/lib/hunt/id-border";
 import { searchPlaces, type PlaceHit } from "@/lib/hunt/search.functions";
-import { useHunt } from "@/lib/hunt/store";
+import { getHuntStorageWarning, useHunt } from "@/lib/hunt/store";
 import { packTiles, TILES, tileCacheLabel } from "@/lib/hunt/tiles";
 import { DEFAULT_VIEW, ID_JUMPS, JUMPS, REGION_VIEW, type Basemap, type HuntRegion, type LandHit, type LngLat, type MapView, type MarkKind, type Track, type TrackPoint, type Waypoint } from "@/lib/hunt/types";
 import { loadFieldWeather } from "@/lib/hunt/weather.functions";
@@ -90,7 +90,9 @@ export function HuntApp() {
   const watchRef = useRef<number | null>(null);
   const followRef = useRef(false);
   const recRef = useRef(false);
+  const recordPendingRef = useRef(false);
   const lastRecRef = useRef<LngLat | null>(null);
+  const recPtsRef = useRef<TrackPoint[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
   const searchReq = useRef(0);
@@ -108,7 +110,7 @@ export function HuntApp() {
   const [tool, setTool] = useState<Tool>("none");
   const [sheet, setSheet] = useState<Sheet>(null);
   const [shadeMin, setShadeMin] = useState<number | null>(null);
-  const [shadeTick, setShadeTick] = useState(0);
+  const [shadeNow, setShadeNow] = useState(() => Date.now());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [measurePts, setMeasurePts] = useState<LngLat[]>([]);
   const [measureClosed, setMeasureClosed] = useState(false);
@@ -116,12 +118,12 @@ export function HuntApp() {
   const [gpsError, setGpsError] = useState<string | null>(null);
   const [follow, setFollow] = useState(false);
   const [recording, setRecording] = useState(false);
+  const [recordPending, setRecordPending] = useState(false);
   const [recPts, setRecPts] = useState<TrackPoint[]>([]);
   const [recStart, setRecStart] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [land, setLand] = useState<LandState | null>(null);
   const [spotUnit, setSpotUnit] = useState<UnitHit | null>(null);
-  const [unitPending, setUnitPending] = useState(false);
   const [pinned, setPinned] = useState<Spot | null>(null);
   const [hover, setHover] = useState<Spot | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -134,6 +136,7 @@ export function HuntApp() {
   const [units, setUnits] = useState<HuntUnit[]>([]);
   const [weather, setWeather] = useState<FieldWeather | null>(null);
   const [weatherAt, setWeatherAt] = useState<{ lng: number; lat: number } | null>(null);
+  const [weatherRefresh, setWeatherRefresh] = useState(0);
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<PlaceHit[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -185,15 +188,29 @@ export function HuntApp() {
 
   useEffect(() => {
     let live = true;
-    void Promise.resolve(useHunt.persist.rehydrate()).then(() => {
-      if (!live) return;
-      const saved = useHunt.getState().lastView;
-      if (saved) setView(saved);
-      setHydrated(true);
-    });
+    void Promise.resolve()
+      .then(() => useHunt.persist.rehydrate())
+      .catch(() => undefined)
+      .then(() => {
+        if (!live) return;
+        const saved = useHunt.getState().lastView;
+        if (saved) setView(saved);
+        setHydrated(true);
+        const warning = getHuntStorageWarning();
+        if (warning) setNotice(warning);
+      });
     return () => {
       live = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const onStorageError = () => {
+      const warning = getHuntStorageWarning();
+      if (warning) setNotice(warning);
+    };
+    window.addEventListener("fieldline:storage-error", onStorageError);
+    return () => window.removeEventListener("fieldline:storage-error", onStorageError);
   }, []);
 
   useEffect(() => {
@@ -256,7 +273,7 @@ export function HuntApp() {
     const local = unitAt(units, point.lng, point.lat);
     const next = local ? hitFromUnit(local, false) : null;
     setSpotUnit((prev) => (prev?.gmu === next?.gmu && prev?.forest === next?.forest && prev?.species === next?.species ? prev : next));
-  }, [units]);
+  }, [units, hover, pinned]);
 
   const unitsGeo = useMemo(() => unitsCollection(units), [units]);
   const unitLabels = useMemo(() => units.map((unit) => ({ gmu: unit.gmu, lng: unit.label.lng, lat: unit.label.lat })), [units]);
@@ -273,6 +290,8 @@ export function HuntApp() {
     if (!hydrated) return;
     const [lat, lng] = weatherKey.split(",").map(Number);
     const controller = new AbortController();
+    setWeather(null);
+    setWeatherAt(null);
     const timer = window.setTimeout(() => {
       void loadFieldWeather({ data: { lng, lat } })
         .then((next) => {
@@ -290,34 +309,15 @@ export function HuntApp() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [hydrated, weatherKey]);
+  }, [hydrated, weatherKey, weatherRefresh]);
 
   const viewRef = useRef(view);
   viewRef.current = view;
 
   useEffect(() => {
-    const q = query.trim();
-    if (q.length < 2) {
-      setHits([]);
-      setSearching(false);
-      return;
-    }
-    const id = ++searchReq.current;
-    setSearching(true);
-    const timer = window.setTimeout(() => {
-      const here = viewRef.current;
-      void searchPlaces({ data: { q, lng: here.lng, lat: here.lat } })
-        .then((rows) => {
-          if (searchReq.current === id) setHits(rows);
-        })
-        .catch(() => {
-          if (searchReq.current === id) setHits([]);
-        })
-        .finally(() => {
-          if (searchReq.current === id) setSearching(false);
-        });
-    }, 320);
-    return () => window.clearTimeout(timer);
+    searchReq.current += 1;
+    setHits([]);
+    setSearching(false);
   }, [query]);
 
   useEffect(() => {
@@ -326,17 +326,17 @@ export function HuntApp() {
       if (sheet) setSheet(null);
       else if (tool !== "none") setTool("none");
       else if (detail) setDetail(null);
+      else if (installHelp) setInstallHelp(false);
       else {
         setPinned(null);
         setHover(null);
         setLand(null);
         setSpotUnit(null);
-        setUnitPending(false);
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [sheet, tool, detail]);
+  }, [sheet, tool, detail, installHelp]);
 
   useEffect(() => {
     if (!notice) return;
@@ -344,39 +344,93 @@ export function HuntApp() {
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  function ensureWatch() {
+  function ensureWatch(): boolean {
     if (!navigator.geolocation) {
       setGpsError("This browser has no location.");
-      return;
+      return false;
     }
-    if (watchRef.current != null) return;
+    if (watchRef.current != null) return true;
     setGpsError(null);
-    watchRef.current = navigator.geolocation.watchPosition(
-      (pos) => {
-        const next: GpsFix = {
-          lng: pos.coords.longitude,
-          lat: pos.coords.latitude,
-          accuracy: pos.coords.accuracy,
-          heading: typeof pos.coords.heading === "number" && pos.coords.heading >= 0 ? pos.coords.heading : null,
-        };
-        setGps(next);
-        setGpsError(null);
-        if (followRef.current) mapRef.current?.easeTo(next.lng, next.lat);
-        if (recRef.current) {
-          const prev = lastRecRef.current;
-          if (!prev || haversine(prev, next) >= 8) {
-            lastRecRef.current = next;
-            setRecPts((points) => [...points, { lng: next.lng, lat: next.lat, t: Date.now() }]);
+    try {
+      watchRef.current = navigator.geolocation.watchPosition(
+        (pos) => {
+          const next: GpsFix = {
+            lng: pos.coords.longitude,
+            lat: pos.coords.latitude,
+            accuracy: pos.coords.accuracy,
+            heading: typeof pos.coords.heading === "number" && pos.coords.heading >= 0 ? pos.coords.heading : null,
+          };
+          if (
+            !Number.isFinite(next.lng) ||
+            next.lng < -180 ||
+            next.lng > 180 ||
+            !Number.isFinite(next.lat) ||
+            next.lat < -90 ||
+            next.lat > 90 ||
+            !Number.isFinite(next.accuracy) ||
+            next.accuracy < 0
+          ) {
+            setGpsError("The browser returned an invalid GPS fix.");
+            return;
           }
-        }
-      },
-      (err) => setGpsError(err.code === 1 ? "Location permission denied." : "Couldn't get a GPS fix."),
-      { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 },
-    );
+          setGps(next);
+          setGpsError(null);
+          if (followRef.current) mapRef.current?.easeTo(next.lng, next.lat);
+          if (recordPendingRef.current) {
+            recordPendingRef.current = false;
+            setRecordPending(false);
+            recRef.current = true;
+            const start = Date.now();
+            const points = [{ lng: next.lng, lat: next.lat, t: start }];
+            recPtsRef.current = points;
+            setRecPts(points);
+            setRecStart(start);
+            setRecording(true);
+            setSheet(null);
+            setNotice("Track recording started.");
+          } else if (recRef.current) {
+            const prev = lastRecRef.current;
+            if (!prev || haversine(prev, next) >= 8) {
+              lastRecRef.current = next;
+              const points = [...recPtsRef.current, { lng: next.lng, lat: next.lat, t: Date.now() }];
+              recPtsRef.current = points;
+              setRecPts(points);
+            }
+          }
+        },
+        (err) => {
+          const message = err.code === 1 ? "Location permission denied." : "Couldn't get a GPS fix.";
+          if (watchRef.current != null) navigator.geolocation.clearWatch(watchRef.current);
+          watchRef.current = null;
+          followRef.current = false;
+          setFollow(false);
+          setGpsError(message);
+          if (recordPendingRef.current) {
+            recordPendingRef.current = false;
+            setRecordPending(false);
+            setNotice(`Track not started: ${message}`);
+          } else if (recRef.current) {
+            recRef.current = false;
+            setRecording(false);
+            saveRecordedTrack(recPtsRef.current);
+            recPtsRef.current = [];
+            setRecPts([]);
+            setRecStart(null);
+            lastRecRef.current = null;
+            setNotice("GPS was lost. Recording stopped; any recorded points were saved.");
+          }
+        },
+        { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 },
+      );
+      return true;
+    } catch {
+      setGpsError("Couldn't start location on this device.");
+      return false;
+    }
   }
 
   function onLocate() {
-    ensureWatch();
+    if (!ensureWatch()) return;
     followRef.current = true;
     setFollow(true);
     if (gps) mapRef.current?.easeTo(gps.lng, gps.lat, Math.max(view.zoom, 14));
@@ -405,7 +459,6 @@ export function HuntApp() {
     setDetail(null);
     setLand(null);
     setSpotUnit(null);
-    setUnitPending(false);
   }
 
   function syncUnit(lng: number, lat: number) {
@@ -414,13 +467,11 @@ export function HuntApp() {
       const local = unitAt(rows, lng, lat);
       const next = local ? hitFromUnit(local, false) : null;
       setSpotUnit((prev) => (prev?.gmu === next?.gmu && prev?.forest === next?.forest && prev?.species === next?.species ? prev : next));
-      setUnitPending(false);
       return;
     }
     unitAbort.current?.abort();
     const unitController = new AbortController();
     unitAbort.current = unitController;
-    setUnitPending(true);
     void identifyUnit(lng, lat, unitController.signal, region)
       .then((hit) => {
         if (!unitController.signal.aborted) setSpotUnit(hit);
@@ -429,7 +480,6 @@ export function HuntApp() {
         if (!unitController.signal.aborted) setSpotUnit(null);
       })
       .finally(() => {
-        if (!unitController.signal.aborted) setUnitPending(false);
       });
   }
 
@@ -532,43 +582,57 @@ export function HuntApp() {
     queueLand(lng, lat, true);
   }
 
+  function saveRecordedTrack(points: TrackPoint[]) {
+    if (points.length < 2) return false;
+    const stamp = new Date();
+    store.addTrack({
+      id: crypto.randomUUID(),
+      name: `Track ${stamp.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`,
+      points,
+      createdAt: stamp.getTime(),
+      visible: true,
+    });
+    return true;
+  }
+
   function toggleRecord() {
+    if (recordPending) {
+      recordPendingRef.current = false;
+      setRecordPending(false);
+      setNotice("Track recording cancelled.");
+      return;
+    }
     if (recording) {
       recRef.current = false;
       setRecording(false);
-      if (recPts.length < 2) {
+      const points = recPtsRef.current;
+      if (!saveRecordedTrack(points)) {
         setNotice("Track was too short to save.");
-        setRecPts([]);
-        setRecStart(null);
-        lastRecRef.current = null;
-        return;
+      } else {
+        setNotice("Track saved on this device.");
       }
-      const stamp = new Date();
-      store.addTrack({
-        id: crypto.randomUUID(),
-        name: `Track ${stamp.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`,
-        points: recPts,
-        createdAt: stamp.getTime(),
-        visible: true,
-      });
+      recPtsRef.current = [];
       setRecPts([]);
       setRecStart(null);
       lastRecRef.current = null;
-      setNotice("Track saved on this device.");
       return;
     }
-    ensureWatch();
-    recRef.current = true;
-    lastRecRef.current = gps;
-    setRecPts(gps ? [{ lng: gps.lng, lat: gps.lat, t: Date.now() }] : []);
-    setRecStart(Date.now());
-    setRecording(true);
+    if (!ensureWatch()) return;
+    recordPendingRef.current = true;
+    setRecordPending(true);
+    recPtsRef.current = [];
+    setRecPts([]);
+    lastRecRef.current = null;
+    setNotice("Waiting for a GPS fix before recording starts.");
     setSheet(null);
   }
 
   function discardTrack() {
     recRef.current = false;
+    recordPendingRef.current = false;
     setRecording(false);
+    setRecordPending(false);
+    recPtsRef.current = [];
     setRecPts([]);
     setRecStart(null);
     lastRecRef.current = null;
@@ -579,6 +643,26 @@ export function HuntApp() {
     setSearchOpen(false);
     setQuery("");
     setHits([]);
+  }
+
+  async function submitPlaceSearch() {
+    const q = query.trim();
+    if (q.length < 2) return;
+    const id = ++searchReq.current;
+    const here = viewRef.current;
+    setSearching(true);
+    setHits([]);
+    try {
+      const rows = await searchPlaces({ data: { q, lng: here.lng, lat: here.lat } });
+      if (searchReq.current === id) setHits(rows);
+    } catch {
+      if (searchReq.current === id) {
+        setHits([]);
+        setNotice("Place search is unavailable. Try again when you have a connection.");
+      }
+    } finally {
+      if (searchReq.current === id) setSearching(false);
+    }
   }
 
   function goToUnit(unit: HuntUnit) {
@@ -610,14 +694,34 @@ export function HuntApp() {
   async function saveArea() {
     const bounds = mapRef.current?.getBounds();
     if (!bounds || packing) return;
-    const templates: string[] = [TILES.satellite];
+    const templates: string[] = [];
     if (store.basemap === "topo") templates.push(TILES.topo);
+    else if (store.basemap !== "street") templates.push(TILES.satellite);
     if (store.showPublic) templates.push(TILES.sma);
+    if (templates.length === 0) {
+      setPackNote("Street roads and labels are streamed live. Switch to Satellite or Topo to save a base map.");
+      return;
+    }
     setPacking(true);
-    setPackNote("Saving this view…");
+    setPackNote("Preparing this view…");
     try {
-      const result = await packTiles({ ...bounds, templates });
-      setPackNote(result.skipped ? "Zoom in, then save. That view is too wide." : `Saved ${result.saved} tiles for when you lose service.`);
+      const result = await packTiles({
+        ...bounds,
+        templates,
+        onProgress: (done, total) => {
+          if (done === total || done % 4 === 0) setPackNote(`Saving map tiles ${done} of ${total}…`);
+        },
+      });
+      if (result.skipped) {
+        setPackNote(`Zoom in, then try again. This view needs ${result.total} tiles; the limit is 220.`);
+      } else {
+        const parts = [`${result.saved} new`, `${result.reused} already saved`];
+        if (result.failed) parts.push(`${result.failed} not saved`);
+        setPackNote(`${parts.join(", ")}. One zoom level only; roads, labels, weather, and search still need a connection.`);
+        void tileCacheLabel().then((label) => {
+          if (label) setPackNote(`${parts.join(", ")}. ${label}. Roads, labels, weather, and search still need a connection.`);
+        });
+      }
     } catch {
       setPackNote("Couldn't save tiles from here.");
     } finally {
@@ -825,20 +929,20 @@ export function HuntApp() {
   }, [selected, view.lng, view.lat, weather?.sunriseAt, weather?.sunsetAt]);
   useEffect(() => {
     if (!store.showShade || shadeMin != null) return;
-    const id = window.setInterval(() => setShadeTick((tick) => tick + 1), 60_000);
+    const id = window.setInterval(() => setShadeNow(Date.now()), 60_000);
     return () => window.clearInterval(id);
   }, [store.showShade, shadeMin]);
   const shadeSun = useMemo(() => {
-    const when = shadeMin == null ? new Date() : localDate(clockZone, shadeMin);
+    const when = shadeMin == null ? new Date(shadeNow) : localDate(clockZone, shadeMin);
     const sun = sunPosition(view.lng, view.lat, when);
     return { azimuth: Math.round(sun.azimuth), elevation: Math.round(sun.elevation) };
-  }, [view.lng, view.lat, shadeMin, shadeTick, clockZone]);
+  }, [view.lng, view.lat, shadeMin, shadeNow, clockZone]);
   const liveAz = useMemo(() => {
     if (!selected) return null;
-    const when = shadeMin == null ? new Date() : localDate(clockZone, shadeMin);
+    const when = shadeMin == null ? new Date(shadeNow) : localDate(clockZone, shadeMin);
     const sun = sunPosition(selected.lng, selected.lat, when);
     return sun.elevation > 0 ? Math.round(sun.azimuth) : null;
-  }, [selected, shadeMin, shadeTick, clockZone]);
+  }, [selected, shadeMin, shadeNow, clockZone]);
   const pressureLabel =
     weather?.pressureHpa == null
       ? null
@@ -1028,8 +1132,11 @@ export function HuntApp() {
                 goToUnit(unitMatch);
                 return;
               }
-              const first = hits[0];
-              if (first) goTo(first.lng, first.lat, 12);
+              if (hits[0]) {
+                goTo(hits[0].lng, hits[0].lat, 12);
+                return;
+              }
+              void submitPlaceSearch();
             }}
           >
             <Search className="pointer-events-none absolute top-1/2 left-3 z-10 size-4 -translate-y-1/2 text-subtle" />
@@ -1054,7 +1161,6 @@ export function HuntApp() {
                 className="absolute top-1/2 right-1 grid size-9 -translate-y-1/2 place-items-center rounded-full text-muted"
                 onClick={() => {
                   setQuery("");
-                  setHits([]);
                 }}
               >
                 <X className="size-4" />
@@ -1090,9 +1196,9 @@ export function HuntApp() {
                     ))}
                   </div>
                 ) : searching && hits.length === 0 ? (
-                  <p className="px-3 py-3 text-sm text-muted">Searching…</p>
+                  <p className="px-3 py-3 text-sm text-muted" role="status">Searching nearby places…</p>
                 ) : hits.length === 0 ? (
-                  <p className="px-3 py-3 text-sm text-muted">No matches.</p>
+                  <p className="px-3 py-3 text-sm text-muted">Press Enter to search nearby places.</p>
                 ) : (
                   hits.map((hit) => (
                     <button
@@ -1219,8 +1325,9 @@ export function HuntApp() {
             : "bottom-[max(5.5rem,calc(4.5rem+env(safe-area-inset-bottom)))]"
         }`}
       >
-        {notice ? <p className="pointer-events-auto max-w-sm rounded-lg bg-surface px-3 py-1.5 text-center text-sm text-fg">{notice}</p> : null}
-        {gpsError && follow ? <p className="pointer-events-auto rounded-full bg-surface px-3 py-1.5 text-sm text-muted">{gpsError}</p> : null}
+        {notice ? <p role="status" aria-live="polite" className="pointer-events-auto max-w-sm rounded-lg bg-surface px-3 py-1.5 text-center text-sm text-fg">{notice}</p> : null}
+        {gpsError ? <p role="alert" aria-live="assertive" className="pointer-events-auto rounded-full bg-surface px-3 py-1.5 text-sm text-muted">{gpsError}</p> : null}
+        {recordPending ? <p role="status" aria-live="polite" className="pointer-events-auto rounded-full bg-surface px-3 py-1.5 text-sm text-muted">Waiting for GPS before recording.</p> : null}
         {listening ? <NoiseMeter /> : null}
         {recording ? (
           <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
@@ -1315,7 +1422,13 @@ export function HuntApp() {
                 setSheet(null);
               }}
             />
-            <DockButton label={recording ? "Stop" : "Track"} on={recording} danger={recording} icon={MapPinned} onClick={toggleRecord} />
+            <DockButton
+              label={recordPending ? "Cancel" : recording ? "Stop" : "Track"}
+              on={recording || recordPending}
+              danger={recording}
+              icon={MapPinned}
+              onClick={toggleRecord}
+            />
             <DockButton
               label="Layers"
               on={false}
@@ -1406,7 +1519,7 @@ export function HuntApp() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. {region === "id" ? "Unit lines are Idaho Fish and Game reference geometry, not the legal description." : "Unit lines are Arizona Game and Fish reference geometry, not the legal description in Commission Rule R12-4-108."} Owner names are a paid dataset. Fieldline shows the managing agency, the wind that works for each stand, and an offline pack of ground you've already looked at.</p>
+          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. {region === "id" ? "Unit lines are Idaho Fish and Game reference geometry, not the legal description." : "Unit lines are Arizona Game and Fish reference geometry, not the legal description in Commission Rule R12-4-108."} Owner names are a paid dataset. Fieldline shows the managing agency and wind for each stand. A small, one-zoom tile cache is available for Satellite or Topo; streets, labels, units, weather, and search remain online.</p>
           <button type="button" disabled={packing} onClick={() => void saveArea()} className="mt-3 h-11 w-full rounded-md bg-accent text-sm font-medium text-accent-fg disabled:opacity-50">
             {packing ? "Saving tiles…" : "Save this view offline"}
           </button>
@@ -1471,7 +1584,14 @@ export function HuntApp() {
       ) : null}
       {sheet === "wind" && !weather ? (
         <Panel title="Weather" onClose={() => setSheet(null)}>
-          <p className="text-muted">Weather hasn't answered yet. Pan somewhere with a connection and try again.</p>
+          <p className="text-muted">Weather hasn't answered yet. Check your connection and try again.</p>
+          <button
+            type="button"
+            className="mt-3 h-11 w-full rounded-md border border-line text-sm"
+            onClick={() => setWeatherRefresh((refresh) => refresh + 1)}
+          >
+            Try again
+          </button>
         </Panel>
       ) : null}
 
@@ -1614,6 +1734,7 @@ function TrackRows({
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
 }) {
+  const [confirmId, setConfirmId] = useState<string | null>(null);
   if (tracks.length === 0) {
     return <p className="py-3 text-sm text-muted">No tracks yet. Track a walk, then stop to keep it.</p>;
   }
@@ -1628,9 +1749,32 @@ function TrackRows({
           <button type="button" className="h-9 px-2 text-sm text-muted" onClick={() => onToggle(track.id)}>
             {track.visible ? "Hide" : "Show"}
           </button>
-          <button type="button" className="h-9 px-2 text-sm text-danger" onClick={() => onDelete(track.id)}>
-            Delete
-          </button>
+          {confirmId === track.id ? (
+            <>
+              <button
+                type="button"
+                className="h-9 px-2 text-sm text-danger"
+                onClick={() => {
+                  onDelete(track.id);
+                  setConfirmId(null);
+                }}
+              >
+                Confirm
+              </button>
+              <button type="button" className="h-9 px-2 text-sm" onClick={() => setConfirmId(null)}>
+                Cancel
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              aria-label={`Delete ${track.name}`}
+              className="h-9 px-2 text-sm text-danger"
+              onClick={() => setConfirmId(track.id)}
+            >
+              Delete
+            </button>
+          )}
         </li>
       ))}
     </ul>
@@ -1863,10 +2007,53 @@ function InstallSheet({ onClose, onCopy }: { onClose: () => void; onCopy: () => 
 }
 
 function Panel({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
+  const panelRef = useRef<HTMLElement>(null);
+  const titleId = useId();
+
+  useEffect(() => {
+    const panel = panelRef.current;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const getFocusable = () =>
+      [...(panel?.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])') ?? [])]
+        .filter((element) => element.getClientRects().length > 0);
+    const focusable = getFocusable();
+    (focusable[0] ?? panel)?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || !panel) return;
+      const items = getFocusable();
+      if (items.length === 0) {
+        event.preventDefault();
+        panel.focus();
+        return;
+      }
+      const first = items[0];
+      const last = items[items.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !panel.contains(document.activeElement))) {
+        event.preventDefault();
+        last?.focus();
+      } else if (!event.shiftKey && (document.activeElement === last || !panel.contains(document.activeElement))) {
+        event.preventDefault();
+        first?.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, []);
+
   return (
-    <section role="dialog" aria-label={title} className="fixed inset-x-0 bottom-0 z-30 flex max-h-[min(78dvh,40rem)] flex-col rounded-t-xl border border-line bg-surface shadow-lg md:inset-y-4 md:left-4 md:w-96 md:max-h-none md:rounded-xl lg:inset-y-0 lg:left-0 lg:w-96 lg:rounded-none lg:border-y-0 lg:border-l-0 lg:shadow-none">
+    <section
+      ref={panelRef}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby={titleId}
+      tabIndex={-1}
+      className="fixed inset-x-0 bottom-0 z-30 flex max-h-[min(78dvh,40rem)] flex-col rounded-t-xl border border-line bg-surface shadow-lg md:inset-y-4 md:left-4 md:w-96 md:max-h-none md:rounded-xl lg:inset-y-0 lg:left-0 lg:w-96 lg:rounded-none lg:border-y-0 lg:border-l-0 lg:shadow-none"
+    >
       <header className="flex items-center justify-between gap-3 px-4 pt-4 pb-2">
-        <h2 className="font-display text-2xl leading-none tracking-wide">{title}</h2>
+        <h2 id={titleId} className="font-display text-2xl leading-none tracking-wide">{title}</h2>
         <button type="button" onClick={onClose} aria-label="Close" className="grid size-11 place-items-center rounded-full text-muted hover:bg-surface-2 hover:text-fg">
           <X className="size-5" />
         </button>

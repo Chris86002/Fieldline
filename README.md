@@ -55,6 +55,7 @@ tile caching.
   fallback. Search only after submitting a query; do not use it as autocomplete.
 - **Weather and terrain:** Open-Meteo, NOAA National Weather Service, and USGS
   elevation services. Forecasts are models, not local ridge readings.
+- **Fonts:** system font stacks; no external font service is required.
 - **Boundaries and ownership:** Arizona and Idaho unit and land data are
   references, not legal boundary or access determinations. Verify current rules,
   access, and ownership with the responsible agencies before a hunt. Owner-name
