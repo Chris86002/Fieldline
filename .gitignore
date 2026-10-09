@@ -1,4 +1,8 @@
 node_modules/
+.output/
+.nitro/
+dist/
+screenshots/
 .project_id
 .github_repo
 .env

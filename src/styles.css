@@ -2,9 +2,9 @@
 @import "maplibre-gl/dist/maplibre-gl.css";
 
 @theme {
-  --font-sans: "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
-  --font-display: "Barlow Condensed", "Arial Narrow", sans-serif;
-  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Arial Narrow", "Roboto Condensed", ui-sans-serif, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", monospace;
 
   --color-bg: #121410;
   --color-surface: #1c1f19;

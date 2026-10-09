@@ -203,10 +203,14 @@ async function readTerrain(lng: number, lat: number, signal?: AbortSignal): Prom
       const [here, north, east] = elev.elevation ?? [];
       if (typeof here === "number" && typeof north === "number" && typeof east === "number") return slopeFrom(here, north, east);
     }
-  } catch (error) {
-    if (signal?.aborted) throw error;
+  } catch {
+    if (signal?.aborted) return empty;
   }
-  const [here, north, east] = await Promise.all(spots.map((spot) => usgsElev(spot.lng, spot.lat, signal)));
+  const [here, north, east] = await Promise.all(
+    spots.map((spot) =>
+      usgsElev(spot.lng, spot.lat, signal).catch(() => null),
+    ),
+  );
   if (here == null) return empty;
   if (north == null || east == null) return { elevationM: here, slopePct: null, fallsDeg: null };
   return slopeFrom(here, north, east);
@@ -371,9 +375,14 @@ async function fetchNws(lng: number, lat: number, signal?: AbortSignal): Promise
   const forecastUrl = points.properties?.forecast;
   const hourlyUrl = points.properties?.forecastHourly;
   if (!forecastUrl || !hourlyUrl) throw new Error("Weather unavailable");
+  const safeForecastUrl = new URL(forecastUrl);
+  const safeHourlyUrl = new URL(hourlyUrl);
+  if (safeForecastUrl.origin !== "https://api.weather.gov" || safeHourlyUrl.origin !== "https://api.weather.gov") {
+    throw new Error("Weather unavailable");
+  }
   const [dailyRes, hourlyRes] = await Promise.all([
-    fetch(forecastUrl, { signal, headers: NWS_HEADERS }),
-    fetch(hourlyUrl, { signal, headers: NWS_HEADERS }),
+    fetch(safeForecastUrl, { signal, headers: NWS_HEADERS }),
+    fetch(safeHourlyUrl, { signal, headers: NWS_HEADERS }),
   ]);
   if (!dailyRes.ok || !hourlyRes.ok) throw new Error("Weather unavailable");
   const daily = (await dailyRes.json()) as { properties?: { periods?: NwsPeriod[] } };
@@ -462,4 +471,3 @@ export async function fetchFieldWeather(lng: number, lat: number, signal?: Abort
     return { ...sky, ...(await terrain) };
   }
 }
-

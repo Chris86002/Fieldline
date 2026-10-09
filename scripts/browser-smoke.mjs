@@ -1,177 +1,238 @@
 #!/usr/bin/env node
-import { mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import assert from "node:assert/strict";
+import { mkdirSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { chromium } from "playwright";
-import { checkedOutputPath, checkedUrl } from "./browser-guard.mjs";
-import { computeBrandWarnings } from "./brand-check.mjs";
-import {
-  authInvariantWarnings,
-  buildAuthEnabled,
-  compareAuthInvariant,
-  probeDevAuthEnabled,
-} from "./check-auth-invariant.mjs";
-import {
-  baselineComparison,
-  bodyTextPrefix,
-  derivedPaths,
-  exitCodeFor,
-  normalizeBodyText,
-  normalizedBodyTextHash,
-  parseSmokeArgs,
-} from "./browser-smoke-verdict.mjs";
 
-const args = parseSmokeArgs(process.argv.slice(2), process.env);
-if (args.error) {
-  console.error(JSON.stringify({ ok: false, error: args.error }, null, 2));
-  process.exit(1);
-}
+const baseUrl = process.env.FIELDLINE_URL ?? "http://127.0.0.1:3000";
+const screenshots = resolve(process.env.FIELDLINE_SCREENSHOTS_DIR ?? "screenshots");
+const icon = readFileSync(new URL("../public/icons/fieldline-180.png", import.meta.url));
+const errors = [];
+const browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+mkdirSync(screenshots, { recursive: true });
 
-const url = checkedUrl(args.url);
-const outPng = checkedOutputPath(args.outPng, ["/workspace"]);
-const derived = derivedPaths(outPng);
-const mobilePng = checkedOutputPath(derived.mobilePng, ["/workspace"]);
-const outJson = checkedOutputPath(derived.verdictJson, ["/workspace"], "verdict JSON");
+const savedWaypoint = {
+  id: "smoke-stand",
+  name: "Smoke Stand",
+  kind: "stand",
+  lng: -111.38,
+  lat: 33.95,
+  notes: "Saved locally",
+  hunt: "Smoke test",
+  goodWinds: [0],
+  createdAt: 1,
+};
 
-const MAX_BASELINE_BYTES = 1024 * 1024;
-const baselineRequested = Boolean(args.baseline);
-let baselinePath = null;
-let baselineResolveError = null;
-if (baselineRequested) {
-  try {
-    baselinePath = checkedOutputPath(realpathSync(args.baseline), ["/workspace"], "baseline");
-  } catch (err) {
-    baselineResolveError = err?.code ?? "unresolvable path";
-  }
-  if (baselinePath === outJson) {
-    console.error(
-      JSON.stringify(
-        {
-          ok: false,
-          error:
-            `--baseline ${args.baseline} is this run's own verdict output; ` +
-            "pass a distinct output PNG (e.g. app-builder-built.png) so the baseline is not overwritten",
-        },
-        null,
-        2,
-      ),
-    );
-    process.exit(1);
-  }
-}
-
-const timeoutMs = Number(process.env.BROWSER_SMOKE_TIMEOUT_MS || 45000);
-
-const VIEWPORTS = [
-  { name: "desktop", width: 1280, height: 800, screenshot: outPng },
-  { name: "mobile", width: 390, height: 844, screenshot: mobilePng },
-];
-
-mkdirSync(dirname(outPng), { recursive: true });
-
-function compareAgainstBaseline(verdict) {
-  if (!baselinePath) {
-    return {
-      divergesFromBaseline: true,
-      reasons: [`baseline unreadable: ${baselineResolveError ?? "unresolvable path"}`],
-    };
-  }
-  try {
-    if (statSync(baselinePath).size > MAX_BASELINE_BYTES) {
-      return { divergesFromBaseline: true, reasons: ["baseline unreadable: too large"] };
-    }
-    return baselineComparison(verdict, readFileSync(baselinePath, "utf8"));
-  } catch (err) {
-    return {
-      divergesFromBaseline: true,
-      reasons: [`baseline unreadable: ${err?.code ?? "read error"}`],
-    };
-  }
-}
-
-let browser = null;
-try {
-  browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-dev-shm-usage"],
-  });
-
-  const viewports = {};
-  for (const vp of VIEWPORTS) {
-    const errors = { consoleErrors: [], pageErrors: [] };
-    const page = await browser.newPage({
-      viewport: { width: vp.width, height: vp.height },
-    });
-    page.on("console", (msg) => {
-      if (msg.type() === "error") errors.consoleErrors.push(msg.text());
-    });
-    page.on("pageerror", (err) => errors.pageErrors.push(String(err?.message || err)));
-    // `domcontentloaded`, not `networkidle`: Vite keeps an HMR websocket open, so
-    // networkidle never settles and would burn the whole timeout.
-    const resp = await page.goto(url, { waitUntil: "domcontentloaded", timeout: timeoutMs });
-    const status = resp?.status() ?? 0;
-    await page.waitForTimeout(1000);
-
-    const title = await page.title();
-    const hasCanvas = (await page.locator("canvas").count()) > 0;
-    const bodyText = await page
-      .locator("body")
-      .innerText()
-      .catch(() => "");
-    const horizontalOverflow = await page.evaluate(() => {
-      const el = document.documentElement;
-      return el.scrollWidth > el.clientWidth + 1;
-    });
-    await page.screenshot({ path: vp.screenshot, fullPage: false });
-    await page.close();
-
-    viewports[vp.name] = {
-      width: vp.width,
-      height: vp.height,
-      status,
-      title,
-      hasCanvas,
-      bodyTextLen: normalizeBodyText(bodyText).length,
-      bodyTextHash: normalizedBodyTextHash(bodyText),
-      bodyTextPrefix: bodyTextPrefix(bodyText),
-      horizontalOverflow,
-      consoleErrors: errors.consoleErrors,
-      pageErrors: errors.pageErrors,
-      screenshot: vp.screenshot,
-    };
-  }
-
-  const brandWarnings = computeBrandWarnings({ hasCanvas: viewports.desktop.hasCanvas });
-  // Only a dev server answers /__app-env, so smoking the built output reads as
-  // indeterminate — report a divergence, never the absence of an observation.
-  const authWarnings = authInvariantWarnings(
-    compareAuthInvariant({
-      devAuthEnabled: await probeDevAuthEnabled(url),
-      buildAuthEnabled: buildAuthEnabled(),
+function mockUnits(idaho = false) {
+  return {
+    features: Array.from({ length: 22 }, (_, index) => {
+      const lng = -111.38 + ((index % 5) - 2) * 0.02;
+      const lat = 33.95 + (Math.floor(index / 5) - 2) * 0.02;
+      const ring = [
+        [lng - 0.008, lat - 0.008],
+        [lng + 0.008, lat - 0.008],
+        [lng + 0.008, lat + 0.008],
+        [lng - 0.008, lat + 0.008],
+        [lng - 0.008, lat - 0.008],
+      ];
+      return {
+        type: "Feature",
+        properties: idaho
+          ? { NAME: `Zone ${index + 1}`, Elk_Zone: "Mock region" }
+          : { GMU: String(index + 1), REG_NAME: "Mock region", SQ_MILES: 100, LANDOWN: "Public", HUNT: "Deer", USFSName: "Mock forest" },
+        geometry: { type: "Polygon", coordinates: [ring] },
+      };
     }),
-  );
-  const verdict = { url, viewports, brandWarnings, authWarnings, verdictFile: outJson };
-  if (baselineRequested) {
-    const { divergesFromBaseline, reasons } = compareAgainstBaseline(verdict);
-    verdict.divergesFromBaseline = divergesFromBaseline;
-    verdict.baselineReasons = reasons;
+  };
+}
+
+async function installMocks(page) {
+  await page.route("**/*", async (route) => {
+    const url = new URL(route.request().url());
+    if (url.hostname === "tiles.openfreemap.org") {
+      if (url.pathname === "/planet") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            tilejson: "3.0.0",
+            tiles: ["https://tiles.openfreemap.org/planet/{z}/{x}/{y}.pbf"],
+            minzoom: 0,
+            maxzoom: 14,
+            vector_layers: [
+              "transportation",
+              "water",
+              "landcover",
+              "park",
+              "waterway",
+              "place",
+            ].map((id) => ({ id, fields: {} })),
+          }),
+        });
+      } else {
+        await route.fulfill({ status: 200, contentType: "application/x-protobuf", body: Buffer.alloc(0) });
+      }
+      return;
+    }
+    if (url.hostname === "gis.blm.gov" && url.pathname.includes("/identify")) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"results":[]}' });
+      return;
+    }
+    if (
+      url.hostname === "server.arcgisonline.com" ||
+      url.hostname === "basemap.nationalmap.gov" ||
+      url.hostname === "gis.blm.gov"
+    ) {
+      await route.fulfill({ status: 200, contentType: "image/png", body: icon });
+      return;
+    }
+    if (url.hostname === "services8.arcgis.com") {
+      await route.fulfill({ status: 200, contentType: "application/geo+json", body: JSON.stringify(mockUnits()) });
+      return;
+    }
+    if (url.hostname === "gisportal-idfg.idaho.gov") {
+      await route.fulfill({ status: 200, contentType: "application/geo+json", body: JSON.stringify(mockUnits(true)) });
+      return;
+    }
+    if (url.pathname.startsWith("/api/dem/")) {
+      await route.fulfill({ status: 200, contentType: "image/png", body: icon });
+      return;
+    }
+    await route.continue();
+  });
+}
+
+async function openSavedPanel(page, mobile) {
+  if (!mobile) return;
+  await page.getByRole("button", { name: "Saved" }).click();
+  await page.getByRole("dialog", { name: "Saved" }).waitFor({ state: "visible" });
+}
+
+async function waitForBrand(page) {
+  await page.getByText("FIELDLINE", { exact: true }).filter({ visible: true }).first().waitFor({
+    state: "visible",
+    timeout: 15_000,
+  });
+}
+
+async function exerciseMapControls(page) {
+  const state = page.getByRole("group", { name: "Hunt state" });
+  const arizona = state.getByRole("button", { name: "AZ", exact: true });
+  const idaho = state.getByRole("button", { name: "ID", exact: true });
+  await idaho.click();
+  assert.equal(await idaho.getAttribute("data-on"), "true");
+
+  await page.getByRole("button", { name: "Layers", exact: true }).click();
+  await page.getByRole("dialog", { name: "Layers" }).waitFor({ state: "visible" });
+  await page
+    .getByText("Idaho Fish and Game units. Reference lines, not the legal boundary.", { exact: true })
+    .waitFor({ state: "visible" });
+  if (await page.evaluate(() => /iPhone|iPod|iPad/.test(navigator.userAgent))) {
+    await page.getByRole("button", { name: "Add to home screen", exact: true }).click();
+    await page.getByRole("dialog", { name: "iPhone" }).waitFor({ state: "visible" });
+    await page.getByText("Tap Share, then Add to Home Screen.", { exact: true }).waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+  } else {
+    await page.getByRole("button", { name: "Close", exact: true }).click();
   }
 
-  writeFileSync(outJson, JSON.stringify(verdict, null, 2));
-  console.log(JSON.stringify(verdict, null, 2));
-  for (const w of [...brandWarnings, ...authWarnings]) console.error(w);
-  // Set the code rather than aborting the process so the `finally` browser
-  // teardown always runs (agents typically smoke twice per turn; leaking
-  // Chromium accumulates across retries).
-  process.exitCode = exitCodeFor(viewports);
-} catch (err) {
-  const failure = { ok: false, url, error: String(err?.message || err) };
-  try {
-    writeFileSync(outJson, JSON.stringify(failure, null, 2));
-  } catch (writeErr) {
-    failure.verdictWriteError = String(writeErr?.message || writeErr);
+  await arizona.click();
+  assert.equal(await arizona.getAttribute("data-on"), "true");
+  const search = page.getByRole("textbox", { name: "Search places" });
+  await search.fill("smoke search");
+  await page.getByText("Press Enter to search nearby places.", { exact: true }).waitFor({ state: "visible" });
+  await search.fill("");
+}
+
+try {
+  const viewports = [
+    { name: "desktop", width: 1280, height: 800, mobile: false },
+    { name: "mobile", width: 390, height: 844, mobile: true },
+  ];
+
+  for (const viewport of viewports) {
+    const context = await browser.newContext({
+      viewport: { width: viewport.width, height: viewport.height },
+      serviceWorkers: "block",
+      acceptDownloads: true,
+      ...(viewport.mobile
+        ? { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" }
+        : {}),
+    });
+    const page = await context.newPage();
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(`${viewport.name}: ${message.text()}`);
+    });
+    page.on("pageerror", (error) => errors.push(`${viewport.name}: ${error.message}`));
+    await installMocks(page);
+    await page.addInitScript(
+      ({ waypoint }) => {
+        if (sessionStorage.getItem("fieldline-smoke-seeded") !== "1") {
+          localStorage.setItem(
+            "fieldline-v1",
+            JSON.stringify({
+              state: { waypoints: [waypoint], tracks: [], introDismissed: true },
+              version: 0,
+            }),
+          );
+          localStorage.setItem("fieldline-install-dismissed", "1");
+          sessionStorage.setItem("fieldline-smoke-seeded", "1");
+        }
+      },
+      { waypoint: savedWaypoint },
+    );
+
+    const response = await page.goto(baseUrl, { waitUntil: "domcontentloaded", timeout: 30_000 });
+    assert.equal(response?.status(), 200, `${viewport.name} should load successfully`);
+    await waitForBrand(page);
+    await page.locator(".maplibregl-canvas").waitFor({ state: "attached", timeout: 15_000 });
+    assert.equal(
+      await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1),
+      false,
+      `${viewport.name} should not have horizontal overflow`,
+    );
+
+    if (viewport.mobile) {
+      for (const label of ["GPS", "Mark", "Measure", "Track", "Layers", "Saved"]) {
+        await page.getByRole("button", { name: label, exact: true }).waitFor({ state: "visible" });
+      }
+    }
+    await exerciseMapControls(page);
+    if (viewport.mobile) {
+      await openSavedPanel(page, true);
+    }
+    await page.getByText(savedWaypoint.name, { exact: true }).first().waitFor({ state: "visible", timeout: 10_000 });
+
+    const importedName = `Smoke Import ${viewport.name}`;
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "smoke.gpx",
+      mimeType: "application/gpx+xml",
+      buffer: Buffer.from(
+        `<?xml version="1.0"?><gpx version="1.1" creator="Fieldline"><wpt lat="33.76" lon="-111.27"><name>${importedName}</name></wpt></gpx>`,
+      ),
+    });
+    await page.getByText(importedName, { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+    const [download] = await Promise.all([
+      page.waitForEvent("download"),
+      page.getByRole("button", { name: "Export GPX" }).click(),
+    ]);
+    assert.equal(download.suggestedFilename(), "fieldline.gpx");
+    await page.screenshot({ path: resolve(screenshots, `${viewport.name}.png`) });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await waitForBrand(page);
+    await openSavedPanel(page, viewport.mobile);
+    await page.getByText(importedName, { exact: true }).waitFor({ state: "visible", timeout: 10_000 });
+
+    await page.goto(`${baseUrl}/?install=1&platform=ios`, { waitUntil: "domcontentloaded" });
+    await waitForBrand(page);
+    assert.equal((await page.locator("body").innerText()).includes("Grok"), false);
+    await context.close();
   }
-  console.error(JSON.stringify(failure, null, 2));
-  process.exitCode = 1;
+
+  assert.deepEqual(errors, [], "browser console and page should be free of errors");
+  console.log(`Fieldline browser smoke passed for desktop and mobile at ${baseUrl}`);
+  console.log(`Screenshots: ${screenshots}`);
 } finally {
-  await browser?.close();
+  await browser.close();
 }

@@ -1,6 +1,5 @@
 import { createRootRoute, HeadContent, Outlet, Scripts } from "@tanstack/react-router";
-import { AuthProvider } from "@/lib/auth/provider";
-import { PreviewHostBridge } from "@/components/preview-host-bridge";
+import { useEffect } from "react";
 import appCss from "../styles.css?url";
 
 const APP_NAME = "Fieldline";
@@ -13,18 +12,17 @@ export const Route = createRootRoute({
       { title: APP_NAME },
       { name: "description", content: "Free hunting map with public land, waypoints, tracks, and wind." },
       { name: "theme-color", content: "#121410" },
+      { name: "apple-mobile-web-app-capable", content: "yes" },
+      { name: "apple-mobile-web-app-status-bar-style", content: "black-translucent" },
+      { property: "og:title", content: APP_NAME },
+      { property: "og:description", content: "A field-ready hunting map with public land, waypoints, tracks, and weather." },
+      { property: "og:image", content: "/og.jpg" },
     ],
     links: [
       { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
       { rel: "stylesheet", href: appCss },
-      { rel: "manifest", href: "/__grok/manifest.webmanifest" },
-      { rel: "apple-touch-icon", href: "/__grok/icon-180.png" },
-      { rel: "preconnect", href: "https://fonts.googleapis.com" },
-      { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" },
-      {
-        rel: "stylesheet",
-        href: "https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600&family=IBM+Plex+Mono:wght@400;500&family=Source+Sans+3:wght@400;500;600&display=swap",
-      },
+      { rel: "manifest", href: "/manifest.webmanifest" },
+      { rel: "apple-touch-icon", href: "/icons/fieldline-180.png" },
     ],
   }),
   component: () => (
@@ -33,12 +31,19 @@ export const Route = createRootRoute({
         <HeadContent />
       </head>
       <body className="h-dvh overflow-hidden bg-bg font-sans text-fg antialiased">
-        <PreviewHostBridge />
-        <AuthProvider>
-          <Outlet />
-        </AuthProvider>
+        <ServiceWorkerRegistration />
+        <Outlet />
         <Scripts />
       </body>
     </html>
   ),
 });
+
+function ServiceWorkerRegistration() {
+  useEffect(() => {
+    if ("serviceWorker" in navigator) {
+      void navigator.serviceWorker.register("/sw.js").catch(() => undefined);
+    }
+  }, []);
+  return null;
+}
