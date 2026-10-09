@@ -765,14 +765,6 @@ export function HuntApp() {
       if (choice.outcome === "accepted") dismissInstall();
       return;
     }
-    const ua = navigator.userAgent;
-    const iPad = /iPad/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-    const ios = /iPhone|iPod/.test(ua) || iPad;
-    const safari = ios && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(ua);
-    if (safari) {
-      window.location.assign("/?install=1&platform=ios");
-      return;
-    }
     setSheet(null);
     setInstallHelp(true);
   }

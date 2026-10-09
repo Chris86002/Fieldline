@@ -126,7 +126,14 @@ async function exerciseMapControls(page) {
   await page
     .getByText("Idaho Fish and Game units. Reference lines, not the legal boundary.", { exact: true })
     .waitFor({ state: "visible" });
-  await page.getByRole("button", { name: "Close", exact: true }).click();
+  if (await page.evaluate(() => /iPhone|iPod|iPad/.test(navigator.userAgent))) {
+    await page.getByRole("button", { name: "Add to home screen", exact: true }).click();
+    await page.getByRole("dialog", { name: "iPhone" }).waitFor({ state: "visible" });
+    await page.getByText("Tap Share, then Add to Home Screen.", { exact: true }).waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+  } else {
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+  }
 
   await arizona.click();
   assert.equal(await arizona.getAttribute("data-on"), "true");
@@ -147,6 +154,9 @@ try {
       viewport: { width: viewport.width, height: viewport.height },
       serviceWorkers: "block",
       acceptDownloads: true,
+      ...(viewport.mobile
+        ? { userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" }
+        : {}),
     });
     const page = await context.newPage();
     page.on("console", (message) => {
