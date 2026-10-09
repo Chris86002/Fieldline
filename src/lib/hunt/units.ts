@@ -1,3 +1,5 @@
+import type { HuntRegion } from "@/lib/hunt/types";
+
 export type HuntUnit = {
   gmu: string;
   region: string;
@@ -33,25 +35,51 @@ type Geo = {
 };
 
 const UNITS_URL =
-  "https://services8.arcgis.com/KyZIQDOsXnGaTxj2/arcgis/rest/services/AZ_Game_and_Fish_Hunt_Units/FeatureServer/0/query?where=GMU+NOT+IN+(%27N%2FA%27%2C%27+%27)&outFields=GMU,GF_REGION,REG_NAME,SQ_MILES,LANDOWN,HUNT,USFSName&returnGeometry=true&outSR=4326&geometryPrecision=3&maxAllowableOffset=0.004&f=geojson";
+  "https://services8.arcgis.com/KyZIQDOsXnGaTxj2/arcgis/rest/services/AZ_Game_and_Fish_Hunt_Units/FeatureServer/0/query?where=GMU+NOT+IN+(%27N%2FA%27%2C%27+%27)&outFields=GMU,GF_REGION,REG_NAME,SQ_MILES,LANDOWN,HUNT,USFSName&returnGeometry=true&outSR=4326&geometryPrecision=5&maxAllowableOffset=0.0001&f=geojson";
 
 const IDENTIFY_URL =
   "https://services8.arcgis.com/KyZIQDOsXnGaTxj2/arcgis/rest/services/AZ_Game_and_Fish_Hunt_Units/FeatureServer/0/query";
 
-const CACHE = "fieldline-units-v1";
-const CACHE_KEY = "https://fieldline.local/az-gmu-v1.json";
+const ID_UNITS_URL =
+  "https://gisportal-idfg.idaho.gov/hosting/rest/services/Hunting/MapServer/3/query?where=1%3D1&outFields=NAME,Elk_Zone&returnGeometry=true&outSR=4326&geometryPrecision=4&maxAllowableOffset=0.002&f=geojson";
 
-let pending: Promise<HuntUnit[]> | null = null;
+const ID_IDENTIFY_URL = "https://gisportal-idfg.idaho.gov/hosting/rest/services/Hunting/MapServer/3/query";
+
+const SPECS: Record<HuntRegion, { url: string; identify: string; cache: string; key: string; outFields: string }> = {
+  az: {
+    url: UNITS_URL,
+    identify: IDENTIFY_URL,
+    cache: "fieldline-units-v2",
+    key: "https://fieldline.local/az-gmu-v2.json",
+    outFields: "GMU,REG_NAME,SQ_MILES,LANDOWN,HUNT,USFSName",
+  },
+  id: {
+    url: ID_UNITS_URL,
+    identify: ID_IDENTIFY_URL,
+    cache: "fieldline-units-id-v1",
+    key: "https://fieldline.local/id-gmu-v1.json",
+    outFields: "NAME,Elk_Zone",
+  },
+};
+
+const pending = new Map<HuntRegion, Promise<HuntUnit[]>>();
 
 function clean(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function closeRing(ring: Ring): Ring {
+  if (ring.length < 3) return ring;
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first[0] === last[0] && first[1] === last[1]) return ring;
+  return [...ring, [first[0], first[1]]];
+}
+
 function asPolys(geometry: { type?: string; coordinates?: unknown } | undefined): number[][][][] {
   if (!geometry || geometry.coordinates == null) return [];
-  if (geometry.type === "Polygon") return [geometry.coordinates as number[][][]];
-  if (geometry.type === "MultiPolygon") return geometry.coordinates as number[][][][];
-  return [];
+  const raw = geometry.type === "Polygon" ? [geometry.coordinates as number[][][]] : geometry.type === "MultiPolygon" ? (geometry.coordinates as number[][][][]) : [];
+  return raw.map((polygon) => polygon.map(closeRing));
 }
 
 function ringInside(lng: number, lat: number, ring: Ring): boolean {
@@ -105,25 +133,25 @@ export function matchUnit(units: HuntUnit[], query: string): HuntUnit | null {
   return units.find((unit) => unit.gmu.replace(/\s+/g, "").toUpperCase() === code) ?? null;
 }
 
-export function parseUnits(body: Geo): HuntUnit[] {
+export function parseUnits(body: Geo, region: HuntRegion = "az"): HuntUnit[] {
   const grouped = new Map<string, HuntUnit>();
   for (const feature of body.features ?? []) {
     const props = feature.properties ?? {};
-    const gmu = clean(props.GMU);
+    const gmu = region === "id" ? clean(props.NAME) : clean(props.GMU);
     if (!gmu || gmu.toUpperCase() === "N/A") continue;
     const polygons = asPolys(feature.geometry).filter((polygon) => polygon[0]?.length);
     if (polygons.length === 0) continue;
     let piece = grouped.get(gmu);
     if (!piece) {
-      const miles = Number(props.SQ_MILES);
+      const miles = region === "id" ? Number.NaN : Number(props.SQ_MILES);
       piece = {
         gmu,
-        region: clean(props.GF_REGION),
-        regionName: clean(props.REG_NAME),
+        region: region === "id" ? "" : clean(props.GF_REGION),
+        regionName: region === "id" ? clean(props.Elk_Zone) : clean(props.REG_NAME),
         sqMiles: Number.isFinite(miles) ? miles : null,
-        land: clean(props.LANDOWN),
-        species: clean(props.HUNT),
-        forest: clean(props.USFSName),
+        land: region === "id" ? "" : clean(props.LANDOWN),
+        species: region === "id" ? "" : clean(props.HUNT),
+        forest: region === "id" ? "" : clean(props.USFSName),
         west: Infinity,
         south: Infinity,
         east: -Infinity,
@@ -157,29 +185,31 @@ export function parseUnits(body: Geo): HuntUnit[] {
   return units;
 }
 
-async function readCache(): Promise<HuntUnit[] | null> {
+async function readCache(region: HuntRegion): Promise<HuntUnit[] | null> {
   if (typeof caches === "undefined") return null;
+  const spec = SPECS[region];
   try {
-    const cache = await caches.open(CACHE);
-    const hit = await cache.match(CACHE_KEY);
+    const cache = await caches.open(spec.cache);
+    const hit = await cache.match(spec.key);
     if (!hit) return null;
-    const parsed = parseUnits((await hit.json()) as Geo);
+    const parsed = parseUnits((await hit.json()) as Geo, region);
     return parsed.length > 20 ? parsed : null;
   } catch {
     return null;
   }
 }
 
-async function downloadUnits(): Promise<HuntUnit[]> {
-  const res = await fetch(UNITS_URL);
+async function downloadUnits(region: HuntRegion): Promise<HuntUnit[]> {
+  const spec = SPECS[region];
+  const res = await fetch(spec.url);
   if (!res.ok) throw new Error("Hunt units unavailable");
   const body = (await res.json()) as Geo;
-  const units = parseUnits(body);
+  const units = parseUnits(body, region);
   if (units.length < 20) throw new Error("Hunt units came back short");
   if (typeof caches !== "undefined") {
     try {
-      const cache = await caches.open(CACHE);
-      await cache.put(CACHE_KEY, new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } }));
+      const cache = await caches.open(spec.cache);
+      await cache.put(spec.key, new Response(JSON.stringify(body), { headers: { "Content-Type": "application/json" } }));
     } catch {
       /* private mode */
     }
@@ -187,17 +217,32 @@ async function downloadUnits(): Promise<HuntUnit[]> {
   return units;
 }
 
-export function loadUnits(): Promise<HuntUnit[]> {
-  if (!pending) {
-    pending = (async () => (await readCache()) ?? downloadUnits())().catch((error) => {
-      pending = null;
+export function loadUnits(region: HuntRegion = "az"): Promise<HuntUnit[]> {
+  let job = pending.get(region);
+  if (!job) {
+    job = (async () => (await readCache(region)) ?? downloadUnits(region))().catch((error) => {
+      pending.delete(region);
       throw error;
     });
+    pending.set(region, job);
   }
-  return pending;
+  return job;
 }
 
-function hitFrom(attrs: Record<string, unknown>, approximate: boolean): UnitHit | null {
+function hitFrom(attrs: Record<string, unknown>, approximate: boolean, region: HuntRegion): UnitHit | null {
+  if (region === "id") {
+    const gmu = clean(attrs.NAME ?? attrs.gmu);
+    if (!gmu || gmu.toUpperCase() === "N/A") return null;
+    return {
+      gmu,
+      regionName: clean(attrs.Elk_Zone ?? attrs.regionName),
+      sqMiles: null,
+      land: "",
+      species: "",
+      forest: "",
+      approximate,
+    };
+  }
   const gmu = clean(attrs.GMU ?? attrs.gmu);
   if (!gmu || gmu.toUpperCase() === "N/A") return null;
   const miles = Number(attrs.SQ_MILES ?? attrs.sqMiles);
@@ -224,29 +269,30 @@ export function hitFromUnit(unit: HuntUnit, approximate: boolean): UnitHit {
   };
 }
 
-export async function identifyUnit(lng: number, lat: number, signal?: AbortSignal): Promise<UnitHit | null> {
+export async function identifyUnit(lng: number, lat: number, signal?: AbortSignal, region: HuntRegion = "az"): Promise<UnitHit | null> {
+  const spec = SPECS[region];
   const params = new URLSearchParams({
     f: "json",
     geometry: JSON.stringify({ x: lng, y: lat }),
     geometryType: "esriGeometryPoint",
     inSR: "4326",
     spatialRel: "esriSpatialRelIntersects",
-    outFields: "GMU,REG_NAME,SQ_MILES,LANDOWN,HUNT,USFSName",
+    outFields: spec.outFields,
     returnGeometry: "false",
   });
   try {
-    const res = await fetch(`${IDENTIFY_URL}?${params}`, { signal });
+    const res = await fetch(`${spec.identify}?${params}`, { signal });
     if (res.ok) {
       const body = (await res.json()) as { features?: { attributes?: Record<string, unknown> }[] };
       const attrs = body.features?.[0]?.attributes;
-      if (attrs) return hitFrom(attrs, false);
+      if (attrs) return hitFrom(attrs, false, region);
       if (body.features) return null;
     }
   } catch (error) {
     if (signal?.aborted) throw error;
   }
   try {
-    const units = await loadUnits();
+    const units = await loadUnits(region);
     const local = unitAt(units, lng, lat);
     return local ? hitFromUnit(local, true) : null;
   } catch {

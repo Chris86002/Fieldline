@@ -133,28 +133,6 @@ export function circlePolygon(lng: number, lat: number, radiusM: number, steps =
   return coords;
 }
 
-export function sectorPolygon(
-  lng: number,
-  lat: number,
-  radiusM: number,
-  bearing: number,
-  spreadDeg: number,
-  steps = 28,
-): number[][] {
-  const start = bearing - spreadDeg / 2;
-  const coords: number[][] = [[lng, lat]];
-  const mPerDegLat = 111132;
-  const mPerDegLng = Math.max(1, 111320 * Math.cos((lat * Math.PI) / 180));
-  for (let i = 0; i <= steps; i++) {
-    const theta = ((start + (spreadDeg * i) / steps) * Math.PI) / 180;
-    const east = Math.sin(theta) * radiusM;
-    const north = Math.cos(theta) * radiusM;
-    coords.push([lng + east / mPerDegLng, lat + north / mPerDegLat]);
-  }
-  coords.push([lng, lat]);
-  return coords;
-}
-
 export function angDiff(a: number, b: number): number {
   return Math.abs((((a - b) % 360) + 540) % 360 - 180);
 }
@@ -175,8 +153,10 @@ export const WIND_CHOICES: { deg: number; label: string }[] = [
   { deg: 315, label: "NW" },
 ];
 
-export function scentReach(windMps: number): number {
-  return Math.min(1100, Math.max(180, 160 + windMps * 95));
+export function formatPressure(hpa: number, imperial: boolean): string {
+  if (!Number.isFinite(hpa)) return "—";
+  if (!imperial) return `${Math.round(hpa)} hPa`;
+  return `${(hpa * 0.029529983071445).toFixed(2)} in`;
 }
 
 export function cToF(c: number): number {

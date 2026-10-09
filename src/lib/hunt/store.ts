@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { Basemap, MapView, MarkKind, Track, Waypoint } from "@/lib/hunt/types";
+import type { Basemap, HuntRegion, MapView, MarkKind, Track, Waypoint } from "@/lib/hunt/types";
 
 type HuntState = {
   waypoints: Waypoint[];
@@ -9,13 +9,20 @@ type HuntState = {
   showPublic: boolean;
   publicOpacity: number;
   showLabels: boolean;
+  showRoads: boolean;
+  showTracks: boolean;
+  showCreeks: boolean;
+  showPeaks: boolean;
+  showUnitLabels: boolean;
+  showBorder: boolean;
   terrain: boolean;
   showMarks: boolean;
   showUnits: boolean;
   showShade: boolean;
-  showScent: boolean;
+  showSun: boolean;
   showRings: boolean;
   imperial: boolean;
+  huntRegion: HuntRegion;
   lastKind: MarkKind;
   activeHunt: string;
   introDismissed: boolean;
@@ -31,13 +38,20 @@ type HuntState = {
   setShowPublic: (showPublic: boolean) => void;
   setPublicOpacity: (publicOpacity: number) => void;
   setShowLabels: (showLabels: boolean) => void;
+  setShowRoads: (showRoads: boolean) => void;
+  setShowTracks: (showTracks: boolean) => void;
+  setShowCreeks: (showCreeks: boolean) => void;
+  setShowPeaks: (showPeaks: boolean) => void;
+  setShowUnitLabels: (showUnitLabels: boolean) => void;
+  setShowBorder: (showBorder: boolean) => void;
   setTerrain: (terrain: boolean) => void;
   setShowMarks: (showMarks: boolean) => void;
   setShowUnits: (showUnits: boolean) => void;
   setShowShade: (showShade: boolean) => void;
-  setShowScent: (showScent: boolean) => void;
+  setShowSun: (showSun: boolean) => void;
   setShowRings: (showRings: boolean) => void;
   setImperial: (imperial: boolean) => void;
+  setHuntRegion: (huntRegion: HuntRegion) => void;
   setLastKind: (lastKind: MarkKind) => void;
   setActiveHunt: (activeHunt: string) => void;
   dismissIntro: () => void;
@@ -53,13 +67,20 @@ export const useHunt = create<HuntState>()(
       showPublic: true,
       publicOpacity: 0.62,
       showLabels: true,
+      showRoads: true,
+      showTracks: true,
+      showCreeks: true,
+      showPeaks: true,
+      showUnitLabels: true,
+      showBorder: true,
       terrain: false,
       showMarks: true,
       showUnits: true,
       showShade: true,
-      showScent: true,
+      showSun: true,
       showRings: true,
       imperial: true,
+      huntRegion: "az",
       lastKind: "stand",
       activeHunt: "",
       introDismissed: false,
@@ -85,13 +106,20 @@ export const useHunt = create<HuntState>()(
       setShowPublic: (showPublic) => set({ showPublic }),
       setPublicOpacity: (publicOpacity) => set({ publicOpacity }),
       setShowLabels: (showLabels) => set({ showLabels }),
+      setShowRoads: (showRoads) => set({ showRoads }),
+      setShowTracks: (showTracks) => set({ showTracks }),
+      setShowCreeks: (showCreeks) => set({ showCreeks }),
+      setShowPeaks: (showPeaks) => set({ showPeaks }),
+      setShowUnitLabels: (showUnitLabels) => set({ showUnitLabels }),
+      setShowBorder: (showBorder) => set({ showBorder }),
       setTerrain: (terrain) => set({ terrain }),
       setShowMarks: (showMarks) => set({ showMarks }),
       setShowUnits: (showUnits) => set({ showUnits }),
       setShowShade: (showShade) => set({ showShade }),
-      setShowScent: (showScent) => set({ showScent }),
+      setShowSun: (showSun) => set({ showSun }),
       setShowRings: (showRings) => set({ showRings }),
       setImperial: (imperial) => set({ imperial }),
+      setHuntRegion: (huntRegion) => set({ huntRegion }),
       setLastKind: (lastKind) => set({ lastKind }),
       setActiveHunt: (activeHunt) => set({ activeHunt }),
       dismissIntro: () => set({ introDismissed: true }),
@@ -108,13 +136,20 @@ export const useHunt = create<HuntState>()(
         showPublic: s.showPublic,
         publicOpacity: s.publicOpacity,
         showLabels: s.showLabels,
+        showRoads: s.showRoads,
+        showTracks: s.showTracks,
+        showCreeks: s.showCreeks,
+        showPeaks: s.showPeaks,
+        showUnitLabels: s.showUnitLabels,
+        showBorder: s.showBorder,
         terrain: s.terrain,
         showMarks: s.showMarks,
         showUnits: s.showUnits,
         showShade: s.showShade,
-        showScent: s.showScent,
+        showSun: s.showSun,
         showRings: s.showRings,
         imperial: s.imperial,
+        huntRegion: s.huntRegion,
         lastKind: s.lastKind,
         activeHunt: s.activeHunt,
         introDismissed: s.introDismissed,

@@ -1,8 +1,9 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { GeoJSONSource, Map as MlMap, Marker, StyleSpecification } from "maplibre-gl";
+import type { ExpressionSpecification, GeoJSONSource, LayerSpecification, Map as MlMap, Marker, StyleSpecification } from "maplibre-gl";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
-import { circlePolygon, scentReach, sectorPolygon, windFits } from "@/lib/hunt/format";
+import { circlePolygon, windFits } from "@/lib/hunt/format";
+import { destination } from "@/lib/hunt/sun";
 import { MARKS } from "@/components/hunt/marks";
 import { cachedTile, installTileProtocol, TILES } from "@/lib/hunt/tiles";
 import type { Basemap, LngLat, MapView, Track, TrackPoint, Waypoint } from "@/lib/hunt/types";
@@ -29,15 +30,28 @@ type Props = {
   showPublic: boolean;
   publicOpacity: number;
   showLabels: boolean;
+  showRoads: boolean;
+  showTracks: boolean;
+  showCreeks: boolean;
+  showPeaks: boolean;
+  showUnitLabels: boolean;
+  showBorder: boolean;
   showShade: boolean;
-  showScent: boolean;
+  showSun: boolean;
   showRings: boolean;
   showUnits: boolean;
   unitsGeo: FC;
+  borderGeo: FC;
   unitLabels: { gmu: string; lng: number; lat: number }[];
   windFrom: number | null;
-  windMps: number;
-  scentAt: LngLat;
+  sunLng: number | null;
+  sunLat: number | null;
+  riseAz: number | null;
+  setAz: number | null;
+  liveAz: number | null;
+  shadeAz: number | null;
+  shadeEl: number | null;
+  viewZoom: number;
   ringAt: LngLat | null;
   terrain: boolean;
   imperial: boolean;
@@ -50,7 +64,10 @@ type Props = {
   measureClosed: boolean;
   gps: GpsFix | null;
   tool: Tool;
-  onMapClick: (lng: number, lat: number) => void;
+  onMapClick: (lng: number, lat: number, x: number, y: number) => void;
+  onContextMenu: (lng: number, lat: number, x: number, y: number) => void;
+  onPointerMove: (lng: number, lat: number, x: number, y: number) => void;
+  onPointerLeave: () => void;
   onMarkerClick: (id: string) => void;
   onView: (view: MapView) => void;
   onDragStart: () => void;
@@ -72,6 +89,384 @@ type FC = { type: "FeatureCollection"; features: JsonFeature[] };
 
 const EMPTY: FC = { type: "FeatureCollection", features: [] };
 
+const OFM = "https://tiles.openfreemap.org/planet";
+const GLYPHS = "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf";
+
+const ROAD_LINE_LAYERS = ["vx-local-casing", "vx-local", "vx-highway-casing", "vx-highway", "vx-freeway-casing", "vx-freeway"] as const;
+const TRACK_LAYERS = ["vx-track"] as const;
+const CREEK_LAYERS = ["vx-creek-line", "vx-creek"] as const;
+const ROAD_NAME_LAYERS = ["vx-road-major", "vx-road-minor", "vx-shield"] as const;
+const TOWN_LAYERS = ["vx-place-city", "vx-place-town", "vx-place-small"] as const;
+const PEAK_LAYERS = ["vx-peak"] as const;
+const STREET_FILLS = ["vx-water", "vx-wood", "vx-park"] as const;
+
+type OverlayPaint = {
+  street: boolean;
+  freeway: string;
+  freewayCasing: string;
+  highway: string;
+  highwayCasing: string;
+  local: string;
+  localCasing: string;
+  track: string;
+  text: string;
+  halo: string;
+  creek: string;
+  land: string;
+};
+
+function overlayPaint(basemap: Basemap): OverlayPaint {
+  const street = basemap === "street";
+  return street
+    ? {
+        street,
+        freeway: "#e25c12",
+        freewayCasing: "#7a3410",
+        highway: "#c9842e",
+        highwayCasing: "#8a6230",
+        local: "#fffcf7",
+        localCasing: "#b7b1a6",
+        track: "#6d675c",
+        text: "#1a1e16",
+        halo: "#f3f0e8",
+        creek: "#3e6278",
+        land: "#e4dfd4",
+      }
+    : {
+        street,
+        freeway: "#ff7a1a",
+        freewayCasing: "#2a1004",
+        highway: "#f0d56a",
+        highwayCasing: "#1a1408",
+        local: "#c5d2e0",
+        localCasing: "#12161c",
+        track: "#e4efd8",
+        text: "#f7f4ea",
+        halo: "#141810",
+        creek: "#d5e6f2",
+        land: "#1c2418",
+      };
+}
+
+function lineGeom(): ExpressionSpecification {
+  return ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false];
+}
+
+function roadFilter(classes: string[]): ExpressionSpecification {
+  return ["all", lineGeom(), ["match", ["get", "class"], classes, true, false], ["!=", ["get", "brunnel"], "tunnel"]];
+}
+
+function nameFilter(classes: string[]): ExpressionSpecification {
+  return ["all", lineGeom(), ["match", ["get", "class"], classes, true, false], ["has", "name"]];
+}
+
+const NAME_FIELD: ExpressionSpecification = ["coalesce", ["get", "name_en"], ["get", "name"]];
+
+function zoomWidth(stops: number[]): ExpressionSpecification {
+  const expr: unknown[] = ["interpolate", ["exponential", 1.35], ["zoom"]];
+  for (let i = 0; i < stops.length; i += 2) expr.push(stops[i], stops[i + 1]);
+  return expr as ExpressionSpecification;
+}
+
+function overlayLayers(
+  paint: OverlayPaint,
+  flags: { roads: boolean; tracks: boolean; creeks: boolean; peaks: boolean; towns: boolean; street: boolean },
+): LayerSpecification[] {
+  const roadVis = vis(flags.roads);
+  const trackVis = vis(flags.tracks);
+  const creekVis = vis(flags.creeks);
+  const peakVis = vis(flags.peaks);
+  const townVis = vis(flags.towns);
+  const fillVis = vis(flags.street);
+  return [
+    {
+      id: "vx-water",
+      type: "fill",
+      source: "ofm",
+      "source-layer": "water",
+      layout: { visibility: fillVis },
+      paint: { "fill-color": "#c5d4e2" },
+    },
+    {
+      id: "vx-wood",
+      type: "fill",
+      source: "ofm",
+      "source-layer": "landcover",
+      filter: ["==", ["get", "class"], "wood"],
+      layout: { visibility: fillVis },
+      paint: { "fill-color": "#d3dcc8", "fill-opacity": 0.65 },
+    },
+    {
+      id: "vx-park",
+      type: "fill",
+      source: "ofm",
+      "source-layer": "park",
+      layout: { visibility: fillVis },
+      paint: { "fill-color": "#d7e3c4", "fill-opacity": 0.55 },
+    },
+    {
+      id: "vx-creek-line",
+      type: "line",
+      source: "ofm",
+      "source-layer": "waterway",
+      minzoom: 11,
+      filter: ["match", ["get", "class"], ["river", "stream", "canal"], true, false],
+      layout: { visibility: creekVis, "line-cap": "round", "line-join": "round" },
+      paint: {
+        "line-color": paint.creek,
+        "line-width": zoomWidth([11, 0.4, 14, 1.15, 17, 2.2]),
+        "line-opacity": 0.85,
+      },
+    },
+    {
+      id: "vx-track",
+      type: "line",
+      source: "ofm",
+      "source-layer": "transportation",
+      minzoom: 12,
+      filter: roadFilter(["track", "path"]),
+      layout: { visibility: trackVis, "line-cap": "butt", "line-join": "round" },
+      paint: {
+        "line-color": paint.track,
+        "line-width": zoomWidth([12, 0.7, 14, 1.3, 17, 2.4]),
+        "line-dasharray": [1.1, 1.35],
+        "line-opacity": 0.95,
+      },
+    },
+    {
+      id: "vx-local-casing",
+      type: "line",
+      source: "ofm",
+      "source-layer": "transportation",
+      minzoom: 11,
+      filter: roadFilter(["tertiary", "minor", "service", "unclassified"]),
+      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": paint.localCasing, "line-width": zoomWidth([11, 1, 14, 3, 17, 7]), "line-opacity": 0.9 },
+    },
+    {
+      id: "vx-local",
+      type: "line",
+      source: "ofm",
+      "source-layer": "transportation",
+      minzoom: 11,
+      filter: roadFilter(["tertiary", "minor", "service", "unclassified"]),
+      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": paint.local, "line-width": zoomWidth([11, 0.4, 14, 1.5, 17, 4.2]) },
+    },
+    {
+      id: "vx-highway-casing",
+      type: "line",
+      source: "ofm",
+      "source-layer": "transportation",
+      minzoom: 7,
+      filter: roadFilter(["primary", "secondary"]),
+      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": paint.highwayCasing, "line-width": zoomWidth([7, 1.4, 10, 2.6, 14, 5.5, 17, 10]), "line-opacity": 0.92 },
+    },
+    {
+      id: "vx-highway",
+      type: "line",
+      source: "ofm",
+      "source-layer": "transportation",
+      minzoom: 7,
+      filter: roadFilter(["primary", "secondary"]),
+      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": paint.highway, "line-width": zoomWidth([7, 0.6, 10, 1.4, 14, 3.2, 17, 6.4]) },
+    },
+    {
+      id: "vx-freeway-casing",
+      type: "line",
+      source: "ofm",
+      "source-layer": "transportation",
+      minzoom: 5,
+      filter: roadFilter(["motorway", "trunk"]),
+      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": paint.freewayCasing, "line-width": zoomWidth([5, 1.8, 8, 3.2, 12, 6.4, 16, 12]), "line-opacity": 0.94 },
+    },
+    {
+      id: "vx-freeway",
+      type: "line",
+      source: "ofm",
+      "source-layer": "transportation",
+      minzoom: 5,
+      filter: roadFilter(["motorway", "trunk"]),
+      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
+      paint: { "line-color": paint.freeway, "line-width": zoomWidth([5, 0.85, 8, 1.8, 12, 3.8, 16, 8]) },
+    },
+    {
+      id: "vx-road-major",
+      type: "symbol",
+      source: "ofm",
+      "source-layer": "transportation_name",
+      minzoom: 11,
+      filter: nameFilter(["motorway", "trunk", "primary", "secondary", "tertiary"]),
+      layout: {
+        visibility: roadVis,
+        "symbol-placement": "line",
+        "symbol-spacing": 320,
+        "text-field": NAME_FIELD,
+        "text-font": ["Noto Sans Regular"],
+        "text-size": 13,
+        "text-pitch-alignment": "viewport",
+        "text-rotation-alignment": "map",
+      },
+      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.6, "text-halo-blur": 0.15 },
+    },
+    {
+      id: "vx-road-minor",
+      type: "symbol",
+      source: "ofm",
+      "source-layer": "transportation_name",
+      minzoom: 14,
+      filter: nameFilter(["minor", "service", "track"]),
+      layout: {
+        visibility: roadVis,
+        "symbol-placement": "line",
+        "symbol-spacing": 280,
+        "text-field": NAME_FIELD,
+        "text-font": ["Noto Sans Regular"],
+        "text-size": 12,
+        "text-pitch-alignment": "viewport",
+        "text-rotation-alignment": "map",
+      },
+      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.5, "text-halo-blur": 0.15 },
+    },
+    {
+      id: "vx-shield",
+      type: "symbol",
+      source: "ofm",
+      "source-layer": "transportation_name",
+      minzoom: 8,
+      filter: ["all", lineGeom(), ["match", ["get", "class"], ["motorway", "trunk", "primary"], true, false], ["has", "ref"]],
+      layout: {
+        visibility: roadVis,
+        "symbol-placement": "line",
+        "symbol-spacing": 360,
+        "text-field": ["to-string", ["get", "ref"]],
+        "text-font": ["Noto Sans Bold"],
+        "text-size": 11,
+        "text-pitch-alignment": "viewport",
+      },
+      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.8, "text-halo-blur": 0.1 },
+    },
+    {
+      id: "vx-creek",
+      type: "symbol",
+      source: "ofm",
+      "source-layer": "waterway",
+      minzoom: 12,
+      filter: ["all", lineGeom(), ["has", "name"]],
+      layout: {
+        visibility: creekVis,
+        "symbol-placement": "line",
+        "symbol-spacing": 400,
+        "text-field": NAME_FIELD,
+        "text-font": ["Noto Sans Italic"],
+        "text-size": 12,
+        "text-letter-spacing": 0.04,
+        "text-pitch-alignment": "viewport",
+      },
+      paint: { "text-color": paint.creek, "text-halo-color": paint.halo, "text-halo-width": 1.4, "text-halo-blur": 0.15 },
+    },
+    {
+      id: "vx-place-city",
+      type: "symbol",
+      source: "ofm",
+      "source-layer": "place",
+      minzoom: 4,
+      filter: ["==", ["get", "class"], "city"],
+      layout: {
+        visibility: townVis,
+        "text-field": NAME_FIELD,
+        "text-font": ["Noto Sans Bold"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 4, 12, 8, 16, 12, 22],
+        "text-padding": 6,
+        "text-letter-spacing": 0.02,
+        "text-pitch-alignment": "viewport",
+        "text-rotation-alignment": "viewport",
+      },
+      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.7, "text-halo-blur": 0.15 },
+    },
+    {
+      id: "vx-place-town",
+      type: "symbol",
+      source: "ofm",
+      "source-layer": "place",
+      minzoom: 7,
+      filter: ["==", ["get", "class"], "town"],
+      layout: {
+        visibility: townVis,
+        "text-field": NAME_FIELD,
+        "text-font": ["Noto Sans Bold"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 7, 12, 11, 15, 14, 18],
+        "text-padding": 4,
+        "text-pitch-alignment": "viewport",
+        "text-rotation-alignment": "viewport",
+      },
+      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.6, "text-halo-blur": 0.15 },
+    },
+    {
+      id: "vx-place-small",
+      type: "symbol",
+      source: "ofm",
+      "source-layer": "place",
+      minzoom: 11,
+      filter: ["match", ["get", "class"], ["village", "hamlet", "suburb", "neighbourhood"], true, false],
+      layout: {
+        visibility: townVis,
+        "text-field": NAME_FIELD,
+        "text-font": ["Noto Sans Regular"],
+        "text-size": ["interpolate", ["linear"], ["zoom"], 11, 11, 14, 14],
+        "text-padding": 3,
+        "text-pitch-alignment": "viewport",
+        "text-rotation-alignment": "viewport",
+      },
+      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.5, "text-halo-blur": 0.15 },
+    },
+    {
+      id: "vx-peak",
+      type: "symbol",
+      source: "ofm",
+      "source-layer": "mountain_peak",
+      minzoom: 11,
+      filter: ["has", "name"],
+      layout: {
+        visibility: peakVis,
+        "text-field": NAME_FIELD,
+        "text-font": ["Noto Sans Regular"],
+        "text-size": 12,
+        "text-padding": 2,
+        "text-pitch-alignment": "viewport",
+        "text-rotation-alignment": "viewport",
+        "text-offset": [0, 0.6],
+      },
+      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.5, "text-halo-blur": 0.15 },
+    },
+  ];
+}
+
+function applyOverlayPaint(map: MlMap, basemap: Basemap) {
+  const paint = overlayPaint(basemap);
+  const set = (id: string, prop: string, value: unknown) => {
+    if (map.getLayer(id)) map.setPaintProperty(id, prop as never, value as never);
+  };
+  set("land", "background-color", paint.land);
+  set("vx-freeway-casing", "line-color", paint.freewayCasing);
+  set("vx-freeway", "line-color", paint.freeway);
+  set("vx-highway-casing", "line-color", paint.highwayCasing);
+  set("vx-highway", "line-color", paint.highway);
+  set("vx-local-casing", "line-color", paint.localCasing);
+  set("vx-local", "line-color", paint.local);
+  set("vx-track", "line-color", paint.track);
+  for (const id of ["vx-road-major", "vx-road-minor", "vx-shield", "vx-place-city", "vx-place-town", "vx-place-small", "vx-peak"]) {
+    set(id, "text-color", paint.text);
+    set(id, "text-halo-color", paint.halo);
+  }
+  set("vx-creek", "text-color", paint.creek);
+  set("vx-creek", "text-halo-color", paint.halo);
+  set("vx-creek-line", "line-color", paint.creek);
+}
+
 function vis(on: boolean): "visible" | "none" {
   return on ? "visible" : "none";
 }
@@ -80,46 +475,161 @@ function buildStyle(opts: {
   basemap: Basemap;
   showPublic: boolean;
   showLabels: boolean;
+  showRoads: boolean;
+  showTracks: boolean;
+  showCreeks: boolean;
+  showPeaks: boolean;
   showShade: boolean;
   publicOpacity: number;
 }): StyleSpecification {
   const hybrid = opts.basemap === "hybrid";
+  const street = opts.basemap === "street";
   const imagery = opts.basemap === "satellite" || hybrid;
-  const shade = opts.showShade && imagery;
+  const shade = opts.showShade && opts.basemap !== "topo";
+  const paint = overlayPaint(opts.basemap);
+  const vector = opts.basemap !== "topo";
   const dem = `${window.location.origin}/api/dem/{z}/{x}/{y}`;
+  const overlay = overlayLayers(paint, {
+    roads: vector && opts.showRoads,
+    tracks: vector && opts.showTracks,
+    creeks: vector && opts.showCreeks,
+    peaks: vector && opts.showPeaks,
+    towns: vector && opts.showLabels,
+    street,
+  });
   return {
     version: 8,
+    glyphs: GLYPHS,
     sources: {
       satellite: { type: "raster", tiles: [cachedTile(TILES.satellite)], tileSize: 256, maxzoom: 19, attribution: "Imagery © Esri, Maxar, Earthstar Geographics" },
-      hillshade: { type: "raster", tiles: [cachedTile(TILES.hillshade)], tileSize: 256, maxzoom: 16, attribution: "Hillshade © Esri" },
       topo: { type: "raster", tiles: [cachedTile(TILES.topo)], tileSize: 256, maxzoom: 16, attribution: "Topo © USGS" },
-      street: { type: "raster", tiles: [cachedTile(TILES.street)], tileSize: 256, maxzoom: 19, attribution: "Streets © Esri" },
-      roads: { type: "raster", tiles: [cachedTile(TILES.roads)], tileSize: 256, maxzoom: 19 },
-      places: { type: "raster", tiles: [cachedTile(TILES.places)], tileSize: 256, maxzoom: 19 },
       sma: { type: "raster", tiles: [cachedTile(TILES.sma)], tileSize: 256, maxzoom: 16, attribution: "Public land © BLM" },
+      ofm: { type: "vector", url: OFM, attribution: "© OpenStreetMap, OpenFreeMap" },
       dem: { type: "raster-dem", tiles: [dem], encoding: "terrarium", tileSize: 256, maxzoom: 14, attribution: "Terrain © AWS Terrain Tiles" },
       tracks: { type: "geojson", data: EMPTY },
       live: { type: "geojson", data: EMPTY },
       measure: { type: "geojson", data: EMPTY },
       accuracy: { type: "geojson", data: EMPTY },
-      scent: { type: "geojson", data: EMPTY },
+      sun: { type: "geojson", data: EMPTY },
       rings: { type: "geojson", data: EMPTY },
       units: { type: "geojson", data: EMPTY },
+      "unit-labels": { type: "geojson", data: EMPTY },
+      border: { type: "geojson", data: EMPTY },
     },
     layers: [
-      { id: "land", type: "background", paint: { "background-color": "#1c2418" } },
-      { id: "hillshade", type: "raster", source: "hillshade", layout: { visibility: vis(shade) }, paint: { "raster-opacity": 0.95 } },
-      { id: "satellite", type: "raster", source: "satellite", layout: { visibility: vis(imagery) }, paint: { "raster-opacity": shade ? 0.78 : 1 } },
-      { id: "topo", type: "raster", source: "topo", layout: { visibility: vis(opts.basemap === "topo") } },
-      { id: "street", type: "raster", source: "street", layout: { visibility: vis(opts.basemap === "street") } },
-      { id: "sma", type: "raster", source: "sma", layout: { visibility: vis(opts.showPublic) }, paint: { "raster-opacity": opts.publicOpacity } },
-      { id: "roads", type: "raster", source: "roads", layout: { visibility: vis(hybrid) } },
-      { id: "places", type: "raster", source: "places", layout: { visibility: vis(hybrid && opts.showLabels) } },
-      { id: "units-casing", type: "line", source: "units", paint: { "line-color": "#1a1408", "line-width": 3.25, "line-opacity": 0.55 } },
-      { id: "units-line", type: "line", source: "units", paint: { "line-color": "#e7d7a8", "line-width": 1.6, "line-opacity": 0.92 } },
-      { id: "scent-fill", type: "fill", source: "scent", paint: { "fill-color": "#d7e2c8", "fill-opacity": 0.28 } },
-      { id: "scent-line", type: "line", source: "scent", paint: { "line-color": "#f3f1ea", "line-width": 1.5, "line-opacity": 0.9 } },
+      { id: "land", type: "background", paint: { "background-color": paint.land } },
+      { id: "satellite", type: "raster", source: "satellite", layout: { visibility: vis(imagery) }, paint: { "raster-opacity": 1, "raster-resampling": "linear", "raster-fade-duration": 0 } },
+      { id: "topo", type: "raster", source: "topo", layout: { visibility: vis(opts.basemap === "topo") }, paint: { "raster-resampling": "linear", "raster-fade-duration": 0 } },
+      ...overlay.slice(0, 3),
+      { id: "sma", type: "raster", source: "sma", layout: { visibility: vis(opts.showPublic) }, paint: { "raster-opacity": opts.publicOpacity, "raster-resampling": "linear", "raster-fade-duration": 0 } },
+      {
+        id: "hillshade",
+        type: "hillshade",
+        source: "dem",
+        layout: { visibility: vis(shade) },
+        paint: {
+          "hillshade-method": "basic",
+          "hillshade-illumination-anchor": "map",
+          "hillshade-illumination-direction": 180,
+          "hillshade-illumination-altitude": 35,
+          "hillshade-exaggeration": 0.65,
+          "hillshade-shadow-color": "rgba(8, 12, 10, 0.82)",
+          "hillshade-highlight-color": "rgba(255, 236, 196, 0.42)",
+          "hillshade-accent-color": "rgba(0, 0, 0, 0)",
+        },
+      },
+      ...overlay.slice(3, 11),
+      {
+        id: "units-casing",
+        type: "line",
+        source: "units",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": "#141910",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 5, 2.6, 8, 4.2, 12, 6.5],
+          "line-opacity": 0.75,
+        },
+      },
+      {
+        id: "units-line",
+        type: "line",
+        source: "units",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": "#f4efe2",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 5, 1.2, 8, 2, 12, 3.1],
+          "line-opacity": 0.96,
+        },
+      },
+      {
+        id: "unit-labels",
+        type: "symbol",
+        source: "unit-labels",
+        minzoom: 8,
+        layout: {
+          "text-field": ["get", "gmu"],
+          "text-font": ["Noto Sans Bold"],
+          "text-size": 13,
+          "text-allow-overlap": true,
+          "text-ignore-placement": true,
+        },
+        paint: { "text-color": "#f3f1ea", "text-halo-color": "#121410", "text-halo-width": 1.5 },
+      },
+      {
+        id: "border-casing",
+        type: "line",
+        source: "border",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": "#0c0e0a",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 4, 3.4, 7, 5.2, 11, 7],
+          "line-opacity": 0.9,
+        },
+      },
+      {
+        id: "border-line",
+        type: "line",
+        source: "border",
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": "#fffaf0",
+          "line-width": ["interpolate", ["linear"], ["zoom"], 4, 1.6, 7, 2.5, 11, 3.5],
+          "line-opacity": 1,
+        },
+      },
       { id: "rings", type: "line", source: "rings", paint: { "line-color": "#f3f1ea", "line-width": 1.25, "line-opacity": 0.8, "line-dasharray": [1.4, 1.1] } },
+      {
+        id: "sun-casing",
+        type: "line",
+        source: "sun",
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: { "line-color": "#121410", "line-width": 4.5, "line-opacity": 0.8 },
+      },
+      {
+        id: "sun-line",
+        type: "line",
+        source: "sun",
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: {
+          "line-color": ["match", ["get", "kind"], "rise", "#f6e7b0", "sun", "#fffdf6", "#e39455"],
+          "line-width": 2.5,
+        },
+      },
+      {
+        id: "sun-label",
+        type: "symbol",
+        source: "sun",
+        filter: ["==", ["geometry-type"], "Point"],
+        layout: {
+          "text-field": ["get", "label"],
+          "text-font": ["Noto Sans Regular"],
+          "text-size": 13,
+          "text-offset": [0, -0.6],
+          "text-anchor": "bottom",
+          "text-allow-overlap": true,
+        },
+        paint: { "text-color": "#f3f1ea", "text-halo-color": "#121410", "text-halo-width": 1.4 },
+      },
       { id: "accuracy", type: "fill", source: "accuracy", paint: { "fill-color": "#d7e2c8", "fill-opacity": 0.18 } },
       { id: "accuracy-line", type: "line", source: "accuracy", paint: { "line-color": "#d7e2c8", "line-width": 1, "line-opacity": 0.75 } },
       { id: "tracks-casing", type: "line", source: "tracks", paint: { "line-color": "#121410", "line-width": 5 } },
@@ -142,6 +652,7 @@ function buildStyle(opts: {
         filter: ["==", ["geometry-type"], "Point"],
         paint: { "circle-radius": 4, "circle-color": "#f3f1ea", "circle-stroke-width": 2, "circle-stroke-color": "#121410" },
       },
+      ...overlay.slice(11),
     ],
   };
 }
@@ -169,6 +680,9 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   const mlRef = useRef<typeof import("maplibre-gl") | null>(null);
   const scaleRef = useRef<{ setUnit: (unit: "imperial" | "metric") => void } | null>(null);
   const onMapClickRef = useRef(props.onMapClick);
+  const onContextRef = useRef(props.onContextMenu);
+  const onPointerMoveRef = useRef(props.onPointerMove);
+  const onPointerLeaveRef = useRef(props.onPointerLeave);
   const onMarkerClickRef = useRef(props.onMarkerClick);
   const onViewRef = useRef(props.onView);
   const onDragRef = useRef(props.onDragStart);
@@ -177,6 +691,9 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   const [mapError, setMapError] = useState<string | null>(null);
 
   onMapClickRef.current = props.onMapClick;
+  onContextRef.current = props.onContextMenu;
+  onPointerMoveRef.current = props.onPointerMove;
+  onPointerLeaveRef.current = props.onPointerLeave;
   onMarkerClickRef.current = props.onMarkerClick;
   onViewRef.current = props.onView;
   onDragRef.current = props.onDragStart;
@@ -242,6 +759,8 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     let map: MlMap | null = null;
     let dead = false;
     let observer: ResizeObserver | null = null;
+    let hoverRaf = 0;
+    let holdTimer = 0;
 
     void (async () => {
       try {
@@ -258,6 +777,10 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
             basemap: state.basemap,
             showPublic: state.showPublic,
             showLabels: state.showLabels,
+            showRoads: state.showRoads,
+            showTracks: state.showTracks,
+            showCreeks: state.showCreeks,
+            showPeaks: state.showPeaks,
             showShade: state.showShade,
             publicOpacity: state.publicOpacity,
           }),
@@ -269,7 +792,10 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           attributionControl: { compact: true },
           maplibreLogo: false,
           fadeDuration: 0,
-          canvasContextAttributes: { failIfMajorPerformanceCaveat: false, preserveDrawingBuffer: true },
+          refreshExpiredTiles: false,
+          validateStyle: false,
+          pixelRatio: Math.min(2, Math.max(1, window.devicePixelRatio || 1)),
+          canvasContextAttributes: { antialias: false, failIfMajorPerformanceCaveat: false, preserveDrawingBuffer: false },
         });
         map.touchPitch.disable();
         const scale = new ml.ScaleControl({ maxWidth: 110, unit: state.imperial ? "imperial" : "metric" });
@@ -280,8 +806,10 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
         };
         observer = new ResizeObserver(fit);
         if (stageRef.current) observer.observe(stageRef.current);
-        map.on("load", () => {
-          if (dead || !map) return;
+        let booted = false;
+        const boot = () => {
+          if (dead || !map || booted) return;
+          booted = true;
           mapRef.current = map;
           fit();
           if (useHunt.getState().terrain) {
@@ -298,19 +826,82 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           });
           setReady(true);
           window.setTimeout(fit, 60);
-        });
+        };
+        map.on("load", boot);
+        map.on("style.load", boot);
+        if (map.isStyleLoaded()) boot();
         map.on("error", (event) => {
           const message = event.error?.message ?? "";
           if (/webgl|failed to initialize/i.test(message)) setMapError("This browser can't draw the map.");
         });
-        map.on("click", (event) => onMapClickRef.current(event.lngLat.lng, event.lngLat.lat));
+        let swallowClick = false;
+        let hold: { x: number; y: number; lng: number; lat: number } | null = null;
+        const clearHold = () => {
+          if (holdTimer) window.clearTimeout(holdTimer);
+          holdTimer = 0;
+          hold = null;
+        };
+        map.on("click", (event) => {
+          if (swallowClick) {
+            swallowClick = false;
+            return;
+          }
+          onMapClickRef.current(event.lngLat.lng, event.lngLat.lat, event.point.x, event.point.y);
+        });
+        map.on("contextmenu", (event) => {
+          event.preventDefault();
+          if (hold) swallowClick = true;
+          onContextRef.current(event.lngLat.lng, event.lngLat.lat, event.point.x, event.point.y);
+        });
+        map.on("touchstart", (event) => {
+          if (event.originalEvent.touches.length !== 1) {
+            clearHold();
+            return;
+          }
+          hold = { x: event.point.x, y: event.point.y, lng: event.lngLat.lng, lat: event.lngLat.lat };
+          holdTimer = window.setTimeout(() => {
+            if (!hold) return;
+            swallowClick = true;
+            onContextRef.current(hold.lng, hold.lat, hold.x, hold.y);
+            hold = null;
+            holdTimer = 0;
+          }, 520);
+        });
+        map.on("touchmove", (event) => {
+          if (!hold) return;
+          const dx = event.point.x - hold.x;
+          const dy = event.point.y - hold.y;
+          if (dx * dx + dy * dy > 64) clearHold();
+        });
+        map.on("touchend", clearHold);
+        map.on("touchcancel", clearHold);
+        let pendingHover: { lng: number; lat: number; x: number; y: number } | null = null;
+        let lastHx = -1e9;
+        let lastHy = -1e9;
+        map.on("mousemove", (event) => {
+          pendingHover = { lng: event.lngLat.lng, lat: event.lngLat.lat, x: event.point.x, y: event.point.y };
+          if (hoverRaf) return;
+          hoverRaf = requestAnimationFrame(() => {
+            hoverRaf = 0;
+            const next = pendingHover;
+            if (!next || dead) return;
+            const dx = next.x - lastHx;
+            const dy = next.y - lastHy;
+            if (dx * dx + dy * dy < 36) return;
+            lastHx = next.x;
+            lastHy = next.y;
+            onPointerMoveRef.current(next.lng, next.lat, next.x, next.y);
+          });
+        });
+        map.on("mouseout", () => {
+          lastHx = -1e9;
+          lastHy = -1e9;
+          onPointerLeaveRef.current();
+        });
         map.on("dragstart", () => onDragRef.current());
-        let last = 0;
+        let lastPose = 0;
         const publish = () => {
           if (!map) return;
-          const now = performance.now();
-          if (now - last < 80) return;
-          last = now;
           const center = map.getCenter();
           onViewRef.current({
             lng: center.lng,
@@ -320,11 +911,15 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
             pitch: map.getPitch(),
           });
         };
-        map.on("move", publish);
-        map.on("moveend", () => {
-          last = 0;
+        const publishPose = () => {
+          const now = performance.now();
+          if (now - lastPose < 160) return;
+          lastPose = now;
           publish();
-        });
+        };
+        map.on("moveend", publish);
+        map.on("rotate", publishPose);
+        map.on("pitch", publishPose);
         fit();
       } catch (error) {
         if (!dead) setMapError(error instanceof Error ? error.message : "Map failed to start.");
@@ -333,6 +928,8 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
 
     return () => {
       dead = true;
+      if (hoverRaf) cancelAnimationFrame(hoverRaf);
+      if (holdTimer) window.clearTimeout(holdTimer);
       setReady(false);
       observer?.disconnect();
       mapRef.current = null;
@@ -344,20 +941,65 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map) return;
-    const show = (id: string, on: boolean) => map.setLayoutProperty(id, "visibility", vis(on));
+    const show = (id: string, on: boolean) => {
+      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", vis(on));
+    };
     const hybrid = props.basemap === "hybrid";
+    const street = props.basemap === "street";
     const imagery = props.basemap === "satellite" || hybrid;
-    const shade = props.showShade && imagery;
-    show("hillshade", shade);
+    const vector = props.basemap !== "topo";
+    show("hillshade", props.showShade && props.basemap !== "topo");
     show("satellite", imagery);
     show("topo", props.basemap === "topo");
-    show("street", props.basemap === "street");
-    show("roads", hybrid);
-    show("places", hybrid && props.showLabels);
     show("sma", props.showPublic);
+    for (const id of STREET_FILLS) show(id, street);
+    for (const id of ROAD_LINE_LAYERS) show(id, vector && props.showRoads);
+    for (const id of ROAD_NAME_LAYERS) show(id, vector && props.showRoads);
+    for (const id of TRACK_LAYERS) show(id, vector && props.showTracks);
+    for (const id of CREEK_LAYERS) show(id, vector && props.showCreeks);
+    for (const id of TOWN_LAYERS) show(id, vector && props.showLabels);
+    for (const id of PEAK_LAYERS) show(id, vector && props.showPeaks);
     map.setPaintProperty("sma", "raster-opacity", props.publicOpacity);
-    map.setPaintProperty("satellite", "raster-opacity", shade ? 0.78 : 1);
-  }, [ready, props.basemap, props.showPublic, props.showLabels, props.showShade, props.publicOpacity]);
+    map.setPaintProperty("satellite", "raster-opacity", 1);
+    applyOverlayPaint(map, props.basemap);
+  }, [ready, props.basemap, props.showPublic, props.showLabels, props.showRoads, props.showTracks, props.showCreeks, props.showPeaks, props.showShade, props.publicOpacity]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    const existing = map.getLayer("hillshade");
+    if (!existing || existing.type !== "hillshade") {
+      if (existing) map.removeLayer("hillshade");
+      if (map.getSource("hillshade")) map.removeSource("hillshade");
+      if (!map.getSource("dem")) return;
+      map.addLayer(
+        {
+          id: "hillshade",
+          type: "hillshade",
+          source: "dem",
+          layout: { visibility: props.showShade && props.basemap !== "topo" ? "visible" : "none" },
+          paint: {
+            "hillshade-method": "basic",
+            "hillshade-illumination-anchor": "map",
+            "hillshade-illumination-direction": props.shadeAz ?? 180,
+            "hillshade-illumination-altitude": 35,
+            "hillshade-exaggeration": 0.65,
+            "hillshade-shadow-color": "rgba(8, 12, 10, 0.82)",
+            "hillshade-highlight-color": "rgba(255, 236, 196, 0.42)",
+            "hillshade-accent-color": "rgba(0, 0, 0, 0)",
+          },
+        },
+        map.getLayer("units-casing") ? "units-casing" : undefined,
+      );
+    }
+    if (props.shadeAz == null || props.shadeEl == null) return;
+    const altitude = props.shadeEl <= 0 ? 3 : Math.min(80, Math.max(4, props.shadeEl));
+    const exaggeration = props.shadeEl <= 0 ? 0.4 : props.shadeEl < 15 ? 0.85 : 0.42 + (1 - altitude / 90) * 0.35;
+    map.setPaintProperty("hillshade", "hillshade-illumination-direction", props.shadeAz);
+    map.setPaintProperty("hillshade", "hillshade-illumination-altitude", altitude);
+    map.setPaintProperty("hillshade", "hillshade-exaggeration", exaggeration);
+    map.setPaintProperty("hillshade", "hillshade-shadow-color", props.shadeEl <= 0 ? "rgba(8, 12, 10, 0.4)" : "rgba(8, 12, 10, 0.82)");
+  }, [ready, props.basemap, props.showShade, props.shadeAz, props.shadeEl]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -375,6 +1017,20 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
 
   useEffect(() => {
     scaleRef.current?.setUnit(props.imperial ? "imperial" : "metric");
+    const map = mapRef.current;
+    if (!ready || !map?.getLayer("vx-peak")) return;
+    const factor = props.imperial ? 3.28084 : 1;
+    const unit = props.imperial ? " ft" : " m";
+    map.setLayoutProperty("vx-peak", "text-field", [
+      "concat",
+      ["coalesce", ["get", "name_en"], ["get", "name"]],
+      [
+        "case",
+        ["all", ["has", "ele"], [">", ["to-number", ["get", "ele"]], 0]],
+        ["concat", "\n", ["to-string", ["round", ["*", ["to-number", ["get", "ele"]], factor]]], unit],
+        "",
+      ],
+    ]);
   }, [props.imperial, ready]);
 
   useEffect(() => {
@@ -446,30 +1102,29 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
 
   useEffect(() => {
     const map = mapRef.current;
-    const ml = mlRef.current;
-    if (!ready || !map || !ml || !props.showUnits || props.unitLabels.length === 0) return;
-    const entries = props.unitLabels.map((label) => {
-      const el = document.createElement("div");
-      el.className = "unit-tag";
-      el.textContent = label.gmu;
-      const marker = new ml.Marker({ element: el, anchor: "center" }).setLngLat([label.lng, label.lat]).addTo(map);
-      return { marker, el, lng: label.lng, lat: label.lat };
+    if (!ready || !map) return;
+    setGeo(map, "border", props.borderGeo);
+    const on = props.showBorder && props.borderGeo.features.length > 0;
+    if (map.getLayer("border-casing")) map.setLayoutProperty("border-casing", "visibility", vis(on));
+    if (map.getLayer("border-line")) map.setLayoutProperty("border-line", "visibility", vis(on));
+  }, [ready, props.showBorder, props.borderGeo]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map || !props.showUnits || !props.showUnitLabels || props.unitLabels.length === 0) {
+      if (map?.getLayer("unit-labels")) map.setLayoutProperty("unit-labels", "visibility", "none");
+      return;
+    }
+    setGeo(map, "unit-labels", {
+      type: "FeatureCollection",
+      features: props.unitLabels.map((label) => ({
+        type: "Feature",
+        properties: { gmu: label.gmu },
+        geometry: { type: "Point", coordinates: [label.lng, label.lat] },
+      })),
     });
-    const apply = () => {
-      const zoom = map.getZoom();
-      const bounds = map.getBounds();
-      const show = zoom >= 8;
-      for (const entry of entries) {
-        entry.el.style.display = show && bounds.contains([entry.lng, entry.lat]) ? "" : "none";
-      }
-    };
-    apply();
-    map.on("move", apply);
-    return () => {
-      map.off("move", apply);
-      for (const entry of entries) entry.marker.remove();
-    };
-  }, [ready, props.showUnits, props.unitLabels]);
+    if (map.getLayer("unit-labels")) map.setLayoutProperty("unit-labels", "visibility", "visible");
+  }, [ready, props.showUnits, props.showUnitLabels, props.unitLabels]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -523,19 +1178,35 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     const map = mapRef.current;
     if (!ready || !map) return;
     const features: JsonFeature[] = [];
-    if (props.showScent && props.windFrom != null) {
-      const drift = (props.windFrom + 180) % 360;
-      features.push({
-        type: "Feature",
-        properties: {},
-        geometry: {
-          type: "Polygon",
-          coordinates: [sectorPolygon(props.scentAt.lng, props.scentAt.lat, scentReach(props.windMps), drift, 42)],
-        },
-      });
+    const lng = props.sunLng;
+    const lat = props.sunLat;
+    if (props.showSun && lng != null && lat != null) {
+      const zoom = map.getZoom();
+      const width = map.getContainer().clientWidth || 900;
+      const meters = Math.min(14000, Math.max(220, ((156543.03 * Math.cos((lat * Math.PI) / 180) * width) / 2 ** zoom) * 0.2));
+      const rays = [
+        { kind: "rise", label: "Rise", az: props.riseAz },
+        { kind: "set", label: "Set", az: props.setAz },
+        { kind: "sun", label: "Sun", az: props.liveAz },
+      ];
+      for (const ray of rays) {
+        if (ray.az == null || !Number.isFinite(ray.az)) continue;
+        const start = destination(lng, lat, ray.az, meters * 0.06);
+        const tip = destination(lng, lat, ray.az, meters);
+        features.push({
+          type: "Feature",
+          properties: { kind: ray.kind },
+          geometry: { type: "LineString", coordinates: [start, tip] },
+        });
+        features.push({
+          type: "Feature",
+          properties: { kind: ray.kind, label: ray.label },
+          geometry: { type: "Point", coordinates: tip },
+        });
+      }
     }
-    setGeo(map, "scent", { type: "FeatureCollection", features });
-  }, [ready, props.showScent, props.windFrom, props.windMps, props.scentAt]);
+    setGeo(map, "sun", { type: "FeatureCollection", features });
+  }, [ready, props.showSun, props.sunLng, props.sunLat, props.riseAz, props.setAz, props.liveAz, props.viewZoom]);
 
   useEffect(() => {
     const map = mapRef.current;

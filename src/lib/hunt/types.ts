@@ -65,10 +65,32 @@ export const JUMPS: { name: string; hint: string; lng: number; lat: number; zoom
   { name: "Pike Forest", hint: "Colorado", lng: -105.2, lat: 39.15, zoom: 9 },
 ];
 
-export const DEFAULT_VIEW: MapView = {
-  lng: -111.38,
-  lat: 33.95,
-  zoom: 9,
-  bearing: 0,
-  pitch: 0,
+export const ID_JUMPS: { name: string; hint: string; lng: number; lat: number; zoom: number }[] = [
+  { name: "Frank Church", hint: "River of No Return", lng: -114.8, lat: 45.2, zoom: 8 },
+  { name: "Sawtooths", hint: "Stanley", lng: -114.9, lat: 44.1, zoom: 9 },
+  { name: "Panhandle", hint: "Coeur d'Alene", lng: -116.6, lat: 47.7, zoom: 8 },
+  { name: "Island Park", hint: "Henry's Fork", lng: -111.4, lat: 44.4, zoom: 9 },
+  { name: "Owyhee", hint: "Southwest", lng: -116.5, lat: 42.6, zoom: 8 },
+  { name: "Salmon River", hint: "North-central", lng: -114.2, lat: 45.4, zoom: 9 },
+];
+
+export type HuntRegion = "az" | "id";
+
+export const REGION_VIEW: Record<HuntRegion, MapView> = {
+  az: {
+    lng: -111.38,
+    lat: 33.95,
+    zoom: 9,
+    bearing: 0,
+    pitch: 0,
+  },
+  id: {
+    lng: -114.5,
+    lat: 44.4,
+    zoom: 6,
+    bearing: 0,
+    pitch: 0,
+  },
 };
+
+export const DEFAULT_VIEW: MapView = REGION_VIEW.az;

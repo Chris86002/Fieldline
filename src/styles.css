@@ -74,14 +74,18 @@
   font-size: 1rem;
 }
 
-textarea.field {
-  height: auto;
-  padding: 0.65rem 0.75rem;
-  resize: vertical;
+.field-search {
+  padding-left: 3rem;
+  padding-right: 2.75rem;
 }
 
 input[type="range"] {
   width: 100%;
+  accent-color: var(--color-field);
+}
+
+.shade-range {
+  height: 1.25rem;
   accent-color: var(--color-field);
 }
 
