@@ -24,10 +24,12 @@ let desktop;
 async function launch() {
   const launched = await electron.launch({
     executablePath: executable,
+    chromiumSandbox: true,
     args: process.platform === "linux" ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] : [],
     env: { ...process.env, PATH: "", FIELDLINE_SMOKE_PROFILE: profile, ELECTRON_RUN_AS_NODE: "" },
     timeout: 45_000,
   });
+  assert.equal(launched.process().spawnargs.includes("--no-sandbox"), false);
   await launched.context().route("**/*", (route) => {
     const url = new URL(route.request().url());
     if (url.origin !== ORIGIN) return route.abort();
