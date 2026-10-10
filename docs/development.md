@@ -5,10 +5,10 @@
 
 ## Setup and checks
 
-Use **Node.js 22.12 or newer (with npm)** and Git. Follow the README's
+Use **Node.js 22.13+ (22.x) or 24+ (with npm)** and Git. Follow the README's
 [clone, `npm ci`, and `npm run dev` steps](../README.md#developers-local-browser-run).
 Read [AGENTS.md](../AGENTS.md) for contributor notes and safety constraints.
-The Node minimum reflects the locked framework requirements.
+The supported Node versions reflect the locked dependency requirements.
 
 Run from the repository root:
 
@@ -41,7 +41,7 @@ npm run start
 
 `start` serves `.output/server/index.mjs` at <http://localhost:3000> by default;
 set `PORT` in the server environment to choose another port. Deployment uses the
-same build and start commands on a Node 22.12+ host. No Grok/App Builder account,
+same build and start commands on a Node 22.13+ (22.x) or 24+ host. No Grok/App Builder account,
 credentials, database, or environment secrets are required.
 
 For a production preview without starting that Node server, use
@@ -92,7 +92,7 @@ build), `.nitro/` and `dist/` (build intermediates/output), `.desktop-output/`
 - **Clone returns not found / access denied:** this repository is private.
   Authenticate Git with an account granted access, or ask a maintainer for an
   installer if you only want to use Fieldline. Do not put credentials in files.
-- **`node`/`npm` missing or engine/type-stripping errors:** install Node 22.12+
+- **`node`/`npm` missing or engine/type-stripping errors:** install Node 22.13+ (22.x) or 24+
   with npm, check `node --version` in the same terminal, then rerun `npm ci`
   from the directory containing `package.json` and `package-lock.json`.
 - **Dependency download fails:** check connectivity and the npm registry error;

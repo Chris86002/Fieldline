@@ -56,8 +56,8 @@ For backups, browser-to-desktop transfer, and upgrades, see
 
 ### Developers: local browser run
 
-Building source requires **Git and Node.js 22.12 or newer (with npm)**, matching
-the locked framework requirements. Private repository access is needed to clone:
+Building source requires **Git and Node.js 22.13+ (22.x) or 24+ (with npm)**,
+matching the locked dependency requirements. Private repository access is needed to clone:
 
 ```sh
 git clone https://github.com/Chris86002/Fieldline.git

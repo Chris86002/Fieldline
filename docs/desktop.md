@@ -10,7 +10,7 @@ installer artifacts.
 
 ## Build from source
 
-Use Git and **Node.js 22.12 or newer (with npm)** on the build machine only.
+Use Git and **Node.js 22.13+ (22.x) or 24+ (with npm)** on the build machine only.
 Follow the [clone and dependency setup](../README.md#developers-local-browser-run),
 then run these commands from the repository root:
 
