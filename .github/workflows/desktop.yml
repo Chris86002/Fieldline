@@ -1,0 +1,69 @@
+name: Fieldline desktop installers
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            platform: win
+            arch: x64
+            executable: release/win-unpacked/Fieldline.exe
+          - os: macos-15-intel
+            platform: mac
+            arch: x64
+            executable: release/mac/Fieldline.app/Contents/MacOS/Fieldline
+          - os: macos-15
+            platform: mac
+            arch: arm64
+            executable: release/mac-arm64/Fieldline.app/Contents/MacOS/Fieldline
+          - os: ubuntu-22.04
+            platform: linux
+            arch: x64
+            executable: release/linux-unpacked/fieldline
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: "false"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run desktop:test
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run build
+      - run: npm run desktop:build
+      - run: npx --no-install electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish never
+      - name: Packaged desktop smoke (Windows/macOS)
+        if: runner.os != 'Linux'
+        run: npm run desktop:smoke
+        env:
+          FIELDLINE_DESKTOP_EXECUTABLE: ${{ matrix.executable }}
+      - name: Packaged desktop smoke (Linux)
+        if: runner.os == 'Linux'
+        run: xvfb-run -a npm run desktop:smoke
+        env:
+          FIELDLINE_DESKTOP_EXECUTABLE: ${{ matrix.executable }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Fieldline-${{ matrix.platform }}-${{ matrix.arch }}-installers
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+          if-no-files-found: error
+          retention-days: 14

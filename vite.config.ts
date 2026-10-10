@@ -16,5 +16,18 @@ export default defineConfig({
     strictPort: true,
   },
   resolve: { tsconfigPaths: true },
-  plugins: [tailwindcss(), tanstackStart(), nitro({ preset: "node-server" }), viteReact()],
+  plugins: [
+    tailwindcss(),
+    tanstackStart(),
+    nitro({
+      preset: process.env.FIELDLINE_DESKTOP_BUILD === "1" ? "node-middleware" : "node-server",
+      ...(process.env.FIELDLINE_DESKTOP_BUILD === "1"
+        ? {
+            serveStatic: "node",
+            output: { dir: ".desktop-output", serverDir: ".desktop-output/server", publicDir: ".desktop-output/public" },
+          }
+        : {}),
+    }),
+    viteReact(),
+  ],
 });

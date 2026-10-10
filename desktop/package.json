@@ -1,0 +1,9 @@
+{
+  "name": "fieldline",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Fieldline hunting map",
+  "author": "Fieldline contributors",
+  "main": "main.mjs"
+}
