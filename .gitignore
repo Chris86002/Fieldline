@@ -2,6 +2,8 @@ node_modules/
 .output/
 .nitro/
 dist/
+.desktop-output/
+release/
 screenshots/
 .project_id
 .github_repo

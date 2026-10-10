@@ -1,5 +1,9 @@
 {
   "name": "fieldline",
+  "version": "1.0.0",
+  "description": "Fieldline hunting map",
+  "author": "Fieldline contributors",
+  "main": "desktop/main.mjs",
   "private": true,
   "type": "module",
   "engines": {
@@ -14,7 +18,16 @@
     "test": "node --experimental-strip-types --test src/lib/hunt/*.test.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
-    "smoke": "node scripts/browser-smoke.mjs"
+    "smoke": "node scripts/browser-smoke.mjs",
+    "desktop:build": "node scripts/desktop-build.mjs",
+    "desktop:dev": "npm run desktop:build && electron .",
+    "desktop:test": "node --test desktop/*.test.mjs",
+    "desktop:pack": "npm run desktop:build && electron-builder --dir --publish never",
+    "desktop:dist": "npm run desktop:build && electron-builder --publish never",
+    "desktop:win": "npm run desktop:build && electron-builder --win --x64 --publish never",
+    "desktop:mac": "npm run desktop:build && electron-builder --mac --x64 --arm64 --publish never",
+    "desktop:linux": "npm run desktop:build && electron-builder --linux --x64 --publish never",
+    "desktop:smoke": "node scripts/desktop-smoke.mjs"
   },
   "dependencies": {
     "@radix-ui/react-switch": "^1.2.6",
@@ -27,6 +40,68 @@
     "react-dom": "^19.2.0",
     "zustand": "^5.0.0"
   },
+  "build": {
+    "appId": "org.fieldline.desktop",
+    "productName": "Fieldline",
+    "directories": {
+      "output": "release",
+      "app": "desktop"
+    },
+    "files": [
+      "*.mjs",
+      "!*.test.mjs",
+      "!**/node_modules{,/**/*}",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": ".desktop-output",
+        "to": "fieldline",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "public/icons/fieldline-512.png",
+        "to": "fieldline-icon.png"
+      }
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "artifactName": "Fieldline-${version}-${os}-${arch}.${ext}",
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "public/icons/fieldline-512.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "icon": "public/icons/fieldline-512.png",
+      "category": "public.app-category.travel",
+      "extendInfo": {
+        "NSLocationUsageDescription": "Fieldline uses your location only when you request GPS tracking or positioning."
+      }
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "icon": "public/icons/fieldline-512.png",
+      "category": "Maps"
+    }
+  },
   "devDependencies": {
     "@eslint/js": "^9.20.0",
     "@tailwindcss/vite": "^4.3.0",
@@ -35,6 +110,8 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.2.0",
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3",
     "eslint": "^9.20.0",
     "eslint-config-prettier": "^10.1.1",
     "eslint-plugin-prettier": "^5.2.6",
@@ -47,5 +124,8 @@
     "typescript": "^5.7.0",
     "typescript-eslint": "^8.56.1",
     "vite": "^8.2.0"
+  },
+  "overrides": {
+    "@electron/get": "5.1.0"
   }
 }
