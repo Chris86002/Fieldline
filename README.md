@@ -7,7 +7,7 @@ GPX/KML/GeoJSON/CSV import, GPX export, and home-screen installation.
 
 ## Install / get started
 
-- **Use the desktop app:** [Install a provided installer](#desktop-app-no-node-needed).
+- **Use the desktop app:** [Install from a shared ZIP](#desktop-app-no-node-needed).
 - **Run from source in a browser:** [Local quick start](#developers-local-browser-run).
 - **Build or download installers to share:** [Desktop maintainer guide](docs/desktop.md).
 - **Contribute or find files:** [Development and repository guide](docs/development.md).
@@ -18,22 +18,28 @@ Fieldline desktop includes Chromium, Node, the production UI, assets, and local
 server functions. **Recipients do not install Node, npm, a browser, or developer
 tools.** It opens its own Fieldline window, not a hosted website.
 
-1. Get the matching installer from a **trusted maintainer** (copy, USB, or their
+1. Get the matching **Fieldline ZIP** from a **trusted maintainer** (message, USB, or their
    download). This repository is private: there is no public installer download
    promised here, and workflow artifacts exist only after a successful packaging
    run. Recipients do not need a GitHub account or repository access.
-2. **Windows 10/11, Intel/AMD 64-bit:** run `Fieldline-…-win-x64.exe`, install
-   for your user, then open **Fieldline** from Start Menu or the desktop shortcut.
-   The NSIS installer is self-contained, not a web/downloader installer, and
-   normally needs no administrator privileges.
-3. **macOS:** use `…-mac-arm64.dmg` for Apple Silicon or `…-mac-x64.dmg` for
-   Intel. Open it, drag Fieldline to **Applications**, eject it, then launch
+2. **Windows 10/11, Intel/AMD 64-bit:** get `Fieldline-…-win-x64.zip`.
+   Right-click it → **Extract All**, open the extracted folder, and double-click
+   **Install-Fieldline.exe**. It installs for your user without a directory wizard,
+   creates desktop/Start menu shortcuts, and opens Fieldline when finished.
+   Everything needed is included; normally no administrator permission is needed.
+3. **macOS:** get `Fieldline-…-mac-arm64.zip` for Apple Silicon or
+   `Fieldline-…-mac-x64.zip` for Intel. Double-click the ZIP to extract it, open
+   **Install-Fieldline.dmg**, drag Fieldline to **Applications**, eject it, then launch
    Fieldline from Applications. Target macOS 12 or newer; test your actual OS
    before sharing widely.
-4. **Linux (optional):** x64 `…-linux-x64.AppImage` targets desktop Linux with
-   FUSE and normal Chromium system libraries (Ubuntu 22.04+). Mark it executable
-   and launch it. Linux is less turnkey: missing OS libraries/FUSE may require
+4. **Linux (optional):** extract `Fieldline-…-linux-x64.zip`. Its
+   **Fieldline.AppImage** targets desktop Linux with FUSE and normal Chromium
+   system libraries (Ubuntu 22.04+). Allow it to run as a program in file
+   properties and launch it. Linux is less turnkey: missing OS libraries/FUSE may require
    distro packages. Prefer the Windows/macOS installers for family.
+
+Every ZIP includes a short **START-HERE.txt** guide. Mac installation still needs
+the drag-to-Applications step; it is not a Windows-style automatic installer.
 
 Initial installers are **unsigned**. Windows SmartScreen may warn about an
 unknown publisher; macOS Gatekeeper may block an unidentified developer. Only
@@ -41,8 +47,8 @@ proceed if you trust the sender and file: use the OS's per-app approval flow
 (Windows **More info → Run anyway**, if offered; macOS **System Settings →
 Privacy & Security → Open Anyway**, if allowed). Organizational policies may
 prevent approval. Do not disable antivirus, Gatekeeper, certificate validation,
-or other system protections. Signing/notarization is optional maintainer work,
-not required to build; these builds do not guarantee warning-free installation.
+or other system protections. Maintainer signing/notarization is still needed to
+reduce these warnings; these builds do not guarantee prompt-free installation.
 
 The UI is bundled and launches without a hosted site, but **packaging is not
 complete offline maps**. Public-provider maps, search, weather, elevation, and
@@ -51,7 +57,8 @@ subject to storage limits and provider terms. Attribution and legal/access
 caveats remain in the map interface. GPS requires your permission and OS
 location support; desktop location may be unavailable or inaccurate.
 
-For backups, browser-to-desktop transfer, and upgrades, see
+Saved marks and tracks stay on this device, not in cloud sync. Export a GPX backup
+from **Saved** before updates or uninstalling. For browser-to-desktop transfer and upgrades, see
 [saved data and profiles](docs/desktop.md#saved-data-profiles-and-upgrades).
 
 ### Developers: local browser run
@@ -82,7 +89,7 @@ provide complete offline maps or transfer data between origins.
 ## Troubleshooting
 
 - **Cannot find an installer or access the repository?** Ask the trusted
-  maintainer for a matching binary; downloading a source ZIP is not installing
+  maintainer for a matching installer ZIP; downloading a source ZIP is not installing
   the desktop app. See [maintainer download directions](docs/desktop.md#download-and-share-workflow-artifacts).
 - **Unsigned app blocked or desktop won't start?** Keep OS protections enabled;
   see [desktop troubleshooting](docs/desktop.md#troubleshooting).
