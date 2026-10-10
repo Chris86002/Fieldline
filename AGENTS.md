@@ -1,6 +1,6 @@
 # Contributor notes
 
-- Use Node.js 22 or newer and the npm scripts documented in `README.md`.
+- Use Node.js 22.13+ (22.x) or 24+ and the npm scripts documented in `README.md`.
 - Keep the hunting-map identity and saved-data compatibility (`fieldline-v1`).
 - Preserve provider attribution, legal-boundary caveats, and offline limitations.
 - Keep public-service requests bounded, validated, and respectful of provider

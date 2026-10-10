@@ -5,14 +5,23 @@ and Idaho unit references, public-land overlays, map layers, place/unit search,
 weather and shooting-light context, saved waypoints, GPS tracks, measuring,
 GPX/KML/GeoJSON/CSV import, GPX export, and home-screen installation.
 
-## Desktop app for family
+## Install / get started
+
+- **Use the desktop app:** [Install a provided installer](#desktop-app-no-node-needed).
+- **Run from source in a browser:** [Local quick start](#developers-local-browser-run).
+- **Build or download installers to share:** [Desktop maintainer guide](docs/desktop.md).
+- **Contribute or find files:** [Development and repository guide](docs/development.md).
+
+### Desktop app (no Node needed)
 
 Fieldline desktop includes Chromium, Node, the production UI, assets, and local
 server functions. **Recipients do not install Node, npm, a browser, or developer
 tools.** It opens its own Fieldline window, not a hosted website.
 
-1. Get the matching installer directly from the person sharing Fieldline (copy,
-   USB, or download). Family members do not need a GitHub account or repository access.
+1. Get the matching installer from a **trusted maintainer** (copy, USB, or their
+   download). This repository is private: there is no public installer download
+   promised here, and workflow artifacts exist only after a successful packaging
+   run. Recipients do not need a GitHub account or repository access.
 2. **Windows 10/11, Intel/AMD 64-bit:** run `Fieldline-…-win-x64.exe`, install
    for your user, then open **Fieldline** from Start Menu or the desktop shortcut.
    The NSIS installer is self-contained, not a web/downloader installer, and
@@ -42,116 +51,51 @@ subject to storage limits and provider terms. Attribution and legal/access
 caveats remain in the map interface. GPS requires your permission and OS
 location support; desktop location may be unavailable or inaccurate.
 
-### Saved data and upgrades
+For backups, browser-to-desktop transfer, and upgrades, see
+[saved data and profiles](docs/desktop.md#saved-data-profiles-and-upgrades).
 
-The desktop app keeps the unchanged `fieldline-v1` data format in its own
-persistent profile, separate from browsers. It always uses
-`http://127.0.0.1:47831` and the `persist:fieldline` partition. Do not change this
-origin, partition, app ID, or profile name in an upgrade without a migration.
-If the port is occupied, startup fails with guidance rather than changing ports
-and appearing to lose your data. The server binds only to IPv4 loopback, requires
-a private per-launch token, and stops when Fieldline quits.
+### Developers: local browser run
 
-Profiles live under `%APPDATA%/Fieldline` (Windows),
-`~/Library/Application Support/Fieldline` (Mac), or `~/.config/Fieldline`
-(Linux; OS app-data overrides may vary). Installing an update over the old app
-does not clear that profile; the Windows uninstaller also retains it. Export GPX
-backups before upgrades or uninstalling. Deleting this profile deletes local data.
-Existing browser data **does not transfer automatically**: export GPX from
-**Saved** in your browser, then import it in desktop Fieldline. GPX transfers
-marks and tracks, **not settings**; reapply settings manually. No cloud sync.
-
-### Build, download, and share (maintainer)
-
-Use Node **22.12+** and `npm ci` on the build machine only:
+Building source requires **Git and Node.js 22.13+ (22.x) or 24+ (with npm)**,
+matching the locked dependency requirements. Private repository access is needed to clone:
 
 ```sh
-npm run desktop:test
-npm run desktop:dev       # builds/opens real production desktop; rerun after edits
-npm run desktop:pack      # unpacked app for native smoke verification
-npm run desktop:dist      # installer for the current platform
-npm run desktop:win       # Windows x64 NSIS, preferably on Windows
-npm run desktop:mac       # separate Intel and Apple Silicon DMGs, on macOS
-npm run desktop:linux     # optional Linux x64 AppImage
-npm run desktop:smoke     # run against an already-packaged native app
-```
-
-Output is in `release/` (ignored). `desktop:build` uses Nitro's middleware
-preset in `.desktop-output/`; normal `npm run build`/`start` remain unchanged.
-electron-builder copies the **entire** desktop server/public output into
-`resources/fieldline`, alongside Electron's bundled runtime. No external Node
-process or development server is used. Version releases by updating
-both `package.json` and `desktop/package.json` plus the root lockfile; preserve the profile/origin contract above.
-Keep Electron current and rerun checks for security updates.
-
-In this private repository, the owner can open **Actions → Fieldline desktop
-installers → Run workflow** after this workflow is merged onto the default
-branch. Select the intended branch/ref. The workflow uses native Windows,
-Intel Mac, Apple Silicon Mac, and Linux runners with Node 22 and `npm ci`,
-runs all four web checks plus desktop tests and packaged smoke tests, and uploads
-installer-only artifacts for 14 days. It does **not** publish releases or run
-on every push; permissions are read-only and no signing secrets are required.
-Download the matching artifact ZIP, extract it, and share the `.exe`, `.dmg`, or
-`.AppImage` itself through a trusted channel. Do not share build directories,
-profiles, or signing credentials. GitHub access is only needed by the maintainer.
-
-The smoke test checks packaged resources, local UI launch with renderer provider
-requests blocked, API validation, sandbox preferences, rejected unauthenticated
-server access/navigation, GPX import/export, full restart persistence, and server
-cleanup. Override `FIELDLINE_DESKTOP_EXECUTABLE` with an absolute executable
-path for another native package (including `release/mac-arm64/...`); on Linux run
-under `xvfb-run -a` when no display is available.
-Linux headless smoke uses SwiftShader software rendering flags only in the test
-launcher, not in the distributed app, and never disables the renderer sandbox.
-It does not verify live provider availability, real GPS hardware, or installer dialogs. Before sharing,
-manually install each target artifact on a clean matching OS/architecture without
-Node, launch offline, test online maps/search/weather, GPS permission, import/export,
-restart, and upgrade over a previous version. Native Windows/macOS results must
-be verified on those systems, not inferred from a Linux build.
-
-Optional trusted distribution can use electron-builder's
-[code signing](https://www.electron.build/code-signing.html) and Apple
-notarization with maintainer-managed certificates. None are checked into this
-repository. Packaging/security references:
-[Electron security](https://www.electronjs.org/docs/latest/tutorial/security),
-[context isolation](https://www.electronjs.org/docs/latest/tutorial/context-isolation),
-[distribution](https://www.electronjs.org/docs/latest/tutorial/application-distribution),
-and [NSIS](https://www.electron.build/nsis.html).
-
-## Run locally
-
-Use Node.js 22 or newer:
-
-```sh
+git clone https://github.com/Chris86002/Fieldline.git
+cd Fieldline
 npm ci
 npm run dev
 ```
 
-Open <http://localhost:8080>. Useful checks and production commands:
+Keep the terminal running and open <http://localhost:8080>. Stop with Ctrl+C.
+This is a development browser session, **not** a desktop installer.
+See [checks, production commands, and repository navigation](docs/development.md).
 
-```sh
-npm test
-npm run typecheck
-npm run lint
-npm run build
-npm run start
-```
+### Browser home-screen installation
 
-`npm run start` serves the production Node build from `.output/` (default port
-3000; set `PORT` to choose another port). For a production preview without
-starting the Node server, use `npm run preview`.
+The browser app includes a manifest, service worker, and installation help.
+On a supported browser using HTTPS (or localhost), use Fieldline's installation
+prompt or your browser's install option. On iPhone/iPad, open in Safari and use
+**Share → Add to Home Screen**. Availability depends on browser support; there
+is no hosted Fieldline URL supplied here. Home-screen installation does not
+provide complete offline maps or transfer data between origins.
 
-## Deployment and data
+## Troubleshooting
 
-Build with `npm ci && npm run build`, then run `npm run start` on a Node 22+
-host. No Grok/App Builder account, credentials, database, or environment
-secrets are required. The app uses external public data services; map, search,
-weather, elevation, and land-identification details need an internet connection.
+- **Cannot find an installer or access the repository?** Ask the trusted
+  maintainer for a matching binary; downloading a source ZIP is not installing
+  the desktop app. See [maintainer download directions](docs/desktop.md#download-and-share-workflow-artifacts).
+- **Unsigned app blocked or desktop won't start?** Keep OS protections enabled;
+  see [desktop troubleshooting](docs/desktop.md#troubleshooting).
+- **`npm ci`, startup, or port errors?** See [local troubleshooting](docs/development.md#troubleshooting).
+
+## Saved data and offline limits
 
 Waypoints, tracks, and settings stay in this browser's local storage under the
 `fieldline-v1` key. They do not sync between devices. Export a GPX file from
-Saved before changing browser or domain, then import that file on the new
-origin. GPX transfers marks and tracks, not settings.
+**Saved** before changing browser or domain, then import that file on the new
+origin. GPX transfers marks and tracks, not settings. Desktop uses a separate
+persistent profile; browser data does not transfer automatically. Export backups
+before upgrades or uninstalling. There is no cloud sync.
 
 The app can cache map tiles for a small, user-selected view at one zoom level.
 This is best-effort browser storage, not a complete offline map: roads, labels,
@@ -177,11 +121,10 @@ tile caching.
 Fieldline is an independent planning aid, not official agency guidance. Map
 availability and external-provider terms can change.
 
-## Repository layout
+## Contributor navigation
 
-- `src/components/hunt/` — map and hunting-map interface
-- `src/lib/hunt/` — mapping data, persistence, import/export, weather, search,
-  and tile cache
-- `src/routes/` — TanStack Start routes and server functions
-- `public/` — Fieldline PWA manifest, icons, service worker, and static assets
-- `scripts/browser-smoke.mjs` — desktop/mobile browser smoke check
+Start with [contributor notes](AGENTS.md) and the
+[repository map and development commands](docs/development.md#repository-map).
+Detailed packaging, smoke tests, and profile contracts live in the
+[desktop guide](docs/desktop.md). Required framework/configuration files stay at
+the root; this cleanup does not move source code or change saved-data formats.
