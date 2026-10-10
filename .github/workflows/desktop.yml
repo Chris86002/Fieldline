@@ -58,12 +58,12 @@ jobs:
         run: xvfb-run -a npm run desktop:smoke
         env:
           FIELDLINE_DESKTOP_EXECUTABLE: ${{ matrix.executable }}
+      - name: Create share-ready ZIP
+        run: npm run desktop:bundle -- --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: Fieldline-${{ matrix.platform }}-${{ matrix.arch }}-installers
-          path: |
-            release/*.exe
-            release/*.dmg
-            release/*.AppImage
+          name: Fieldline-${{ matrix.platform }}-${{ matrix.arch }}-share
+          path: release/share/Fieldline-*-${{ matrix.platform }}-${{ matrix.arch }}.zip
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14
