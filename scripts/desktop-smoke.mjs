@@ -96,7 +96,11 @@ try {
     return saved?.state.waypoints.some((waypoint) => waypoint.name === name);
   }, waypointName);
   await page.getByText(waypointName, { exact: true }).first().waitFor();
-  const saved = await page.evaluate(() => JSON.parse(localStorage.getItem("fieldline-v1")));
+  // Exercise and persist a real map pose before taking the restart baseline.
+  await page.locator(".maplibregl-canvas").press("ArrowRight");
+  await page.waitForFunction(() =>
+    JSON.parse(localStorage.getItem("fieldline-v1") ?? "null")?.state.lastView != null);
+  let saved = await page.evaluate(() => JSON.parse(localStorage.getItem("fieldline-v1")));
   assert.equal(saved.version, 0);
   assert.equal(saved.state.tracks.length, 1);
   await desktop.evaluate(({ session }, destination) => {
@@ -125,6 +129,7 @@ try {
   await page.waitForTimeout(300);
   assert.equal(page.url(), `${ORIGIN}/`);
   assert.equal(desktop.windows().length, 1);
+  saved = await page.evaluate(() => JSON.parse(localStorage.getItem("fieldline-v1")));
   await desktop.close();
   desktop = undefined;
   await assertPortClosed();
