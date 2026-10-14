@@ -196,6 +196,19 @@ describe("settings persistence", () => {
     useSettings.setState({ hydrated: false, warning: null });
   });
 
+  it("keeps a new profile's defaults after the content store writes its own legacy defaults", () => {
+    // Brand-new profile: nothing saved yet.
+    const storage = installStorage({});
+    hydrateSettings();
+    assert.equal(useSettings.getState().effective.publicOpacity, DEFAULT_SETTINGS.publicOpacity);
+    assert.ok(storage.get("fieldline-settings"), "the first load saves settings once");
+    // The hunt store then writes fieldline-v1 with its legacy 0.62 default on the first map move.
+    storage.set("fieldline-v1", JSON.stringify({ state: { waypoints: [], tracks: [], publicOpacity: 0.62, imperial: true }, version: 0 }));
+    installStorage(Object.fromEntries(storage));
+    hydrateSettings();
+    assert.equal(useSettings.getState().effective.publicOpacity, DEFAULT_SETTINGS.publicOpacity, "a reload must not revert to the legacy default");
+  });
+
   it("migrates from fieldline-v1 on first load and leaves the old copy untouched", () => {
     const legacyText = JSON.stringify(legacyProfile);
     const storage = installStorage({ "fieldline-v1": legacyText });

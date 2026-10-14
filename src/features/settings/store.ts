@@ -59,7 +59,8 @@ function legacyState(): SettingsState {
   }
 }
 
-type Loaded = { state: SettingsState; writable: boolean; warning: string | null; replaceable: boolean };
+/** `fresh`: nothing was saved yet, so the state came from fieldline-v1 or defaults. */
+type Loaded = { state: SettingsState; writable: boolean; warning: string | null; replaceable: boolean; fresh?: boolean };
 
 export const SETTINGS_BACKUP_PREFIX = `${SETTINGS_KEY}-backup-`;
 
@@ -80,7 +81,7 @@ export function loadSettings(): Loaded {
       replaceable: false,
     };
   }
-  if (raw === null) return { state: legacyState(), writable: true, warning: null, replaceable: false };
+  if (raw === null) return { state: legacyState(), writable: true, warning: null, replaceable: false, fresh: true };
   const damaged: Loaded = {
     state: legacyState(),
     writable: false,
@@ -175,11 +176,15 @@ export const useSettings = create<SettingsStore>()((set, get) => {
 export function hydrateSettings() {
   const loaded = loadSettings();
   canWrite = loaded.writable;
+  // Save the first result once. Otherwise every later load would re-migrate from
+  // fieldline-v1, whose own defaults (written by the content store) would then
+  // override newer settings defaults for a brand-new profile.
+  const problem = loaded.fresh ? persist(loaded.state) : null;
   useSettings.setState({
     ...withEffective(loaded.state),
     hydrated: true,
-    writable: loaded.writable,
-    warning: loaded.warning,
+    writable: canWrite,
+    warning: loaded.warning ?? problem,
     replaceable: loaded.replaceable,
   });
 }

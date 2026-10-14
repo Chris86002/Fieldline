@@ -48,6 +48,12 @@ is real provider data.
 | 2026-10-13 | CC-02 after review fixes | same | test 52/52, typecheck, lint, build, desktop:test 15/15 pass; `npm run smoke` passed desktop + mobile |
 | 2026-10-14 | CC-03 integrated | same | test 167/167, typecheck, lint, build, desktop:test 15/15 pass; `npm run smoke` passed desktop + mobile (now mocks AZ/ID/MT ArcGIS layers and searches all three via the UI); live headless cross-border check passed |
 
+| 2026-10-14 | CC-04 + CC-05 wave 1 integrated (`feature/cc04-cc05`) | same | test 262/262, typecheck, lint, build, desktop:test 15/15, smoke desktop + mobile pass; `scripts/storage-browser-check.mjs` passes in Chromium; fresh-profile reload keeps the new public-land default (real browser) |
+
+Other scripts: `node scripts/storage-browser-check.mjs` (real IndexedDB in
+Chromium) and `node scripts/map-gallery.mjs` (fixed-view screenshots with live
+tiles; manual visual comparison).
+
 Opt-in live provider test: `FIELDLINE_LIVE=1 node --experimental-strip-types --test src/features/catalog/adapters/mtfwp.live.test.ts`
 (a few real requests to Montana FWP; never run in CI).
 
