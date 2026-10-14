@@ -98,15 +98,6 @@ export function formatUtm(lng: number, lat: number): string {
   return `${utm.zone}${utm.band}  ${east} E  ${north} N`;
 }
 
-/** Clock for the shade bar. Arizona stays on Phoenix time. Northern Idaho is Pacific. */
-export function zoneAt(lng: number, lat: number): string {
-  if (lat >= 31.3 && lat <= 37.05 && lng >= -114.82 && lng <= -109.04) return "America/Phoenix";
-  if (lat >= 45.5 && lat <= 49.05 && lng >= -117.25 && lng <= -114.05) return "America/Los_Angeles";
-  if (lat < 42 && lng < -114.85) return "America/Los_Angeles";
-  if (lng < -117.05 && lat >= 42) return "America/Los_Angeles";
-  return "America/Boise";
-}
-
 function zoneParts(timeZone: string, date: Date) {
   return new Intl.DateTimeFormat("en-US", {
     timeZone,

@@ -13,7 +13,7 @@ import {
   pushTrack,
   type ParsedTrails,
 } from "@/lib/hunt/gpx";
-import type { HuntRegion, TrackPoint } from "@/lib/hunt/types";
+import type { TrackPoint } from "@/lib/hunt/types";
 
 const MAX_BYTES = 28 * 1024 * 1024;
 
@@ -29,20 +29,6 @@ export function trackKey(track: { name: string; points: { lng: number; lat: numb
   const start = track.points[0];
   const end = track.points[track.points.length - 1];
   return `${track.name.trim().toLowerCase()}|${track.points.length}|${start?.lat.toFixed(4)}|${start?.lng.toFixed(4)}|${end?.lat.toFixed(4)}|${end?.lng.toFixed(4)}`;
-}
-
-export function guessRegion(points: { lng: number; lat: number }[]): HuntRegion | null {
-  let az = 0;
-  let id = 0;
-  for (const point of points) {
-    if (point.lat >= 31.2 && point.lat <= 37.1 && point.lng >= -114.9 && point.lng <= -109) az += 1;
-    else if (point.lat >= 41.9 && point.lat <= 49.1 && point.lng >= -117.3 && point.lng <= -111) id += 1;
-  }
-  const count = points.length;
-  if (count === 0) return null;
-  if (id > az && id / count >= 0.5) return "id";
-  if (az > id && az / count >= 0.5) return "az";
-  return null;
 }
 
 export async function readTrailFile(file: File): Promise<ParsedTrails> {

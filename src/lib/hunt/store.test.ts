@@ -51,10 +51,12 @@ describe("fieldline-v1 persistence", () => {
     assert.deepEqual(useHunt.getState().waypoints, [savedWaypoint]);
     assert.equal(useHunt.getState().basemap, "topo");
 
-    useHunt.getState().setBasemap("street");
+    useHunt.getState().setActiveHunt("Unit 22");
     const written = JSON.parse(local.current() ?? "null");
+    assert.equal(written.version, 0);
     assert.equal(written.state.waypoints[0].id, "saved-waypoint");
-    assert.equal(written.state.basemap, "street");
+    assert.equal(written.state.activeHunt, "Unit 22");
+    assert.equal(written.state.basemap, "topo", "legacy preferences are preserved for older builds");
     assert.equal(local.writes(), 1);
     assert.equal(getHuntStorageWarning(), null);
   });
@@ -64,7 +66,7 @@ describe("fieldline-v1 persistence", () => {
     await useHunt.persist.rehydrate();
     assert.match(getHuntStorageWarning() ?? "", /stored copy was left untouched/);
 
-    useHunt.getState().setBasemap("hybrid");
+    useHunt.getState().setActiveHunt("Camp");
     assert.equal(local.current(), "{");
     assert.equal(local.writes(), 0);
   });

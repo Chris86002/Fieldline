@@ -1,4 +1,4 @@
-import type { LandHit, LandTone } from "@/lib/hunt/types";
+import type { LandHit, LandRecord, LandTone } from "@/lib/hunt/types";
 
 type AgencyMeta = { label: string; swatch: string; tone: LandTone };
 
@@ -40,10 +40,17 @@ function noteFor(tone: LandTone, state: string | null): string {
       ? "Arizona State Trust land needs a recreation permit."
       : "State land. Permits and rules change by state.";
   }
-  if (tone === "private") return "Private surface. Get permission before you cross.";
-  if (tone === "unknown") return "No agency polygon here. Treat it as private until you verify.";
+  if (tone === "private") return "Private surface in the BLM record. Get permission before you cross.";
+  if (tone === "unknown") {
+    return "This agency code isn't one Fieldline recognizes, so access is unknown. Check with the managing agency.";
+  }
   return "Public surface. Seasons, weapons, and closures still apply.";
 }
+
+const NO_RECORD_NOTE =
+  "No surface-management record here. Ownership is unknown: it may be private, or the data may be incomplete. Verify with the county or agency before you enter.";
+
+export const LAND_SOURCE = "BLM National Surface Management Agency";
 
 function clean(value: unknown): string | null {
   if (typeof value !== "string") return null;
@@ -52,32 +59,81 @@ function clean(value: unknown): string | null {
   return trimmed;
 }
 
-type RawHit = {
+export type RawHit = {
   layerName?: string;
   attributes?: Record<string, string>;
 };
 
-function toHit(raw: RawHit): (LandHit & { area: number }) | null {
+/** Codes that mean the source has no usable agency, not that the ground is private. */
+const NO_AGENCY = new Set(["UND", "UNK", "UNKNOWN", "NULL"]);
+
+function toRecord(raw: RawHit): (LandRecord & { area: number }) | null {
   const attrs = raw.attributes ?? {};
   const code = (clean(attrs.ADMIN_AGENCY_CODE) ?? "").toUpperCase();
-  if (!code || code === "PVT") return null;
-  const meta = AGENCIES[code] ?? {
-    label: clean(raw.layerName) ?? code,
-    swatch: "#d0d0c8",
-    tone: "public" as const,
-  };
-  const state = clean(attrs.ADMIN_ST);
+  if (!code || NO_AGENCY.has(code)) return null;
+  const meta: AgencyMeta | { label: string; swatch: string | null; tone: LandTone } =
+    code === "PVT"
+      ? { label: "Private", swatch: null, tone: "private" }
+      : (AGENCIES[code] ?? { label: clean(raw.layerName) ?? code, swatch: "#d0d0c8", tone: "unknown" });
   const area = Number(attrs.Shape_Area);
   return {
     agency: code,
     label: meta.label,
     swatch: meta.swatch,
     tone: meta.tone,
-    state,
+    state: clean(attrs.ADMIN_ST),
     unit: clean(attrs.ADMIN_UNIT_NAME),
-    note: noteFor(meta.tone, state),
     area: Number.isFinite(area) ? area : Number.POSITIVE_INFINITY,
   };
+}
+
+/**
+ * Turns a successful identify response into a land answer. An empty response
+ * is "no record" (ownership unknown). Overlapping records are all kept; the
+ * smallest polygon leads because it is usually the most specific, and the rest
+ * stay visible in `others` rather than being dropped.
+ */
+export function landFromResults(results: RawHit[], checkedAt: number): LandHit {
+  const records = results
+    .map(toRecord)
+    .filter((record): record is LandRecord & { area: number } => record !== null)
+    .sort((a, b) => a.area - b.area);
+  const unique: LandRecord[] = [];
+  for (const { area: _area, ...record } of records) {
+    if (!unique.some((item) => item.agency === record.agency && item.unit === record.unit)) unique.push(record);
+  }
+  const [primary, ...others] = unique;
+  if (!primary) {
+    return {
+      agency: "",
+      label: "Ownership unknown",
+      swatch: null,
+      tone: "unknown",
+      state: null,
+      unit: null,
+      status: "no-record",
+      note: NO_RECORD_NOTE,
+      others: [],
+      source: LAND_SOURCE,
+      checkedAt,
+    };
+  }
+  return {
+    ...primary,
+    status: "record",
+    note: noteFor(primary.tone, primary.state),
+    others,
+    source: LAND_SOURCE,
+    checkedAt,
+  };
+}
+
+/** Short tag for compact readouts, e.g. the coordinate bar. */
+export function landTag(hit: LandHit): string {
+  if (hit.status === "no-record") return "Owner unknown";
+  if (hit.tone === "private") return "Private";
+  if (hit.tone === "unknown") return `${hit.agency} (unrecognized)`;
+  return hit.agency;
 }
 
 export async function identifyLand(lng: number, lat: number, signal?: AbortSignal): Promise<LandHit> {
@@ -99,38 +155,8 @@ export async function identifyLand(lng: number, lat: number, signal?: AbortSigna
     { signal },
   );
   if (!res.ok) throw new Error("Land service unavailable");
-  const body = (await res.json()) as { results?: RawHit[] };
-  const hits = (body.results ?? [])
-    .map(toHit)
-    .filter((hit): hit is LandHit & { area: number } => hit !== null)
-    .sort((a, b) => a.area - b.area);
-  const unique: (LandHit & { area: number })[] = [];
-  for (const hit of hits) {
-    if (!unique.some((item) => item.agency === hit.agency)) unique.push(hit);
-  }
-  const primary = unique[0];
-  if (!primary) {
-    return {
-      agency: "PVT",
-      label: "Likely private",
-      swatch: null,
-      tone: "private",
-      state: null,
-      unit: null,
-      note: noteFor("private", null),
-    };
-  }
-  const extra = unique
-    .slice(1, 3)
-    .map((hit) => hit.label)
-    .join(", ");
-  return {
-    agency: primary.agency,
-    label: primary.label,
-    swatch: primary.swatch,
-    tone: primary.tone,
-    state: primary.state,
-    unit: primary.unit,
-    note: extra ? `${primary.note} Also nearby: ${extra}.` : primary.note,
-  };
+  const body = (await res.json()) as { results?: unknown; error?: unknown };
+  // ArcGIS reports some failures as HTTP 200 with an error body; that is an outage, not empty ground.
+  if (body.error || !Array.isArray(body.results)) throw new Error("Land service unavailable");
+  return landFromResults(body.results as RawHit[], Date.now());
 }

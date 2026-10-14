@@ -1,7 +1,9 @@
 # Fieldline
 
-Fieldline is a hunting map for trip planning and field use. It includes Arizona
-and Idaho unit references, public-land overlays, map layers, place/unit search,
+Fieldline is a hunting map for trip planning and field use across all 50
+states and DC. It includes state hunt-unit references where available (Arizona,
+Idaho, and Montana so far; see [coverage](docs/coverage.md)), public-land
+overlays, map layers, place/unit search,
 weather and shooting-light context, saved waypoints, GPS tracks, measuring,
 GPX/KML/GeoJSON/CSV import, GPX export, and home-screen installation.
 
@@ -96,10 +98,12 @@ provide complete offline maps or transfer data between origins.
 
 ## Saved data and offline limits
 
-Waypoints, tracks, and settings stay in this browser's local storage under the
-`fieldline-v1` key. They do not sync between devices. Export a GPX file from
-**Saved** before changing browser or domain, then import that file on the new
-origin. GPX transfers marks and tracks, not settings. Desktop uses a separate
+Waypoints and tracks stay in this browser's local storage under the
+`fieldline-v1` key; preferences are under `fieldline-settings` (see
+[saved-data formats](docs/data-migrations.md)). They do not sync between
+devices. Export a GPX file from **Saved** before changing browser or domain,
+then import that file on the new origin. GPX transfers marks and tracks;
+**Settings → Export settings** transfers preferences. Desktop uses a separate
 persistent profile; browser data does not transfer automatically. Export backups
 before upgrades or uninstalling. There is no cloud sync.
 
@@ -119,8 +123,9 @@ tile caching.
 - **Weather and terrain:** Open-Meteo, NOAA National Weather Service, and USGS
   elevation services. Forecasts are models, not local ridge readings.
 - **Fonts:** system font stacks; no external font service is required.
-- **Boundaries and ownership:** Arizona and Idaho unit and land data are
-  references, not legal boundary or access determinations. Verify current rules,
+- **Boundaries and ownership:** hunt units (Arizona Game and Fish, Idaho Fish
+  and Game, Montana Fish, Wildlife & Parks) and land data are references, not
+  legal boundary or access determinations. Verify current rules,
   access, and ownership with the responsible agencies before a hunt. Owner-name
   parcel data is not included.
 

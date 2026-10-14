@@ -21,10 +21,27 @@ export function isAppNavigation(value) {
   return isAppUrl(value) && new URL(value).pathname === "/";
 }
 
+// State fish and wildlife agencies linked from the coverage register
+// (src/features/catalog/coverage-data.ts); a test keeps the two in step.
+const agencyHosts = [
+  "www.outdooralabama.com", "www.adfg.alaska.gov", "www.agfc.com", "wildlife.ca.gov",
+  "cpw.state.co.us", "portal.ct.gov", "dnrec.delaware.gov", "doee.dc.gov", "myfwc.com",
+  "georgiawildlife.com", "dlnr.hawaii.gov", "dnr.illinois.gov", "www.in.gov", "www.iowadnr.gov",
+  "www.ksoutdoors.gov", "fw.ky.gov", "www.wlf.louisiana.gov", "www.maine.gov",
+  "dnr.maryland.gov", "www.mass.gov", "www.michigan.gov", "www.dnr.state.mn.us",
+  "www.mdwfp.com", "mdc.mo.gov", "fwp.mt.gov", "www.ndow.org", "www.wildlife.nh.gov",
+  "dep.nj.gov", "wildlife.dgf.nm.gov", "dec.ny.gov", "www.ncwildlife.gov", "gf.nd.gov",
+  "ohiodnr.gov", "www.wildlifedepartment.com", "www.dfw.state.or.us", "www.pa.gov",
+  "www.dnr.sc.gov", "gfp.sd.gov", "www.tn.gov", "tpwd.texas.gov", "wildlife.utah.gov",
+  "vtfishandwildlife.com", "dwr.virginia.gov", "wdfw.wa.gov", "wvdnr.gov",
+  "dnr.wisconsin.gov", "wgfd.wyo.gov",
+];
+
 const externalHosts = new Set([
   "www.openstreetmap.org", "openstreetmap.org", "openfreemap.org",
   "www.esri.com", "www.usgs.gov", "www.blm.gov", "www.weather.gov",
   "open-meteo.com", "www.azgfd.com", "idfg.idaho.gov",
+  ...agencyHosts,
 ]);
 
 export function isExternalUrl(value) {

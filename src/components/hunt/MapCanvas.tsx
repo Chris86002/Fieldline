@@ -8,7 +8,7 @@ import { MARKS } from "@/components/hunt/marks";
 import { cachedTile, installTileProtocol, TILES } from "@/lib/hunt/tiles";
 import type { Basemap, LngLat, MapView, Track, TrackPoint, Waypoint } from "@/lib/hunt/types";
 import { DEFAULT_VIEW } from "@/lib/hunt/types";
-import { useHunt } from "@/lib/hunt/store";
+import type { DistanceUnit, ElevationUnit } from "@/features/settings/schema";
 
 export type GpsFix = { lng: number; lat: number; accuracy: number; heading: number | null };
 
@@ -41,8 +41,7 @@ type Props = {
   showRings: boolean;
   showUnits: boolean;
   unitsGeo: FC;
-  borderGeo: FC;
-  unitLabels: { gmu: string; lng: number; lat: number }[];
+  unitLabels: { id: string; code: string; lng: number; lat: number }[];
   windFrom: number | null;
   sunLng: number | null;
   sunLat: number | null;
@@ -54,7 +53,14 @@ type Props = {
   viewZoom: number;
   ringAt: LngLat | null;
   terrain: boolean;
-  imperial: boolean;
+  /** Display-only vertical scale. Elevation values elsewhere stay real. */
+  terrainExaggeration: number;
+  distanceUnit: DistanceUnit;
+  elevationUnit: ElevationUnit;
+  /** Skip animated camera moves. */
+  reduceMotion: boolean;
+  /** Camera when the map first starts. */
+  initialView: MapView;
   showMarks: boolean;
   waypoints: Waypoint[];
   selectedId: string | null;
@@ -88,6 +94,13 @@ type JsonFeature = {
 type FC = { type: "FeatureCollection"; features: JsonFeature[] };
 
 const EMPTY: FC = { type: "FeatureCollection", features: [] };
+
+/** Country and state lines (OpenMapTiles admin levels 2 and 4), without maritime boundaries. */
+const STATE_LINE_FILTER: ExpressionSpecification = [
+  "all",
+  ["<=", ["get", "admin_level"], 4],
+  ["!=", ["coalesce", ["get", "maritime"], 0], 1],
+];
 
 const OFM = "https://tiles.openfreemap.org/planet";
 const GLYPHS = "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf";
@@ -480,11 +493,13 @@ function buildStyle(opts: {
   showCreeks: boolean;
   showPeaks: boolean;
   showShade: boolean;
+  showBorder: boolean;
   publicOpacity: number;
 }): StyleSpecification {
   const hybrid = opts.basemap === "hybrid";
   const street = opts.basemap === "street";
   const imagery = opts.basemap === "satellite" || hybrid;
+  const usgs = opts.basemap === "usgs";
   const shade = opts.showShade && opts.basemap !== "topo";
   const paint = overlayPaint(opts.basemap);
   const vector = opts.basemap !== "topo";
@@ -501,8 +516,16 @@ function buildStyle(opts: {
     version: 8,
     glyphs: GLYPHS,
     sources: {
-      satellite: { type: "raster", tiles: [cachedTile(TILES.satellite)], tileSize: 256, maxzoom: 19, attribution: "Imagery © Esri, Maxar, Earthstar Geographics" },
-      topo: { type: "raster", tiles: [cachedTile(TILES.topo)], tileSize: 256, maxzoom: 16, attribution: "Topo © USGS" },
+      // Esri imagery is fetched live and never written to the device cache (provider terms).
+      satellite: {
+        type: "raster",
+        tiles: [TILES.satellite],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: "Powered by Esri · Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community",
+      },
+      usgs: { type: "raster", tiles: [cachedTile(TILES.imagery)], tileSize: 256, maxzoom: 16, attribution: "Imagery: USGS The National Map, USDA" },
+      topo: { type: "raster", tiles: [cachedTile(TILES.topo)], tileSize: 256, maxzoom: 16, attribution: "Topo: USGS The National Map" },
       sma: { type: "raster", tiles: [cachedTile(TILES.sma)], tileSize: 256, maxzoom: 16, attribution: "Public land © BLM" },
       ofm: { type: "vector", url: OFM, attribution: "© OpenStreetMap, OpenFreeMap" },
       dem: { type: "raster-dem", tiles: [dem], encoding: "terrarium", tileSize: 256, maxzoom: 14, attribution: "Terrain © AWS Terrain Tiles" },
@@ -512,13 +535,13 @@ function buildStyle(opts: {
       accuracy: { type: "geojson", data: EMPTY },
       sun: { type: "geojson", data: EMPTY },
       rings: { type: "geojson", data: EMPTY },
-      units: { type: "geojson", data: EMPTY },
+      units: { type: "geojson", data: EMPTY, attribution: "Hunt units: state wildlife agencies (reference only)" },
       "unit-labels": { type: "geojson", data: EMPTY },
-      border: { type: "geojson", data: EMPTY },
     },
     layers: [
       { id: "land", type: "background", paint: { "background-color": paint.land } },
       { id: "satellite", type: "raster", source: "satellite", layout: { visibility: vis(imagery) }, paint: { "raster-opacity": 1, "raster-resampling": "linear", "raster-fade-duration": 0 } },
+      { id: "usgs", type: "raster", source: "usgs", layout: { visibility: vis(usgs) }, paint: { "raster-resampling": "linear", "raster-fade-duration": 0 } },
       { id: "topo", type: "raster", source: "topo", layout: { visibility: vis(opts.basemap === "topo") }, paint: { "raster-resampling": "linear", "raster-fade-duration": 0 } },
       ...overlay.slice(0, 3),
       { id: "sma", type: "raster", source: "sma", layout: { visibility: vis(opts.showPublic) }, paint: { "raster-opacity": opts.publicOpacity, "raster-resampling": "linear", "raster-fade-duration": 0 } },
@@ -567,7 +590,7 @@ function buildStyle(opts: {
         source: "unit-labels",
         minzoom: 8,
         layout: {
-          "text-field": ["get", "gmu"],
+          "text-field": ["get", "code"],
           "text-font": ["Noto Sans Bold"],
           "text-size": 13,
           "text-allow-overlap": true,
@@ -575,11 +598,15 @@ function buildStyle(opts: {
         },
         paint: { "text-color": "#f3f1ea", "text-halo-color": "#121410", "text-halo-width": 1.5 },
       },
+      // State and national lines for every state, from the OpenFreeMap (OpenMapTiles) boundary layer.
+      // Sea boundaries are left out; these are reference lines, not legal boundaries.
       {
         id: "border-casing",
         type: "line",
-        source: "border",
-        layout: { "line-join": "round", "line-cap": "round" },
+        source: "ofm",
+        "source-layer": "boundary",
+        filter: STATE_LINE_FILTER,
+        layout: { "line-join": "round", "line-cap": "round", visibility: vis(opts.showBorder) },
         paint: {
           "line-color": "#0c0e0a",
           "line-width": ["interpolate", ["linear"], ["zoom"], 4, 3.4, 7, 5.2, 11, 7],
@@ -589,8 +616,10 @@ function buildStyle(opts: {
       {
         id: "border-line",
         type: "line",
-        source: "border",
-        layout: { "line-join": "round", "line-cap": "round" },
+        source: "ofm",
+        "source-layer": "boundary",
+        filter: STATE_LINE_FILTER,
+        layout: { "line-join": "round", "line-cap": "round", visibility: vis(opts.showBorder) },
         paint: {
           "line-color": "#fffaf0",
           "line-width": ["interpolate", ["linear"], ["zoom"], 4, 1.6, 7, 2.5, 11, 3.5],
@@ -687,8 +716,11 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   const onViewRef = useRef(props.onView);
   const onDragRef = useRef(props.onDragStart);
   const terrainRef = useRef(props.terrain);
+  const propsRef = useRef(props);
   const [ready, setReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
+  propsRef.current = props;
+  const motion = (ms: number) => (propsRef.current.reduceMotion ? 0 : ms);
 
   onMapClickRef.current = props.onMapClick;
   onContextRef.current = props.onContextMenu;
@@ -703,13 +735,13 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     easeTo(lng, lat, zoom) {
       const map = mapRef.current;
       if (!map) return;
-      map.easeTo({ center: [lng, lat], zoom: zoom ?? Math.max(map.getZoom(), 13), duration: 700 });
+      map.easeTo({ center: [lng, lat], zoom: zoom ?? Math.max(map.getZoom(), 13), duration: motion(700) });
     },
     fit(points) {
       const map = mapRef.current;
       if (!map || points.length === 0) return;
       if (points.length === 1) {
-        map.easeTo({ center: [points[0].lng, points[0].lat], zoom: Math.max(map.getZoom(), 14), duration: 700 });
+        map.easeTo({ center: [points[0].lng, points[0].lat], zoom: Math.max(map.getZoom(), 14), duration: motion(700) });
         return;
       }
       let west = Infinity;
@@ -727,7 +759,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           [west, south],
           [east, north],
         ],
-        { padding: 72, duration: 700, maxZoom: 15 },
+        { padding: 72, duration: motion(700), maxZoom: 15 },
       );
     },
     getCenter() {
@@ -749,7 +781,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     resetNorth() {
       const map = mapRef.current;
       if (!map) return;
-      map.easeTo({ bearing: 0, pitch: terrainRef.current ? Math.max(map.getPitch(), 48) : 0, duration: 450 });
+      map.easeTo({ bearing: 0, pitch: terrainRef.current ? Math.max(map.getPitch(), 48) : 0, duration: motion(450) });
     },
   }));
 
@@ -769,8 +801,8 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
         ml.setWorkerUrl(maplibreWorkerUrl);
         installTileProtocol(ml);
         mlRef.current = ml;
-        const saved = useHunt.getState().lastView ?? DEFAULT_VIEW;
-        const state = useHunt.getState();
+        const state = propsRef.current;
+        const saved = state.initialView;
         map = new ml.Map({
           container: el,
           style: buildStyle({
@@ -782,6 +814,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
             showCreeks: state.showCreeks,
             showPeaks: state.showPeaks,
             showShade: state.showShade,
+            showBorder: state.showBorder,
             publicOpacity: state.publicOpacity,
           }),
           center: [saved.lng, saved.lat],
@@ -798,7 +831,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           canvasContextAttributes: { antialias: false, failIfMajorPerformanceCaveat: false, preserveDrawingBuffer: false },
         });
         map.touchPitch.disable();
-        const scale = new ml.ScaleControl({ maxWidth: 110, unit: state.imperial ? "imperial" : "metric" });
+        const scale = new ml.ScaleControl({ maxWidth: 110, unit: state.distanceUnit });
         scaleRef.current = scale;
         map.addControl(scale, "bottom-left");
         const fit = () => {
@@ -812,8 +845,8 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           booted = true;
           mapRef.current = map;
           fit();
-          if (useHunt.getState().terrain) {
-            map.setTerrain({ source: "dem", exaggeration: 1.15 });
+          if (propsRef.current.terrain) {
+            map.setTerrain({ source: "dem", exaggeration: propsRef.current.terrainExaggeration });
             map.touchPitch.enable();
           }
           const center = map.getCenter();
@@ -950,6 +983,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     const vector = props.basemap !== "topo";
     show("hillshade", props.showShade && props.basemap !== "topo");
     show("satellite", imagery);
+    show("usgs", props.basemap === "usgs");
     show("topo", props.basemap === "topo");
     show("sma", props.showPublic);
     for (const id of STREET_FILLS) show(id, street);
@@ -1005,22 +1039,25 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     const map = mapRef.current;
     if (!ready || !map) return;
     if (props.terrain) {
-      map.setTerrain({ source: "dem", exaggeration: 1.15 });
+      map.setTerrain({ source: "dem", exaggeration: props.terrainExaggeration });
       map.touchPitch.enable();
-      if (map.getPitch() < 20) map.easeTo({ pitch: 52, duration: 500 });
+      if (map.getPitch() < 20) map.easeTo({ pitch: 52, duration: motion(500) });
     } else {
       map.touchPitch.disable();
       map.setTerrain(null);
-      if (map.getPitch() > 0) map.easeTo({ pitch: 0, duration: 400 });
+      if (map.getPitch() > 0) map.easeTo({ pitch: 0, duration: motion(400) });
     }
-  }, [ready, props.terrain]);
+  }, [ready, props.terrain, props.terrainExaggeration]);
 
   useEffect(() => {
-    scaleRef.current?.setUnit(props.imperial ? "imperial" : "metric");
+    scaleRef.current?.setUnit(props.distanceUnit);
+  }, [props.distanceUnit, ready]);
+
+  useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map?.getLayer("vx-peak")) return;
-    const factor = props.imperial ? 3.28084 : 1;
-    const unit = props.imperial ? " ft" : " m";
+    const factor = props.elevationUnit === "ft" ? 3.28084 : 1;
+    const unit = props.elevationUnit === "ft" ? " ft" : " m";
     map.setLayoutProperty("vx-peak", "text-field", [
       "concat",
       ["coalesce", ["get", "name_en"], ["get", "name"]],
@@ -1031,7 +1068,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
         "",
       ],
     ]);
-  }, [props.imperial, ready]);
+  }, [props.elevationUnit, ready]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1103,11 +1140,9 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map) return;
-    setGeo(map, "border", props.borderGeo);
-    const on = props.showBorder && props.borderGeo.features.length > 0;
-    if (map.getLayer("border-casing")) map.setLayoutProperty("border-casing", "visibility", vis(on));
-    if (map.getLayer("border-line")) map.setLayoutProperty("border-line", "visibility", vis(on));
-  }, [ready, props.showBorder, props.borderGeo]);
+    if (map.getLayer("border-casing")) map.setLayoutProperty("border-casing", "visibility", vis(props.showBorder));
+    if (map.getLayer("border-line")) map.setLayoutProperty("border-line", "visibility", vis(props.showBorder));
+  }, [ready, props.showBorder]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1119,7 +1154,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
       type: "FeatureCollection",
       features: props.unitLabels.map((label) => ({
         type: "Feature",
-        properties: { gmu: label.gmu },
+        properties: { id: label.id, code: label.code },
         geometry: { type: "Point", coordinates: [label.lng, label.lat] },
       })),
     });
@@ -1211,7 +1246,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map) return;
-    const radii = props.imperial ? [91.44, 182.88, 365.76] : [100, 200, 400];
+    const radii = props.distanceUnit === "imperial" ? [91.44, 182.88, 365.76] : [100, 200, 400];
     const features: JsonFeature[] =
       props.showRings && props.ringAt
         ? radii.map((radius) => ({
@@ -1221,7 +1256,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           }))
         : [];
     setGeo(map, "rings", { type: "FeatureCollection", features });
-  }, [ready, props.showRings, props.ringAt, props.imperial]);
+  }, [ready, props.showRings, props.ringAt, props.distanceUnit]);
 
   return (
     <div ref={stageRef} className="map-stage">

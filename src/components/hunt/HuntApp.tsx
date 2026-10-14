@@ -1,5 +1,4 @@
 import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type DragEvent } from "react";
-import * as Switch from "@radix-ui/react-switch";
 import {
   Bookmark,
   Cloud,
@@ -17,17 +16,20 @@ import {
   Mic,
   Ruler,
   Search,
+  Settings,
   Sun,
   Upload,
   X,
 } from "lucide-react";
+import { Toggle } from "@/components/hunt/controls";
 import { MapCanvas, type GpsFix, type MapHandle } from "@/components/hunt/MapCanvas";
 import { MARK_ORDER, MARKS } from "@/components/hunt/marks";
+import { PRESETS, type AppSettings, type CoordinateFormat, type DistanceUnit, type SettingKey } from "@/features/settings/schema";
+import { SettingsPanel } from "@/features/settings/SettingsPanel";
+import { hydrateSettings, useSettings } from "@/features/settings/store";
 import {
-  AZ_SHOOT_LEAD_MIN,
   bearingDeg,
   cardinal,
-  cToF,
   formatArea,
   formatClock,
   formatDd,
@@ -35,42 +37,84 @@ import {
   formatDms,
   formatDuration,
   formatElev,
+  formatInstant,
   formatPair,
+  formatPercent,
   formatPressure,
+  formatSpeed,
+  formatTemp,
+  formatWind,
   haversine,
-  mpsToMph,
   pathLength,
+  personalWindow,
   ringArea,
-  shiftLocalIso,
+  speedValue,
   WIND_CHOICES,
   windFits,
 } from "@/lib/hunt/format";
 import { toGpx } from "@/lib/hunt/gpx";
-import { guessRegion, readTrailFile, trackKey, waypointKey } from "@/lib/hunt/transfer";
-import { identifyLand } from "@/lib/hunt/land";
-import { LEGEND } from "@/lib/hunt/land";
-import { azBorder } from "@/lib/hunt/az-border";
-import { idBorder } from "@/lib/hunt/id-border";
+import { readTrailFile, trackKey, waypointKey } from "@/lib/hunt/transfer";
+import { identifyLand, landTag, LEGEND } from "@/lib/hunt/land";
 import { searchPlaces, type PlaceHit } from "@/lib/hunt/search.functions";
 import { getHuntStorageWarning, useHunt } from "@/lib/hunt/store";
-import { packTiles, TILES, tileCacheLabel } from "@/lib/hunt/tiles";
-import { DEFAULT_VIEW, ID_JUMPS, JUMPS, REGION_VIEW, type Basemap, type HuntRegion, type LandHit, type LngLat, type MapView, type MarkKind, type Track, type TrackPoint, type Waypoint } from "@/lib/hunt/types";
+import { packTiles, purgeRestrictedTiles, TILES, tileCacheLabel } from "@/lib/hunt/tiles";
+import { DEFAULT_VIEW, JUMPS, NATIONAL_VIEW, type Basemap, type LandHit, type LngLat, type MapView, type MarkKind, type Track, type TrackPoint, type Waypoint } from "@/lib/hunt/types";
 import { loadFieldWeather } from "@/lib/hunt/weather.functions";
 import type { DayOutlook, FieldWeather, WindHour } from "@/lib/hunt/weather";
 import { weatherLabel } from "@/lib/hunt/weather";
-import { hitFromUnit, identifyUnit, loadUnits, matchUnit, unitAt, unitsCollection, type HuntUnit, type UnitHit } from "@/lib/hunt/units";
-import { formatUtm, localDate, localMinutes, sunPosition, zoneAt } from "@/lib/hunt/sun";
+import { UNIT_ADAPTERS, unitAdapterById } from "@/features/catalog/adapters";
+import { coverageFor, jurisdictionsAt, jurisdictionsInBounds, layerStatus } from "@/features/catalog/coverage";
+import { providersAt } from "@/features/catalog/discovery";
+import { searchUnits } from "@/features/catalog/search";
+import type { Bounds, HuntUnit, JurisdictionCoverage, UnitHit } from "@/features/catalog/types";
+import { hitsTag, unitLabels as toUnitLabels, unitsAt, unitShapes } from "@/features/catalog/units-view";
+import { deleteLegacyUnitCaches, useHuntUnits, type ProviderLoad } from "@/features/catalog/use-hunt-units";
+import { normalizeBounds } from "@/lib/geo/bounds";
+import { formatUtm, localDate, localMinutes, sunPosition } from "@/lib/hunt/sun";
 import { noiseWord, rmsDb } from "@/lib/hunt/noise";
 
 type Tool = "none" | "drop" | "measure";
-type Sheet = null | "layers" | "saved" | "wind" | "edit";
+type Sheet = null | "layers" | "saved" | "wind" | "edit" | "settings";
+type Units = Pick<AppSettings, "distanceUnit" | "elevationUnit" | "areaUnit" | "speedUnit" | "temperatureUnit" | "pressureUnit">;
+
+const NEXT_FORMAT: Record<CoordinateFormat, CoordinateFormat> = { dd: "dms", dms: "utm", utm: "dd" };
+
+/** State agencies to check at a point (legal hours, regulations). Near borders there can be two. */
+function agenciesAt(lng: number, lat: number): { name: string; url: string }[] {
+  return jurisdictionsAt({ lng, lat })
+    .filter((place): place is JurisdictionCoverage & { agencyName: string; agencyUrl: string } => Boolean(place.agencyName && place.agencyUrl))
+    .slice(0, 2)
+    .map((place) => ({ name: place.agencyName, url: place.agencyUrl }));
+}
+
+/** States with a hunt-unit source in Fieldline, e.g. "Arizona, Idaho, and Montana". */
+function unitStatesText(): string {
+  const names = UNIT_ADAPTERS.flatMap((adapter) => adapter.info.jurisdictionIds)
+    .map((id) => coverageFor(id)?.name ?? id.slice(3).toUpperCase())
+    .filter((name, index, all) => all.indexOf(name) === index);
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")}${names.length > 2 ? "," : ""} and ${names[names.length - 1]}`;
+}
+
+function allUnits(system: DistanceUnit): Units {
+  const imperial = system === "imperial";
+  return {
+    distanceUnit: system,
+    elevationUnit: imperial ? "ft" : "m",
+    areaUnit: imperial ? "acres" : "hectares",
+    speedUnit: imperial ? "mph" : "mps",
+    temperatureUnit: imperial ? "F" : "C",
+    pressureUnit: imperial ? "inHg" : "hPa",
+  };
+}
 type LandState =
   | { status: "loading"; lng: number; lat: number }
   | { status: "ready"; lng: number; lat: number; hit: LandHit }
   | { status: "error"; lng: number; lat: number };
 
 type Spot = { lng: number; lat: number; x: number; y: number };
-type Detail = Spot & { unit: UnitHit | null; land: LandHit | null; pending: boolean };
+/** `units` holds every overlapping hunt unit; `unitsPending` while providers are still answering. */
+type Detail = Spot & { units: UnitHit[]; unitsPending: boolean; land: LandHit | null; pending: boolean };
 
 type InstallPrompt = Event & {
   prompt: () => Promise<void>;
@@ -80,13 +124,23 @@ type InstallPrompt = Event & {
 const BASEMAPS: { id: Basemap; label: string }[] = [
   { id: "hybrid", label: "Hybrid" },
   { id: "satellite", label: "Satellite" },
+  { id: "usgs", label: "USGS" },
   { id: "topo", label: "Topo" },
   { id: "street", label: "Street" },
 ];
 
+/** Esri imagery base maps: viewable live, never stored on the device. */
+const LIVE_ONLY_BASEMAPS: Basemap[] = ["hybrid", "satellite"];
+
 export function HuntApp() {
   const store = useHunt();
+  const settings = useSettings((state) => state.effective);
+  const setSetting = useSettings((state) => state.set);
+  const activePreset = useSettings((state) => state.preset);
+  const bind = <K extends SettingKey>(key: K) => (value: AppSettings[K]) => setSetting(key, value);
   const mapRef = useRef<MapHandle>(null);
+  const initialViewRef = useRef<MapView>(DEFAULT_VIEW);
+  const wakeRef = useRef<{ release: () => Promise<void> } | null>(null);
   const watchRef = useRef<number | null>(null);
   const followRef = useRef(false);
   const recRef = useRef(false);
@@ -97,10 +151,9 @@ export function HuntApp() {
   const dragDepth = useRef(0);
   const searchReq = useRef(0);
   const landAbort = useRef<AbortController | null>(null);
-  const unitAbort = useRef<AbortController | null>(null);
   const detailAbort = useRef<AbortController | null>(null);
   const mapWrapRef = useRef<HTMLDivElement>(null);
-  const unitsRef = useRef<HuntUnit[]>([]);
+  const huntUnitsRef = useRef<HuntUnit[]>([]);
   const pinnedRef = useRef<Spot | null>(null);
   const landTimer = useRef<number | null>(null);
   const landKey = useRef("");
@@ -123,7 +176,7 @@ export function HuntApp() {
   const [recStart, setRecStart] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [land, setLand] = useState<LandState | null>(null);
-  const [spotUnit, setSpotUnit] = useState<UnitHit | null>(null);
+  const [spotUnits, setSpotUnits] = useState<UnitHit[]>([]);
   const [pinned, setPinned] = useState<Spot | null>(null);
   const [hover, setHover] = useState<Spot | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -133,7 +186,7 @@ export function HuntApp() {
   const [installHelp, setInstallHelp] = useState(false);
   const [listening, setListening] = useState(false);
   const [finePointer, setFinePointer] = useState(false);
-  const [units, setUnits] = useState<HuntUnit[]>([]);
+  const [viewBounds, setViewBounds] = useState<Bounds | null>(null);
   const [weather, setWeather] = useState<FieldWeather | null>(null);
   const [weatherAt, setWeatherAt] = useState<{ lng: number; lat: number } | null>(null);
   const [weatherRefresh, setWeatherRefresh] = useState(0);
@@ -143,16 +196,20 @@ export function HuntApp() {
   const [searching, setSearching] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [dropHot, setDropHot] = useState(false);
-  const [coordMode, setCoordMode] = useState<"dd" | "dms" | "utm">("dd");
   const [packNote, setPackNote] = useState<string | null>(null);
   const [packing, setPacking] = useState(false);
+  const [screenAwake, setScreenAwake] = useState(false);
+  const [systemReduce, setSystemReduce] = useState(false);
+  const coordMode = settings.coordinateFormat;
+  const unitPrefs: Units = settings;
+  const reduceMotion = settings.motion === "reduce" || (settings.motion === "system" && systemReduce);
 
   const selected = store.waypoints.find((waypoint) => waypoint.id === selectedId) ?? null;
-  unitsRef.current = units;
+  const { units: huntUnits, inView: unitProviders } = useHuntUnits(viewBounds, hydrated && settings.showUnits, searchOpen);
+  huntUnitsRef.current = huntUnits;
   pinnedRef.current = pinned;
-  const region: HuntRegion = store.huntRegion === "id" ? "id" : "az";
-  const jumps = region === "id" ? ID_JUMPS : JUMPS;
-  const clockZone = zoneAt(view.lng, view.lat);
+  // The forecast reports the point's IANA zone; until it arrives, use the device's zone.
+  const clockZone = weather?.source.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   useEffect(() => {
     const iosBar = (navigator as Navigator & { standalone?: boolean }).standalone === true;
@@ -187,16 +244,38 @@ export function HuntApp() {
   }, []);
 
   useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const apply = () => setSystemReduce(media.matches);
+    apply();
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, []);
+
+  useEffect(() => {
     let live = true;
     void Promise.resolve()
       .then(() => useHunt.persist.rehydrate())
       .catch(() => undefined)
       .then(() => {
         if (!live) return;
-        const saved = useHunt.getState().lastView;
-        if (saved) setView(saved);
+        try {
+          hydrateSettings();
+        } catch {
+          /* settings keep their defaults; the store reports why */
+        }
+        const prefs = useSettings.getState().effective;
+        const saved =
+          prefs.startupView === "national"
+            ? NATIONAL_VIEW
+            : prefs.startupView === "home" && prefs.homeView
+              ? prefs.homeView
+              : useHunt.getState().lastView;
+        if (saved) {
+          initialViewRef.current = saved;
+          setView(saved);
+        }
         setHydrated(true);
-        const warning = getHuntStorageWarning();
+        const warning = getHuntStorageWarning() ?? useSettings.getState().warning;
         if (warning) setNotice(warning);
       });
     return () => {
@@ -226,6 +305,46 @@ export function HuntApp() {
   }, [recording, recStart]);
 
   useEffect(() => {
+    const lock = (navigator as Navigator & { wakeLock?: { request: (type: "screen") => Promise<{ release: () => Promise<void>; addEventListener: (name: "release", fn: () => void) => void }> } }).wakeLock;
+    if (!recording || !settings.keepAwake || !lock) return;
+    let live = true;
+    let requesting = false;
+    const acquire = () => {
+      if (!live || requesting || document.visibilityState !== "visible" || wakeRef.current) return;
+      requesting = true;
+      void lock
+        .request("screen")
+        .then((sentinel) => {
+          if (!live) {
+            void sentinel.release();
+            return;
+          }
+          wakeRef.current = sentinel;
+          setScreenAwake(true);
+          sentinel.addEventListener("release", () => {
+            // A late release from an older lock must not clear a newer one.
+            if (wakeRef.current !== sentinel) return;
+            wakeRef.current = null;
+            setScreenAwake(false);
+          });
+        })
+        .catch(() => setScreenAwake(false))
+        .finally(() => {
+          requesting = false;
+        });
+    };
+    acquire();
+    document.addEventListener("visibilitychange", acquire);
+    return () => {
+      live = false;
+      document.removeEventListener("visibilitychange", acquire);
+      void wakeRef.current?.release();
+      wakeRef.current = null;
+      setScreenAwake(false);
+    };
+  }, [recording, settings.keepAwake]);
+
+  useEffect(() => {
     if (!hydrated) return;
     const timer = window.setTimeout(() => useHunt.getState().setLastView(view), 700);
     return () => window.clearTimeout(timer);
@@ -233,26 +352,30 @@ export function HuntApp() {
 
   useEffect(() => {
     if (!hydrated) return;
-    void tileCacheLabel().then((label) => {
-      if (label) setPackNote(label);
-    });
+    // Older builds stored Esri imagery tiles; remove them before reporting what's saved.
+    void purgeRestrictedTiles()
+      .then(() => tileCacheLabel())
+      .then((label) => {
+        if (label) setPackNote(label);
+      });
   }, [hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
-    const region: HuntRegion = useHunt.getState().huntRegion === "id" ? "id" : "az";
-    let live = true;
-    void loadUnits(region)
-      .then((rows) => {
-        if (live) setUnits(rows);
-      })
-      .catch(() => {
-        /* the unit layer stays off if the service is down */
-      });
-    return () => {
-      live = false;
-    };
-  }, [hydrated, store.huntRegion]);
+    // Unit caches from the Arizona/Idaho-only builds are replaced by the catalog's own store.
+    void deleteLegacyUnitCaches();
+  }, [hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    // Which providers apply depends on what's on screen, across state lines, never on a state mode.
+    const timer = window.setTimeout(() => {
+      const bounds = mapRef.current?.getBounds();
+      const next = bounds ? normalizeBounds(bounds) : null;
+      if (next) setViewBounds(next);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [view, hydrated]);
 
   useEffect(() => {
     if (!detail || land?.status !== "ready") return;
@@ -267,24 +390,33 @@ export function HuntApp() {
   }, [land, detail]);
 
   useEffect(() => {
-    if (units.length === 0) return;
     const point = hover ?? pinned;
-    if (!point) return;
-    const local = unitAt(units, point.lng, point.lat);
-    const next = local ? hitFromUnit(local, false) : null;
-    setSpotUnit((prev) => (prev?.gmu === next?.gmu && prev?.forest === next?.forest && prev?.species === next?.species ? prev : next));
-  }, [units, hover, pinned]);
+    if (!point || huntUnits.length === 0) return;
+    syncUnit(point.lng, point.lat);
+  }, [huntUnits, hover, pinned]);
 
-  const unitsGeo = useMemo(() => unitsCollection(units), [units]);
-  const unitLabels = useMemo(() => units.map((unit) => ({ gmu: unit.gmu, lng: unit.label.lng, lat: unit.label.lat })), [units]);
-  const unitMatch = query.trim() ? matchUnit(units, query) : null;
+  const unitsGeo = useMemo(() => unitShapes(huntUnits), [huntUnits]);
+  const unitLabels = useMemo(() => toUnitLabels(huntUnits), [huntUnits]);
+  const unitMatches = useMemo(
+    () => (query.trim() ? searchUnits(huntUnits, query, { near: { lng: view.lng, lat: view.lat } }).slice(0, 5) : []),
+    // Distance ranking uses the view at the time of typing; it needn't re-rank on every pan.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [huntUnits, query],
+  );
 
   const probe = hover ?? pinned;
   const readLng = probe?.lng ?? view.lng;
   const readLat = probe?.lat ?? view.lat;
-  const weatherKey = `${readLat.toFixed(2)},${readLng.toFixed(2)}`;
-  const landHit =
-    land?.status === "ready" && probe && Math.abs(land.lng - probe.lng) < 0.003 && Math.abs(land.lat - probe.lat) < 0.003 ? land.hit : null;
+  const weatherPoint =
+    settings.weatherLocation === "selected" && selected
+      ? { lng: selected.lng, lat: selected.lat, where: selected.name || "selected mark" }
+      : settings.weatherLocation === "pointer" && probe
+        ? { lng: probe.lng, lat: probe.lat, where: hover ? "the pointer" : "the pinned spot" }
+        : { lng: view.lng, lat: view.lat, where: "the map center" };
+  const weatherKey = `${weatherPoint.lat.toFixed(2)},${weatherPoint.lng.toFixed(2)}`;
+  const landNear = land && probe && Math.abs(land.lng - probe.lng) < 0.003 && Math.abs(land.lat - probe.lat) < 0.003 ? land : null;
+  const landHit = landNear?.status === "ready" ? landNear.hit : null;
+  const landDown = landNear?.status === "error";
 
   useEffect(() => {
     if (!hydrated) return;
@@ -331,7 +463,7 @@ export function HuntApp() {
         setPinned(null);
         setHover(null);
         setLand(null);
-        setSpotUnit(null);
+        setSpotUnits([]);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -376,10 +508,15 @@ export function HuntApp() {
           setGps(next);
           setGpsError(null);
           if (followRef.current) mapRef.current?.easeTo(next.lng, next.lat);
-          if (recordPendingRef.current) {
+          const field = useSettings.getState().effective;
+          // A poor fix still moves the location dot, but never becomes part of the recorded path.
+          const usable = next.accuracy <= field.gpsMaxAccuracyM;
+          // While waiting to start, poor fixes are skipped; the waiting pill shows their accuracy.
+          if (recordPendingRef.current && usable) {
             recordPendingRef.current = false;
             setRecordPending(false);
             recRef.current = true;
+            lastRecRef.current = next;
             const start = Date.now();
             const points = [{ lng: next.lng, lat: next.lat, t: start }];
             recPtsRef.current = points;
@@ -388,9 +525,9 @@ export function HuntApp() {
             setRecording(true);
             setSheet(null);
             setNotice("Track recording started.");
-          } else if (recRef.current) {
+          } else if (recRef.current && usable) {
             const prev = lastRecRef.current;
-            if (!prev || haversine(prev, next) >= 8) {
+            if (!prev || haversine(prev, next) >= field.gpsMinMoveM) {
               lastRecRef.current = next;
               const points = [...recPtsRef.current, { lng: next.lng, lat: next.lat, t: Date.now() }];
               recPtsRef.current = points;
@@ -458,29 +595,46 @@ export function HuntApp() {
     setHover(null);
     setDetail(null);
     setLand(null);
-    setSpotUnit(null);
+    setSpotUnits([]);
   }
 
+  /** Hover/pin readout from units already loaded; no network request per pointer move. */
   function syncUnit(lng: number, lat: number) {
-    const rows = unitsRef.current;
-    if (rows.length > 0) {
-      const local = unitAt(rows, lng, lat);
-      const next = local ? hitFromUnit(local, false) : null;
-      setSpotUnit((prev) => (prev?.gmu === next?.gmu && prev?.forest === next?.forest && prev?.species === next?.species ? prev : next));
+    const next = unitsAt(huntUnitsRef.current, { lng, lat });
+    const key = next.map((hit) => hit.unit.id).join("|");
+    setSpotUnits((prev) => (prev.map((hit) => hit.unit.id).join("|") === key ? prev : next));
+  }
+
+  /**
+   * Authoritative unit answer for an inspected point: asks every provider whose
+   * coverage includes it (across state lines) and lists every overlapping unit.
+   */
+  function inspectUnits(lng: number, lat: number, signal: AbortSignal) {
+    const providers = providersAt({ lng, lat }, UNIT_ADAPTERS.map((adapter) => adapter.info), "hunt-units");
+    if (providers.length === 0) {
+      setDetail((current) => (current && current.lng === lng && current.lat === lat ? { ...current, unitsPending: false } : current));
       return;
     }
-    unitAbort.current?.abort();
-    const unitController = new AbortController();
-    unitAbort.current = unitController;
-    void identifyUnit(lng, lat, unitController.signal, region)
-      .then((hit) => {
-        if (!unitController.signal.aborted) setSpotUnit(hit);
-      })
-      .catch(() => {
-        if (!unitController.signal.aborted) setSpotUnit(null);
-      })
-      .finally(() => {
-      });
+    const answers = new Map<string, UnitHit[]>();
+    let remaining = providers.length;
+    for (const info of providers) {
+      void unitAdapterById(info.id)
+        ?.identify({ lng, lat }, signal)
+        .then((result) => {
+          answers.set(info.id, result.hits);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          remaining -= 1;
+          if (signal.aborted) return;
+          setDetail((current) => {
+            if (!current || current.lng !== lng || current.lat !== lat) return current;
+            // Providers that answered replace their local guesses; others keep the local copy.
+            const kept = current.units.filter((hit) => !answers.has(hit.unit.providerId));
+            return { ...current, units: [...kept, ...[...answers.values()].flat()], unitsPending: remaining > 0 };
+          });
+        });
+    }
   }
 
   function runIdentify(lng: number, lat: number) {
@@ -524,7 +678,7 @@ export function HuntApp() {
     setHover(null);
     const pin = pinnedRef.current;
     if (!pin) {
-      setSpotUnit(null);
+      setSpotUnits([]);
       setLand(null);
       landKey.current = "";
       return;
@@ -535,9 +689,7 @@ export function HuntApp() {
 
   function openDetail(lng: number, lat: number, x: number, y: number) {
     if (sheet) return;
-    const rows = unitsRef.current;
-    const local = rows.length ? unitAt(rows, lng, lat) : null;
-    setDetail({ lng, lat, x, y, unit: local ? hitFromUnit(local, false) : null, land: null, pending: true });
+    setDetail({ lng, lat, x, y, units: unitsAt(huntUnitsRef.current, { lng, lat }), unitsPending: true, land: null, pending: true });
     setPinned({ lng, lat, x, y });
     setHover(null);
     syncUnit(lng, lat);
@@ -555,15 +707,7 @@ export function HuntApp() {
         if (error instanceof DOMException && error.name === "AbortError") return;
         setDetail((current) => (current && current.lng === lng && current.lat === lat ? { ...current, pending: false } : current));
       });
-    if (!local) {
-      void identifyUnit(lng, lat, controller.signal, region)
-        .then((hit) => {
-          if (!controller.signal.aborted) {
-            setDetail((current) => (current && current.lng === lng && current.lat === lat ? { ...current, unit: hit ?? current.unit } : current));
-          }
-        })
-        .catch(() => undefined);
-    }
+    inspectUnits(lng, lat, controller.signal);
   }
 
   function onMapClick(lng: number, lat: number, x = 0, y = 0) {
@@ -667,41 +811,28 @@ export function HuntApp() {
 
   function goToUnit(unit: HuntUnit) {
     mapRef.current?.fit([
-      { lng: unit.west, lat: unit.south },
-      { lng: unit.east, lat: unit.north },
+      { lng: unit.bounds.west, lat: unit.bounds.south },
+      { lng: unit.bounds.east, lat: unit.bounds.north },
     ]);
     setSearchOpen(false);
     setQuery("");
     setHits([]);
   }
 
-  function pickRegion(next: HuntRegion) {
-    const target = REGION_VIEW[next];
-    if (store.huntRegion !== next) {
-      store.setHuntRegion(next);
-      setUnits([]);
-      setSpotUnit(null);
-      setDetail(null);
-      setHover(null);
-      setPinned(null);
-      setLand(null);
-      landKey.current = "";
-    }
-    mapRef.current?.easeTo(target.lng, target.lat, target.zoom);
-    setSearchOpen(false);
-  }
-
   async function saveArea() {
     const bounds = mapRef.current?.getBounds();
     if (!bounds || packing) return;
     const templates: string[] = [];
-    if (store.basemap === "topo") templates.push(TILES.topo);
-    else if (store.basemap !== "street") templates.push(TILES.satellite);
-    if (store.showPublic) templates.push(TILES.sma);
+    // Esri imagery can't be stored, so imagery views save USGS imagery instead.
+    const swapped = LIVE_ONLY_BASEMAPS.includes(settings.basemap);
+    if (settings.basemap === "topo") templates.push(TILES.topo);
+    else if (settings.basemap !== "street") templates.push(TILES.imagery);
+    if (settings.showPublic) templates.push(TILES.sma);
     if (templates.length === 0) {
-      setPackNote("Street roads and labels are streamed live. Switch to Satellite or Topo to save a base map.");
+      setPackNote("Street roads and labels are streamed live. Switch to USGS imagery or Topo to save a base map.");
       return;
     }
+    const swapNote = swapped ? " Esri imagery can't be stored, so USGS imagery was saved instead; switch the base map to USGS when you're offline." : "";
     setPacking(true);
     setPackNote("Preparing this view…");
     try {
@@ -717,9 +848,9 @@ export function HuntApp() {
       } else {
         const parts = [`${result.saved} new`, `${result.reused} already saved`];
         if (result.failed) parts.push(`${result.failed} not saved`);
-        setPackNote(`${parts.join(", ")}. One zoom level only; roads, labels, weather, and search still need a connection.`);
+        setPackNote(`${parts.join(", ")}. One zoom level only; roads, labels, weather, and search still need a connection.${swapNote}`);
         void tileCacheLabel().then((label) => {
-          if (label) setPackNote(`${parts.join(", ")}. ${label}. Roads, labels, weather, and search still need a connection.`);
+          if (label) setPackNote(`${parts.join(", ")}. ${label}. Roads, labels, weather, and search still need a connection.${swapNote}`);
         });
       }
     } catch {
@@ -806,20 +937,6 @@ export function HuntApp() {
     }
     if (waypoints.length || tracks.length) {
       store.importAll(waypoints, tracks);
-      const regionHit = guessRegion([
-        ...waypoints.map((mark) => ({ lng: mark.lng, lat: mark.lat })),
-        ...tracks.flatMap((track) => [track.points[0], track.points[track.points.length - 1]]),
-      ]);
-      if (regionHit && regionHit !== useHunt.getState().huntRegion) {
-        useHunt.getState().setHuntRegion(regionHit);
-        setUnits([]);
-        setSpotUnit(null);
-        setDetail(null);
-        setHover(null);
-        setPinned(null);
-        setLand(null);
-        landKey.current = "";
-      }
       const fitPts = [
         ...waypoints.map((mark) => ({ lng: mark.lng, lat: mark.lat })),
         ...tracks.flatMap((track) => {
@@ -891,19 +1008,14 @@ export function HuntApp() {
     URL.revokeObjectURL(url);
   }
 
-  const windSpeed = weather
-    ? store.imperial
-      ? `${Math.round(mpsToMph(weather.windMps))} mph`
-      : `${weather.windMps.toFixed(1)} m/s`
-    : null;
-  const tempLabel = weather ? `${Math.round(store.imperial ? cToF(weather.tempC) : weather.tempC)}°` : null;
-  const feelsLabel = weather ? `${Math.round(store.imperial ? cToF(weather.apparentC) : weather.apparentC)}°` : null;
-  const highLabel = weather ? `${Math.round(store.imperial ? cToF(weather.highC) : weather.highC)}°` : null;
-  const lowLabel = weather ? `${Math.round(store.imperial ? cToF(weather.lowC) : weather.lowC)}°` : null;
+  const windSpeed = weather ? formatSpeed(weather.windMps, unitPrefs.speedUnit) : null;
+  const tempLabel = weather ? formatTemp(weather.tempC, unitPrefs.temperatureUnit) : null;
+  const feelsLabel = weather ? formatTemp(weather.apparentC, unitPrefs.temperatureUnit) : null;
+  const highLabel = weather ? formatTemp(weather.highC, unitPrefs.temperatureUnit) : null;
+  const lowLabel = weather ? formatTemp(weather.lowC, unitPrefs.temperatureUnit) : null;
   const skyLabel = weather ? weatherLabel(weather.code, true) : null;
-  const shootStart = weather ? formatClock(shiftLocalIso(weather.sunrise, -AZ_SHOOT_LEAD_MIN)) : null;
-  const shootEnd = weather ? formatClock(shiftLocalIso(weather.sunset, AZ_SHOOT_LEAD_MIN)) : null;
-  const shootLabel = shootStart && shootEnd && shootStart !== "—" && shootEnd !== "—" ? `${shootStart}–${shootEnd}` : null;
+  const lightWindow =
+    weather && settings.daylightWindow ? personalWindow(weather.sunrise, weather.sunset, settings.daylightBeforeMin, settings.daylightAfterMin) : null;
   const measureLength = pathLength(measureClosed && measurePts.length > 2 ? [...measurePts, measurePts[0]] : measurePts);
   const measureArea = measureClosed ? ringArea(measurePts) : 0;
   const measureBearing =
@@ -920,10 +1032,10 @@ export function HuntApp() {
     };
   }, [selected, view.lng, view.lat, weather?.sunriseAt, weather?.sunsetAt]);
   useEffect(() => {
-    if (!store.showShade || shadeMin != null) return;
+    if (!settings.showShade || shadeMin != null) return;
     const id = window.setInterval(() => setShadeNow(Date.now()), 60_000);
     return () => window.clearInterval(id);
-  }, [store.showShade, shadeMin]);
+  }, [settings.showShade, shadeMin]);
   const shadeSun = useMemo(() => {
     const when = shadeMin == null ? new Date(shadeNow) : localDate(clockZone, shadeMin);
     const sun = sunPosition(view.lng, view.lat, when);
@@ -938,9 +1050,12 @@ export function HuntApp() {
   const pressureLabel =
     weather?.pressureHpa == null
       ? null
-      : `${formatPressure(weather.pressureHpa, store.imperial)}${weather.pressureTrend ? ` · ${weather.pressureTrend}` : ""}`;
-  const spotWeather =
-    detail && weather && weatherAt && Math.abs(weatherAt.lat - detail.lat) < 0.02 && Math.abs(weatherAt.lng - detail.lng) < 0.02 ? weather : null;
+      : `${formatPressure(weather.pressureHpa, unitPrefs.pressureUnit)}${weather.pressureTrend ? ` · ${weather.pressureTrend}` : ""}`;
+  const near = (at: { lng: number; lat: number } | null, lng: number, lat: number) =>
+    at != null && Math.abs(at.lat - lat) < 0.02 && Math.abs(at.lng - lng) < 0.02;
+  const spotWeather = detail && weather && near(weatherAt, detail.lng, detail.lat) ? weather : null;
+  // Only describe the coordinate readout with weather fetched for that same point.
+  const readoutWeather = weather && near(weatherAt, readLng, readLat) ? weather : null;
   const hunts = [...new Set(store.waypoints.map((waypoint) => waypoint.hunt).filter(Boolean))];
   const tilted = Math.abs(view.bearing) > 2 || view.pitch > 8;
 
@@ -980,10 +1095,20 @@ export function HuntApp() {
               className="mt-3 flex h-11 w-full items-center justify-between rounded-md border border-line bg-surface px-3 text-left text-sm"
             >
               <span className="flex items-center gap-2">
-                <WindArrow deg={weather?.windFrom ?? 0} />
-                <span className="font-mono tabular-nums">{weather ? `${cardinal(weather.windFrom)} · ${windSpeed}` : "Wind"}</span>
+                <WindArrow deg={weather?.windFrom ?? null} />
+                <span className="font-mono tabular-nums">{weather ? formatWind(weather.windFrom, weather.windMps, unitPrefs.speedUnit) : "Wind"}</span>
               </span>
               <span className="text-muted">{[tempLabel, skyLabel].filter(Boolean).join(" · ")}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSheet("settings");
+                setSearchOpen(false);
+              }}
+              className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-md border border-line bg-surface text-sm"
+            >
+              <Settings className="size-4" /> Settings
             </button>
             <div className="mt-2 grid grid-cols-2 gap-2">
               <button
@@ -1018,7 +1143,7 @@ export function HuntApp() {
             <WaypointRows
               waypoints={store.waypoints}
               gps={gps}
-              imperial={store.imperial}
+              units={unitPrefs}
               onOpen={(id, lng, lat) => {
                 setSelectedId(id);
                 setSheet("edit");
@@ -1026,7 +1151,7 @@ export function HuntApp() {
               }}
             />
             <h2 className="mt-4 font-display text-xl tracking-wide">Tracks</h2>
-            <TrackRows tracks={store.tracks} imperial={store.imperial} onFit={(points) => mapRef.current?.fit(points)} onToggle={store.toggleTrack} onDelete={store.removeTrack} />
+            <TrackRows tracks={store.tracks} units={unitPrefs} onFit={(points) => mapRef.current?.fit(points)} onToggle={store.toggleTrack} onDelete={store.removeTrack} />
           </div>
         </aside>
       ) : null}
@@ -1034,19 +1159,23 @@ export function HuntApp() {
       <MapCanvas
         ref={mapRef}
         hydrated={hydrated}
-        basemap={store.basemap}
-        showPublic={store.showPublic}
-        publicOpacity={store.publicOpacity}
-        showLabels={store.showLabels}
-        showRoads={store.showRoads}
-        showTracks={store.showTracks}
-        showCreeks={store.showCreeks}
-        showPeaks={store.showPeaks}
-        showUnitLabels={store.showUnitLabels}
-        showBorder={store.showBorder}
-        terrain={store.terrain}
-        imperial={store.imperial}
-        showMarks={store.showMarks}
+        basemap={settings.basemap}
+        showPublic={settings.showPublic}
+        publicOpacity={settings.publicOpacity}
+        showLabels={settings.showLabels}
+        showRoads={settings.showRoads}
+        showTracks={settings.showTracks}
+        showCreeks={settings.showCreeks}
+        showPeaks={settings.showPeaks}
+        showUnitLabels={settings.showUnitLabels}
+        showBorder={settings.showBorder}
+        terrain={settings.terrain}
+        terrainExaggeration={settings.terrainExaggeration}
+        distanceUnit={unitPrefs.distanceUnit}
+        elevationUnit={unitPrefs.elevationUnit}
+        reduceMotion={reduceMotion}
+        initialView={initialViewRef.current}
+        showMarks={settings.showMarks}
         waypoints={store.waypoints}
         selectedId={selectedId}
         tracks={store.tracks}
@@ -1055,21 +1184,20 @@ export function HuntApp() {
         measureClosed={measureClosed}
         gps={gps}
         tool={tool}
-        showShade={store.showShade}
-        showSun={store.showSun}
-        showRings={store.showRings}
-        showUnits={store.showUnits}
+        showShade={settings.showShade}
+        showSun={settings.showSun}
+        showRings={settings.showRings}
+        showUnits={settings.showUnits}
         unitsGeo={unitsGeo}
-        borderGeo={region === "id" ? idBorder : azBorder}
         unitLabels={unitLabels}
         windFrom={weather?.windFrom ?? null}
         sunLng={selected?.lng ?? null}
         sunLat={selected?.lat ?? null}
         riseAz={sunAz.rise}
         setAz={sunAz.set}
-        liveAz={store.showSun ? liveAz : null}
-        shadeAz={store.showShade && store.basemap !== "topo" ? shadeSun.azimuth : null}
-        shadeEl={store.showShade && store.basemap !== "topo" ? shadeSun.elevation : null}
+        liveAz={settings.showSun ? liveAz : null}
+        shadeAz={settings.showShade && settings.basemap !== "topo" ? shadeSun.azimuth : null}
+        shadeEl={settings.showShade && settings.basemap !== "topo" ? shadeSun.elevation : null}
         viewZoom={view.zoom}
         ringAt={selected ? { lng: selected.lng, lat: selected.lat } : null}
         onMapClick={onMapClick}
@@ -1098,12 +1226,13 @@ export function HuntApp() {
         <div
           data-spot-info
           className="pointer-events-auto absolute z-30 flex flex-col overflow-hidden overscroll-contain rounded-lg border border-line bg-surface shadow-lg touch-pan-y"
-          style={placeDetail(detail, mapWrapRef.current, store.showShade && store.basemap !== "topo" ? 1.7 : 0)}
+          style={placeDetail(detail, mapWrapRef.current, settings.showShade && settings.basemap !== "topo" ? 1.7 : 0)}
         >
           <SpotInfo
             detail={detail}
             weather={spotWeather}
-            imperial={store.imperial}
+            units={unitPrefs}
+            daylight={settings}
             onClose={() => setDetail(null)}
             onCopy={copyText}
             onMark={() => dropAt(detail.lng, detail.lat)}
@@ -1120,8 +1249,8 @@ export function HuntApp() {
             className="relative min-w-0 flex-1"
             onSubmit={(event) => {
               event.preventDefault();
-              if (unitMatch) {
-                goToUnit(unitMatch);
+              if (unitMatches[0]) {
+                goToUnit(unitMatches[0].unit);
                 return;
               }
               if (hits[0]) {
@@ -1140,7 +1269,7 @@ export function HuntApp() {
                 setSearchOpen(true);
               }}
               onFocus={() => setSearchOpen(true)}
-              placeholder="Search a unit, town, or ridge"
+              placeholder="Search a unit (az 22), town, or ridge"
               aria-label="Search places"
               autoCapitalize="off"
               autoCorrect="off"
@@ -1160,22 +1289,23 @@ export function HuntApp() {
             ) : null}
             {searchOpen ? (
               <div className="absolute inset-x-0 top-12 overflow-hidden rounded-lg border border-line bg-surface shadow-lg">
-                {unitMatch ? (
+                {unitMatches.map((match) => (
                   <button
+                    key={match.unit.id}
                     type="button"
                     className="flex min-h-11 w-full flex-col items-start justify-center px-3 text-left hover:bg-surface-2"
-                    onClick={() => goToUnit(unitMatch)}
+                    onClick={() => goToUnit(match.unit)}
                   >
-                    <span>Unit {unitMatch.gmu}</span>
+                    <span>{match.label}</span>
                     <span className="text-sm text-muted">
-                      {[unitMatch.regionName, unitMatch.forest].filter(Boolean).join(" · ") || (region === "id" ? "Idaho game unit" : "Arizona game unit")}
+                      {[match.unit.regionName, match.unit.seasonContext, match.unit.forest].filter(Boolean).join(" · ") || "Hunt unit"}
                     </span>
                   </button>
-                ) : null}
+                ))}
                 {query.trim().length < 2 ? (
                   <div className="p-2">
                     <p className="px-2 py-1 text-xs tracking-wide text-subtle uppercase">Jump</p>
-                    {jumps.map((place) => (
+                    {JUMPS.map((place) => (
                       <button
                         key={place.name}
                         type="button"
@@ -1207,24 +1337,6 @@ export function HuntApp() {
               </div>
             ) : null}
           </form>
-          <div className="flex h-11 shrink-0 overflow-hidden rounded-full border border-line bg-surface" role="group" aria-label="Hunt state">
-            <button
-              type="button"
-              data-on={region === "az"}
-              className="h-11 px-2.5 text-sm font-medium text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
-              onClick={() => pickRegion("az")}
-            >
-              AZ
-            </button>
-            <button
-              type="button"
-              data-on={region === "id"}
-              className="h-11 px-2.5 text-sm font-medium text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
-              onClick={() => pickRegion("id")}
-            >
-              ID
-            </button>
-          </div>
           <button
             type="button"
             onClick={() => {
@@ -1234,7 +1346,7 @@ export function HuntApp() {
             className="flex h-11 shrink-0 items-center gap-1.5 rounded-full border border-line bg-surface px-3 text-sm text-fg lg:hidden"
             aria-label="Weather"
           >
-            {weather ? <WeatherMark code={weather.code} /> : <WindArrow deg={0} />}
+            {weather?.code != null ? <WeatherMark code={weather.code} /> : <WindArrow deg={weather?.windFrom ?? null} />}
             {tempLabel ? <span className="font-mono tabular-nums">{tempLabel}</span> : null}
             <span className="font-mono text-muted tabular-nums">{windSpeed ?? "Wind"}</span>
           </button>
@@ -1244,20 +1356,23 @@ export function HuntApp() {
         <div className="pointer-events-auto flex items-start justify-between gap-2">
           <button
             type="button"
-            onClick={() => setCoordMode((mode) => (mode === "dd" ? "dms" : mode === "dms" ? "utm" : "dd"))}
-            className="rounded-md bg-surface/95 px-2.5 py-1.5 text-left font-mono text-xs leading-relaxed text-fg tabular-nums"
+            onClick={() => setSetting("coordinateFormat", NEXT_FORMAT[coordMode])}
+            aria-label="Coordinates. Tap to change format."
+            className="min-w-0 rounded-md bg-surface/95 px-2.5 py-1.5 text-left font-mono text-xs leading-relaxed text-fg tabular-nums"
           >
-            {coordMode === "dd" ? formatDd(readLng, readLat) : coordMode === "dms" ? formatDms(readLng, readLat) : formatUtm(readLng, readLat)}
+            <span className="block truncate">
+              {coordMode === "dd" ? formatDd(readLng, readLat) : coordMode === "dms" ? formatDms(readLng, readLat) : formatUtm(readLng, readLat)}
+            </span>
             <span className="mt-0.5 block max-w-[18rem] truncate text-muted">
-              {probe && spotUnit ? `Unit ${spotUnit.gmu}` : null}
-              {probe && spotUnit ? " · " : ""}
-              {landHit ? `${landHit.tone === "private" ? "Private" : landHit.agency} · ` : ""}
-              {shootLabel ? `Light ${shootLabel}` : null}
-              {shootLabel ? " · " : ""}
-              {weather?.elevationM != null ? `${formatElev(weather.elevationM, store.imperial)} elev` : "Elev —"}
-              {weather?.slopePct != null ? ` · ${Math.round(weather.slopePct)}%${weather.fallsDeg != null ? ` falls ${cardinal(weather.fallsDeg)}` : ""}` : ""}
-              {tempLabel ? ` · ${tempLabel}` : ""}
-              {skyLabel ? ` ${skyLabel}` : ""}
+              {probe && spotUnits.length > 0 ? `${hitsTag(spotUnits)} · ` : ""}
+              {landHit ? `${landTag(landHit)} · ` : landDown ? "Land unavailable · " : ""}
+              {readoutWeather && lightWindow ? `Your window ${lightWindow} · ` : ""}
+              {readoutWeather?.elevationM != null ? `${formatElev(readoutWeather.elevationM, unitPrefs.elevationUnit)} elev` : "Elev —"}
+              {readoutWeather?.slopePct != null
+                ? ` · ${Math.round(readoutWeather.slopePct)}%${readoutWeather.fallsDeg != null ? ` falls ${cardinal(readoutWeather.fallsDeg)}` : ""}`
+                : ""}
+              {readoutWeather && tempLabel ? ` · ${tempLabel}` : ""}
+              {readoutWeather && skyLabel ? ` ${skyLabel}` : ""}
             </span>
           </button>
           <div className="flex shrink-0 items-start gap-2">
@@ -1271,6 +1386,17 @@ export function HuntApp() {
                 <Compass className="size-5" style={{ transform: `rotate(${-view.bearing}deg)` }} />
               </button>
             ) : null}
+            <button
+              type="button"
+              aria-label="Settings"
+              onClick={() => {
+                setSheet("settings");
+                setSearchOpen(false);
+              }}
+              className="grid size-11 place-items-center rounded-full border border-line bg-surface text-fg"
+            >
+              <Settings className="size-5" />
+            </button>
             <button
               type="button"
               data-on={listening}
@@ -1312,21 +1438,28 @@ export function HuntApp() {
 
       <div
         className={`pointer-events-none absolute inset-x-0 z-20 flex flex-col items-center gap-2 px-3 ${
-          store.showShade && store.basemap !== "topo" && sheet === null
+          settings.showShade && settings.basemap !== "topo" && sheet === null
             ? "bottom-[max(7.25rem,calc(6.4rem+env(safe-area-inset-bottom)))]"
             : "bottom-[max(5.5rem,calc(4.5rem+env(safe-area-inset-bottom)))]"
         }`}
       >
         {notice ? <p role="status" aria-live="polite" className="pointer-events-auto max-w-sm rounded-lg bg-surface px-3 py-1.5 text-center text-sm text-fg">{notice}</p> : null}
         {gpsError ? <p role="alert" aria-live="assertive" className="pointer-events-auto rounded-full bg-surface px-3 py-1.5 text-sm text-muted">{gpsError}</p> : null}
-        {recordPending ? <p role="status" aria-live="polite" className="pointer-events-auto rounded-full bg-surface px-3 py-1.5 text-sm text-muted">Waiting for GPS before recording.</p> : null}
+        {recordPending ? (
+          <p role="status" aria-live="polite" className="pointer-events-auto rounded-full bg-surface px-3 py-1.5 text-center text-sm text-muted">
+            {gps && gps.accuracy > settings.gpsMaxAccuracyM
+              ? `Waiting for a fix better than ${settings.gpsMaxAccuracyM} m (now ±${Math.round(gps.accuracy)} m). Change the limit in Settings.`
+              : "Waiting for GPS before recording."}
+          </p>
+        ) : null}
         {listening ? <NoiseMeter /> : null}
         {recording ? (
           <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
             <span className="size-2 rounded-full bg-danger" />
             <span className="font-mono tabular-nums">
-              {formatDistance(pathLength(recPts), store.imperial)} · {formatDuration(now - (recStart ?? now))}
+              {formatDistance(pathLength(recPts), unitPrefs.distanceUnit)} · {formatDuration(now - (recStart ?? now))}
             </span>
+            {screenAwake ? <span className="text-xs text-muted">Screen on</span> : null}
             <button type="button" className="text-danger" onClick={discardTrack}>
               Discard
             </button>
@@ -1350,9 +1483,9 @@ export function HuntApp() {
         {tool === "measure" ? (
           <div className="pointer-events-auto flex flex-wrap items-center justify-center gap-2 rounded-full border border-line bg-surface px-3 py-1.5 text-sm">
             <span className="font-mono tabular-nums">
-              {measurePts.length < 2 ? "Tap points" : formatDistance(measureLength, store.imperial)}
+              {measurePts.length < 2 ? "Tap points" : formatDistance(measureLength, unitPrefs.distanceUnit)}
               {measureBearing != null ? ` · ${Math.round(measureBearing)}° ${cardinal(measureBearing)}` : ""}
-              {measureClosed ? ` · ${formatArea(measureArea, store.imperial)}` : ""}
+              {measureClosed ? ` · ${formatArea(measureArea, unitPrefs.areaUnit)}` : ""}
             </span>
             <button type="button" className="h-9 px-1 text-muted" onClick={() => setMeasurePts((points) => points.slice(0, -1))} disabled={measurePts.length === 0}>
               Undo
@@ -1379,7 +1512,7 @@ export function HuntApp() {
         ) : null}
       </div>
 
-      {store.showShade && store.basemap !== "topo" && sheet === null ? (
+      {settings.showShade && settings.basemap !== "topo" && sheet === null ? (
         <ShadeBar
           minutes={shadeMin ?? localMinutes(clockZone)}
           live={shadeMin == null}
@@ -1450,59 +1583,81 @@ export function HuntApp() {
 
       {sheet === "layers" ? (
         <Panel title="Layers" onClose={() => setSheet(null)}>
-          <div className="grid grid-cols-4 gap-1 rounded-lg bg-bg p-2">
+          {activePreset ? (
+            <p className="mb-2 rounded-md bg-bg px-3 py-2 text-sm text-muted">
+              {PRESETS[activePreset].label} preset is on. Changing a layer it controls edits the preset; turn presets off in Settings.
+            </p>
+          ) : null}
+          <div className="grid grid-cols-5 gap-1 rounded-lg bg-bg p-2">
             {BASEMAPS.map((item) => (
               <button
                 key={item.id}
                 type="button"
-                data-on={store.basemap === item.id}
-                onClick={() => store.setBasemap(item.id)}
+                data-on={settings.basemap === item.id}
+                onClick={() => setSetting("basemap", item.id)}
                 className="h-10 rounded-md text-sm text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
               >
                 {item.label}
               </button>
             ))}
           </div>
-          <Toggle checked={store.showPublic} onChange={store.setShowPublic} label="Public land" hint="BLM surface management. Blank ground is usually private." />
-          <Toggle checked={store.showUnits} onChange={store.setShowUnits} label="Hunt units" hint={region === "id" ? "Idaho Fish and Game units. Reference lines, not the legal boundary." : "Arizona game management units. The lines meet at shared borders."} />
-          <Toggle checked={store.showBorder} onChange={store.setShowBorder} label="State border" hint={region === "id" ? "The Idaho state line, closed around the whole state." : "The Arizona state line, closed around the whole state."} />
-          <Toggle checked={store.showUnitLabels} onChange={store.setShowUnitLabels} label="Unit numbers" hint="They hide when you zoom out." />
-          <Toggle checked={store.showRoads} onChange={store.setShowRoads} label="Roads" hint="Freeways are orange, highways gold, local roads gray. Off on the topo scan." />
-          <Toggle checked={store.showTracks} onChange={store.setShowTracks} label="Forest tracks" hint="Tracks and trails, from closer zoom." />
-          <Toggle checked={store.showCreeks} onChange={store.setShowCreeks} label="Creeks" hint="Rivers and named creeks." />
-          <Toggle checked={store.showPeaks} onChange={store.setShowPeaks} label="Peaks" hint="Summit names and elevation." />
-          <Toggle checked={store.showLabels} onChange={store.setShowLabels} label="Towns" hint="Cities, towns, and small places. Off on the topo scan." />
+          <Toggle checked={settings.showPublic} onChange={bind("showPublic")} label="Public land" hint="BLM surface-management agencies. Blank ground has no agency record; that doesn't make it private or public." />
+          <Toggle
+            checked={settings.showUnits}
+            onChange={bind("showUnits")}
+            label="Hunt units"
+            hint={`State agency unit lines where Fieldline has them (${unitStatesText()}). Reference lines, not legal boundaries.`}
+          />
+          <Toggle checked={settings.showBorder} onChange={bind("showBorder")} label="State lines" hint="State and national lines from OpenStreetMap. Reference lines, not legal boundaries." />
+          <CoverageHere bounds={viewBounds} providers={unitProviders} />
+          <Toggle checked={settings.showUnitLabels} onChange={bind("showUnitLabels")} label="Unit numbers" hint="They hide when you zoom out." />
+          <Toggle checked={settings.showRoads} onChange={bind("showRoads")} label="Roads" hint="Freeways are orange, highways gold, local roads gray. Off on the topo scan." />
+          <Toggle checked={settings.showTracks} onChange={bind("showTracks")} label="Forest tracks" hint="Tracks and trails, from closer zoom." />
+          <Toggle checked={settings.showCreeks} onChange={bind("showCreeks")} label="Creeks" hint="Rivers and named creeks." />
+          <Toggle checked={settings.showPeaks} onChange={bind("showPeaks")} label="Peaks" hint="Summit names and elevation." />
+          <Toggle checked={settings.showLabels} onChange={bind("showLabels")} label="Towns" hint="Cities, towns, and small places. Off on the topo scan." />
           <Toggle checked={listening} onChange={setListening} label="Noise meter" hint="How much louder you are than the moment you turned it on. A phone mic is not a lab meter." />
           <button type="button" className="mt-2 flex h-11 w-full items-center justify-center gap-2 rounded-md border border-line text-sm" onClick={() => void addToPhone()}>
             <Download className="size-4" /> Add to home screen
           </button>
-          {store.showPublic ? (
+          {settings.showPublic ? (
             <label className="block pb-2 text-sm text-muted">
               Overlay strength
               <input
                 type="range"
-                min={0.3}
+                min={0.1}
                 max={0.9}
                 step={0.05}
-                value={store.publicOpacity}
+                value={settings.publicOpacity}
                 aria-label="Public land opacity"
-                onChange={(event) => store.setPublicOpacity(Number(event.target.value))}
+                onChange={(event) => setSetting("publicOpacity", Number(event.target.value))}
               />
             </label>
           ) : null}
-          <Toggle checked={store.showShade} onChange={store.setShowShade} label="Sun shade" hint="Shaded faces follow the sun. Scrub the time bar to move through the day. Off on the topo scan." />
-          <Toggle checked={store.showSun} onChange={store.setShowSun} label="Sun lines" hint="From the selected mark. Pale is sunrise, amber is sunset, white is the sun at the time on the shade bar." />
-          <Toggle checked={store.showRings} onChange={store.setShowRings} label="Range rings" hint={store.imperial ? "100, 200, and 400 yards around the selected mark." : "100, 200, and 400 meters around the selected mark."} />
-          <Toggle checked={store.terrain} onChange={store.setTerrain} label="3D terrain" hint="Tilt the map. Heavier on a phone." />
-          <Toggle checked={store.showMarks} onChange={store.setShowMarks} label="My marks" />
-          <div className="grid grid-cols-2 gap-1 rounded-lg bg-bg p-2">
-            <button type="button" data-on={store.imperial} onClick={() => store.setImperial(true)} className="h-10 rounded-md text-sm text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg">
-              Yards / miles
-            </button>
-            <button type="button" data-on={!store.imperial} onClick={() => store.setImperial(false)} className="h-10 rounded-md text-sm text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg">
-              Meters
-            </button>
+          <Toggle checked={settings.showShade} onChange={bind("showShade")} label="Sun shade" hint="Shaded faces follow the sun. Scrub the time bar to move through the day. Off on the topo scan." />
+          <Toggle checked={settings.showSun} onChange={bind("showSun")} label="Sun lines" hint="From the selected mark. Pale is sunrise, amber is sunset, white is the sun at the time on the shade bar." />
+          <Toggle checked={settings.showRings} onChange={bind("showRings")} label="Range rings" hint={unitPrefs.distanceUnit === "imperial" ? "100, 200, and 400 yards around the selected mark." : "100, 200, and 400 meters around the selected mark."} />
+          <Toggle checked={settings.terrain} onChange={bind("terrain")} label="3D terrain" hint="Tilt the map. Heavier on a phone." />
+          <Toggle checked={settings.showMarks} onChange={bind("showMarks")} label="My marks" />
+          <div className="grid grid-cols-2 gap-1 rounded-lg bg-bg p-2" role="radiogroup" aria-label="Units">
+            {(["imperial", "metric"] as const).map((system) => (
+              <button
+                key={system}
+                type="button"
+                role="radio"
+                aria-checked={unitPrefs.distanceUnit === system}
+                data-on={unitPrefs.distanceUnit === system}
+                onClick={() => {
+                  const next = allUnits(system);
+                  for (const key of Object.keys(next) as (keyof Units)[]) setSetting(key, next[key]);
+                }}
+                className="h-10 rounded-md text-sm text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
+              >
+                {system === "imperial" ? "Yards / miles" : "Meters"}
+              </button>
+            ))}
           </div>
+          <p className="pb-1 text-sm text-subtle">Sets every unit at once. Pick each unit separately in Settings.</p>
           <ul className="mt-4 grid grid-cols-2 gap-y-2">
             {LEGEND.map((item) => (
               <li key={item.label} className="flex items-center gap-2 text-sm text-muted">
@@ -1511,7 +1666,7 @@ export function HuntApp() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. {region === "id" ? "Unit lines are Idaho Fish and Game reference geometry, not the legal description." : "Unit lines are Arizona Game and Fish reference geometry, not the legal description in Commission Rule R12-4-108."} Owner names are a paid dataset. Fieldline shows the managing agency and wind for each stand. A small, one-zoom tile cache is available for Satellite or Topo; streets, labels, units, weather, and search remain online.</p>
+          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. Unit lines are state agency reference geometry, not legal descriptions. Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. Satellite and Hybrid use Esri imagery, which is live only. Save this view offline stores one zoom level of USGS imagery or Topo plus public land; streets, labels, units, weather, and search remain online.</p>
           <button type="button" disabled={packing} onClick={() => void saveArea()} className="mt-3 h-11 w-full rounded-md bg-accent text-sm font-medium text-accent-fg disabled:opacity-50">
             {packing ? "Saving tiles…" : "Save this view offline"}
           </button>
@@ -1521,6 +1676,9 @@ export function HuntApp() {
 
       {sheet === "wind" && weather ? (
         <Panel title="Weather" onClose={() => setSheet(null)}>
+          <p className="mb-3 text-sm text-muted">
+            Forecast for {weatherPoint.where} · <span className="font-mono tabular-nums">{weatherAt ? formatPair(weatherAt.lng, weatherAt.lat) : formatPair(weatherPoint.lng, weatherPoint.lat)}</span>
+          </p>
           <div className="flex items-end justify-between gap-4">
             <div>
               <p className="text-sm text-muted">{weatherLabel(weather.code)}</p>
@@ -1530,43 +1688,49 @@ export function HuntApp() {
               </p>
             </div>
             <div className="flex flex-col items-end gap-2">
-              <WeatherMark code={weather.code} large />
+              {weather.code != null ? <WeatherMark code={weather.code} large /> : null}
               <span className="flex items-center gap-1.5 text-sm">
                 <WindArrow deg={weather.windFrom} />
-                <span className="font-mono tabular-nums">
-                  {cardinal(weather.windFrom)} {windSpeed}
-                </span>
+                <span className="font-mono tabular-nums">{formatWind(weather.windFrom, weather.windMps, unitPrefs.speedUnit)}</span>
               </span>
             </div>
           </div>
           <dl className="mt-5 grid grid-cols-2 gap-3">
             <Stat label="Wind" value={windSpeed ?? "—"} />
-            <Stat
-              label="Gusts"
-              value={store.imperial ? `${Math.round(mpsToMph(weather.gustMps))} mph` : `${weather.gustMps.toFixed(1)} m/s`}
-            />
+            <Stat label="Gusts" value={formatSpeed(weather.gustMps, unitPrefs.speedUnit)} />
             <Stat label="Feels" value={feelsLabel ?? "—"} />
-            <Stat label="Humidity" value={`${Math.round(weather.humidity)}%`} />
-            <Stat label="Clouds" value={`${Math.round(weather.cloud)}%`} />
-            <Stat label="Rain" value={`${Math.round(weather.pop)}%`} />
+            <Stat label="Humidity" value={formatPercent(weather.humidity)} />
+            <Stat label={weather.source.cloudInferred ? "Clouds (est.)" : "Clouds"} value={formatPercent(weather.cloud)} />
+            <Stat label="Rain this hour" value={formatPercent(weather.popHour)} />
+            <Stat label="Rain today, peak" value={formatPercent(weather.popDayMax)} />
+            <Stat label="Barometer" value={pressureLabel ?? "—"} />
             <Stat label="Moon" value={`${Math.round(weather.moonIllum * 100)}%`} />
             <Stat label="Phase" value={weather.moonName} />
-            <Stat label="Barometer" value={pressureLabel ?? "—"} />
             <Stat label="Sun rises" value={sunAz.rise == null ? "—" : `${Math.round(sunAz.rise)}° ${cardinal(sunAz.rise)}`} />
             <Stat label="Sun sets" value={sunAz.set == null ? "—" : `${Math.round(sunAz.set)}° ${cardinal(sunAz.set)}`} />
             <Stat label="Sunrise" value={formatClock(weather.sunrise)} />
             <Stat label="Sunset" value={formatClock(weather.sunset)} />
-            <Stat label="Shoot starts" value={shootStart ?? "—"} />
-            <Stat label="Shoot ends" value={shootEnd ?? "—"} />
+            {lightWindow ? <Stat label="Your light window" value={lightWindow} /> : null}
           </dl>
           <p className="mt-4 text-sm text-subtle">
-            {region === "id"
-              ? "Idaho big game shooting hours run a half hour before sunrise until a half hour after sunset. Wild turkey and migratory birds stop at sunset."
-              : "Arizona big game shooting hours run a half hour before sunrise until a half hour after sunset."}{" "}
-            That clock follows the pointer, or the map center when you are not pointing at a spot. Wind and the barometer are the Open-Meteo model, not a ridgetop reading. The trend compares now with three hours ago. Sun direction is for the selected mark. Rain is the day's peak chance.
+            Sunrise and sunset are astronomy for this point, in its local time.{" "}
+            {lightWindow
+              ? `Your light window is ${settings.daylightBeforeMin} min before sunrise to ${settings.daylightAfterMin} min after sunset, a personal setting, not a legal rule. `
+              : ""}
+            Legal shooting hours depend on the state, species, season, and method; Fieldline doesn&apos;t hold verified rules.{" "}
+            <AgencyLinks agencies={agenciesAt(weatherPoint.lng, weatherPoint.lat)} />
+            Sun direction is for the selected mark. The barometer trend compares now with three hours ago.
           </p>
-          <DayStrip days={weather.days} imperial={store.imperial} />
-          <HourStrip hours={weather.hours} imperial={store.imperial} goodWinds={selected?.goodWinds} standName={selected?.name ?? null} />
+          <p className="mt-2 text-xs text-subtle">
+            {weather.source.label}.{" "}
+            {weather.source.currentKind === "model-now" ? "Now is a model estimate, not a station reading." : "Now is the first forecast hour, not a station reading."}
+            {weather.source.cloudInferred ? " Clouds are inferred from forecast text." : ""}
+            {weather.source.issuedAt != null ? ` Issued ${formatInstant(weather.source.issuedAt, weather.source.timeZone, true)}.` : ""} Fetched{" "}
+            {formatInstant(weather.source.fetchedAt, null, true)} (this device&apos;s clock). Forecast hours and sun times are local to the forecast point
+            {weather.source.timeZone ? ` (${weather.source.timeZone})` : ""}.
+          </p>
+          <DayStrip days={weather.days} today={weather.today} units={unitPrefs} />
+          <HourStrip hours={weather.hours} units={unitPrefs} goodWinds={selected?.goodWinds} standName={selected?.name ?? null} />
           <StandWind waypoints={store.waypoints} windFrom={weather.windFrom} onOpen={(id, lng, lat) => {
             setSelectedId(id);
             mapRef.current?.easeTo(lng, lat, 15);
@@ -1587,6 +1751,12 @@ export function HuntApp() {
         </Panel>
       ) : null}
 
+      {sheet === "settings" ? (
+        <Panel title="Settings" onClose={() => setSheet(null)}>
+          <SettingsPanel currentView={view} onNotice={setNotice} />
+        </Panel>
+      ) : null}
+
       {sheet === "saved" ? (
         <Panel title="Saved" onClose={() => setSheet(null)}>
           <div className="mb-3 flex gap-2">
@@ -1602,7 +1772,7 @@ export function HuntApp() {
           <WaypointRows
             waypoints={store.waypoints}
             gps={gps}
-            imperial={store.imperial}
+            units={unitPrefs}
             onOpen={(id, lng, lat) => {
               setSelectedId(id);
               setSheet("edit");
@@ -1612,7 +1782,7 @@ export function HuntApp() {
           <h3 className="mt-4 font-display text-xl tracking-wide">Tracks</h3>
           <TrackRows
             tracks={store.tracks}
-            imperial={store.imperial}
+            units={unitPrefs}
             onFit={(points) => mapRef.current?.fit(points)}
             onToggle={store.toggleTrack}
             onDelete={store.removeTrack}
@@ -1632,7 +1802,7 @@ export function HuntApp() {
             hunts={hunts}
             lng={selected.lng}
             lat={selected.lat}
-            away={gps ? `${formatDistance(haversine(gps, selected), store.imperial)} ${cardinal(bearingDeg(gps, selected))}` : null}
+            away={gps ? `${formatDistance(haversine(gps, selected), unitPrefs.distanceUnit)} ${cardinal(bearingDeg(gps, selected))}` : null}
             onChange={(patch) => {
               store.updateWaypoint(selected.id, patch);
               if (patch.kind) store.setLastKind(patch.kind);
@@ -1670,12 +1840,12 @@ function GaiaNote() {
 function WaypointRows({
   waypoints,
   gps,
-  imperial,
+  units,
   onOpen,
 }: {
   waypoints: Waypoint[];
   gps: GpsFix | null;
-  imperial: boolean;
+  units: Units;
   onOpen: (id: string, lng: number, lat: number) => void;
 }) {
   if (waypoints.length === 0) {
@@ -1686,7 +1856,7 @@ function WaypointRows({
       {waypoints.map((waypoint) => {
         const meta = MARKS[waypoint.kind];
         const Icon = meta.icon;
-        const away = gps ? formatDistance(haversine(gps, waypoint), imperial) : null;
+        const away = gps ? formatDistance(haversine(gps, waypoint), units.distanceUnit) : null;
         const heading = gps ? cardinal(bearingDeg(gps, waypoint)) : null;
         return (
           <li key={waypoint.id}>
@@ -1715,13 +1885,13 @@ function WaypointRows({
 
 function TrackRows({
   tracks,
-  imperial,
+  units,
   onFit,
   onToggle,
   onDelete,
 }: {
   tracks: Track[];
-  imperial: boolean;
+  units: Units;
   onFit: (points: TrackPoint[]) => void;
   onToggle: (id: string) => void;
   onDelete: (id: string) => void;
@@ -1736,7 +1906,7 @@ function TrackRows({
         <li key={track.id} className="flex min-h-12 items-center gap-2">
           <button type="button" className="min-w-0 flex-1 truncate text-left" onClick={() => onFit(track.points)}>
             <span className="block truncate">{track.name}</span>
-            <span className="text-sm text-muted">{formatDistance(pathLength(track.points), imperial)}</span>
+            <span className="text-sm text-muted">{formatDistance(pathLength(track.points), units.distanceUnit)}</span>
           </button>
           <button type="button" className="h-9 px-2 text-sm text-muted" onClick={() => onToggle(track.id)}>
             {track.visible ? "Hide" : "Show"}
@@ -1779,12 +1949,15 @@ function StandWind({
   onOpen,
 }: {
   waypoints: { id: string; name: string; kind: MarkKind; lng: number; lat: number; goodWinds?: number[] }[];
-  windFrom: number;
+  windFrom: number | null;
   onOpen: (id: string, lng: number, lat: number) => void;
 }) {
   const marked = waypoints.filter((waypoint) => (waypoint.goodWinds?.length ?? 0) > 0);
   if (marked.length === 0) {
     return <p className="mt-4 text-sm text-muted">Open a stand and tick the winds you can hunt. Matching stands get a green ring.</p>;
+  }
+  if (windFrom == null) {
+    return <p className="mt-4 text-sm text-muted">The wind direction is unknown right now, so stands can't be checked.</p>;
   }
   return (
     <ul className="mt-4">
@@ -1919,7 +2092,14 @@ function NoiseMeter() {
   );
 }
 
-function WindArrow({ deg, large = false }: { deg: number; large?: boolean }) {
+function WindArrow({ deg, large = false }: { deg: number | null; large?: boolean }) {
+  if (deg == null) {
+    return (
+      <svg viewBox="0 0 24 24" className={large ? "size-16 text-muted" : "size-4 text-muted"} aria-hidden>
+        <circle cx="12" cy="12" r="6" fill="none" stroke="currentColor" strokeWidth={1.5} strokeDasharray="2 2.5" />
+      </svg>
+    );
+  }
   return (
     <svg viewBox="0 0 24 24" className={large ? "size-16 text-fg" : "size-4 text-field"} style={{ transform: `rotate(${(deg + 180) % 360}deg)` }} aria-hidden>
       <path d="M12 3.5v13M7.5 12.5 12 19l4.5-6.5" fill="none" stroke="currentColor" strokeWidth={large ? 1.5 : 1.75} strokeLinecap="round" strokeLinejoin="round" />
@@ -2055,25 +2235,6 @@ function Panel({ title, onClose, children }: { title: string; onClose: () => voi
   );
 }
 
-function Toggle({ checked, onChange, label, hint }: { checked: boolean; onChange: (value: boolean) => void; label: string; hint?: string }) {
-  return (
-    <label className="flex min-h-11 items-center justify-between gap-4 py-1.5">
-      <span>
-        <span className="block">{label}</span>
-        {hint ? <span className="block text-sm text-muted">{hint}</span> : null}
-      </span>
-      <Switch.Root
-        checked={checked}
-        onCheckedChange={onChange}
-        aria-label={label}
-        className="relative h-7 w-12 shrink-0 rounded-full bg-surface-2 data-[state=checked]:bg-field"
-      >
-        <Switch.Thumb className="block size-5 translate-x-1 rounded-full bg-fg transition-transform duration-150 data-[state=checked]:translate-x-6" />
-      </Switch.Root>
-    </label>
-  );
-}
-
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-md bg-bg px-3 py-2">
@@ -2089,19 +2250,19 @@ function weekday(iso: string): string {
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][new Date(Date.UTC(y, m - 1, d)).getUTCDay()] ?? iso;
 }
 
-function DayStrip({ days, imperial }: { days: DayOutlook[]; imperial: boolean }) {
+function DayStrip({ days, today, units }: { days: DayOutlook[]; today: string | null; units: Units }) {
   if (days.length === 0) return null;
   return (
     <div className="mt-4 grid grid-cols-4 gap-2">
-      {days.map((day, index) => (
+      {days.map((day) => (
         <div key={day.date} className="rounded-md bg-bg px-1 py-2 text-center">
-          <p className="text-xs tracking-wide text-subtle uppercase">{index === 0 ? "Today" : weekday(day.date)}</p>
+          <p className="text-xs tracking-wide text-subtle uppercase">{day.date === today ? "Today" : weekday(day.date)}</p>
           <p className="mt-1 text-sm leading-tight">{weatherLabel(day.code, true)}</p>
           <p className="font-mono text-sm tabular-nums">
-            {Math.round(imperial ? cToF(day.highC) : day.highC)}°
-            <span className="text-muted"> {Math.round(imperial ? cToF(day.lowC) : day.lowC)}°</span>
+            {formatTemp(day.highC, units.temperatureUnit)}
+            <span className="text-muted"> {formatTemp(day.lowC, units.temperatureUnit)}</span>
           </p>
-          <p className="text-xs text-muted">{Math.round(day.pop)}% rain</p>
+          <p className="text-xs text-muted">{formatPercent(day.popMax)} peak rain</p>
         </div>
       ))}
     </div>
@@ -2115,12 +2276,12 @@ function WeatherMark({ code, large = false }: { code: number; large?: boolean })
 
 function HourStrip({
   hours,
-  imperial,
+  units,
   goodWinds,
   standName,
 }: {
   hours: WindHour[];
-  imperial: boolean;
+  units: Units;
   goodWinds: number[] | undefined;
   standName: string | null;
 }) {
@@ -2132,16 +2293,15 @@ function HourStrip({
       <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
         {hours.map((hour) => {
           const ok = marked ? windFits(hour.windFrom, goodWinds) : null;
-          const speed = imperial ? `${Math.round(mpsToMph(hour.windMps))}` : hour.windMps.toFixed(1);
           return (
             <div
               key={hour.at}
               className={`min-w-16 shrink-0 rounded-md px-2 py-2 text-center ${ok === true ? "bg-field text-accent-fg" : ok === false ? "bg-danger/25 text-fg" : "bg-bg"}`}
             >
               <p className="font-mono text-xs tabular-nums">{formatClock(hour.time)}</p>
-              <p className="text-sm">{cardinal(hour.windFrom)}</p>
-              <p className="font-mono text-xs tabular-nums">{speed}</p>
-              {hour.pop >= 20 ? <p className="font-mono text-xs tabular-nums">{Math.round(hour.pop)}%</p> : null}
+              <p className="text-sm">{hour.windFrom == null ? "—" : cardinal(hour.windFrom)}</p>
+              <p className="font-mono text-xs tabular-nums">{speedValue(hour.windMps, units.speedUnit)}</p>
+              {hour.pop != null && hour.pop >= 20 ? <p className="font-mono text-xs tabular-nums">{formatPercent(hour.pop)}</p> : null}
             </div>
           );
         })}
@@ -2234,34 +2394,34 @@ function placeDetail(at: Spot, node: HTMLDivElement | null, lift = 0): CSSProper
 function SpotInfo({
   detail,
   weather,
-  imperial,
+  units,
+  daylight,
   onClose,
   onCopy,
   onMark,
 }: {
   detail: Detail;
   weather: FieldWeather | null;
-  imperial: boolean;
+  units: Units;
+  daylight: Pick<AppSettings, "daylightWindow" | "daylightBeforeMin" | "daylightAfterMin">;
   onClose: () => void;
   onCopy: (text: string) => void;
   onMark: () => void;
 }) {
   const land = detail.land;
-  const unit = detail.unit;
-  const title = land?.label ?? (unit ? `Unit ${unit.gmu}` : detail.pending ? "This spot" : "Likely private");
-  const species = unit?.species.split(/,\s*/).map((name) => name.trim()).filter(Boolean) ?? [];
-  const shootStart = weather ? formatClock(shiftLocalIso(weather.sunrise, -AZ_SHOOT_LEAD_MIN)) : null;
-  const shootEnd = weather ? formatClock(shiftLocalIso(weather.sunset, AZ_SHOOT_LEAD_MIN)) : null;
-  const light = shootStart && shootEnd && shootStart !== "—" && shootEnd !== "—" ? `${shootStart}–${shootEnd}` : null;
+  const landDown = !land && !detail.pending;
+  const title = land?.label ?? (detail.pending ? "This spot" : "Land record unavailable");
+  const places = jurisdictionsAt({ lng: detail.lng, lat: detail.lat });
+  const multiState = new Set(detail.units.map((hit) => hit.unit.jurisdictionId)).size > 1;
+  const unitCoverage = places.map((place) => ({ place, status: layerStatus(place.id, "hunt-units") }));
+  const light =
+    weather && daylight.daylightWindow ? personalWindow(weather.sunrise, weather.sunset, daylight.daylightBeforeMin, daylight.daylightAfterMin) : null;
+  const gusty = weather?.gustMps != null && weather.windMps != null && weather.gustMps > weather.windMps + 1.5;
   const wind = weather
-    ? `${cardinal(weather.windFrom)} ${imperial ? `${Math.round(mpsToMph(weather.windMps))} mph` : `${weather.windMps.toFixed(1)} m/s`}${
-        weather.gustMps > weather.windMps + 1.5
-          ? `, gusts ${imperial ? `${Math.round(mpsToMph(weather.gustMps))}` : weather.gustMps.toFixed(0)}`
-          : ""
-      }`
+    ? `${formatWind(weather.windFrom, weather.windMps, units.speedUnit)}${gusty ? `, gusts ${speedValue(weather.gustMps, units.speedUnit)}` : ""}`
     : null;
-  const temp = weather ? `${Math.round(imperial ? cToF(weather.tempC) : weather.tempC)}° ${weatherLabel(weather.code)}` : null;
-  const pressure = weather?.pressureHpa == null ? null : `${formatPressure(weather.pressureHpa, imperial)}${weather.pressureTrend ? ` · ${weather.pressureTrend}` : ""}`;
+  const temp = weather ? `${formatTemp(weather.tempC, units.temperatureUnit)} ${weatherLabel(weather.code)}` : null;
+  const pressure = weather?.pressureHpa == null ? null : `${formatPressure(weather.pressureHpa, units.pressureUnit)}${weather.pressureTrend ? ` · ${weather.pressureTrend}` : ""}`;
   const slope =
     weather?.slopePct == null ? null : `${Math.round(weather.slopePct)}%${weather.fallsDeg != null ? ` falls ${cardinal(weather.fallsDeg)}` : ""}`;
   const copyBlock = [formatPair(detail.lng, detail.lat), formatDms(detail.lng, detail.lat), formatUtm(detail.lng, detail.lat)].join("\n");
@@ -2271,13 +2431,14 @@ function SpotInfo({
         <span className="mt-1 size-3 shrink-0 rounded-sm border border-line" style={{ background: land?.swatch ?? "transparent" }} />
         <div className="min-w-0 flex-1">
           <h2 className="text-sm leading-tight">{title}</h2>
-          {unit ? (
-            <p className="mt-0.5 text-sm text-muted">
-              Unit {unit.gmu}
-              {unit.regionName ? ` · ${unit.regionName}` : ""}
-              {unit.sqMiles != null ? ` · ${Math.round(unit.sqMiles).toLocaleString("en-US")} sq mi` : ""}
+          {detail.units.map((hit) => (
+            <p key={hit.unit.id} className="mt-0.5 text-sm text-muted">
+              {hit.unit.label}
+              {multiState ? ` · ${coverageFor(hit.unit.jurisdictionId)?.name ?? hit.unit.jurisdictionId}` : ""}
+              {hit.unit.regionName ? ` · ${hit.unit.regionName}` : ""}
+              {hit.unit.sqMiles != null ? ` · ${Math.round(hit.unit.sqMiles).toLocaleString("en-US")} sq mi` : ""}
             </p>
-          ) : null}
+          ))}
         </div>
         <button type="button" aria-label="Close spot info" className="grid size-8 shrink-0 place-items-center text-muted" onClick={onClose}>
           <X className="size-4" />
@@ -2285,26 +2446,56 @@ function SpotInfo({
       </div>
       <div className="min-h-0 flex-1 touch-pan-y overflow-y-auto overscroll-contain px-3 pt-2 pb-1 text-sm text-muted">
         {detail.pending && !land ? <p>Checking the surface…</p> : null}
+        {landDown ? <p>The land service didn't answer, so ownership is unknown here. Try again with a connection.</p> : null}
         {land?.note ? <p>{land.note}</p> : null}
         {land?.unit ? <p className="mt-1">{land.unit}</p> : null}
-        {unit?.forest ? <p className="mt-1">{unit.forest}</p> : null}
-        {unit?.land && unit.land !== unit.forest && unit.land !== land?.label ? <p className="mt-1">{unit.land}</p> : null}
-        {species.length > 0 ? (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {species.map((name) => (
-              <span key={name} className="rounded-md bg-bg px-1.5 py-0.5 text-xs text-fg">
-                {name}
-              </span>
-            ))}
-          </div>
+        {land && land.others.length > 0 ? (
+          <p className="mt-1">
+            Also recorded here: {land.others.map((record) => [record.label, record.unit].filter(Boolean).join(" · ")).join("; ")}
+          </p>
         ) : null}
+        {land ? (
+          <p className="mt-1 text-xs text-subtle">
+            {land.source}, checked {new Date(land.checkedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
+          </p>
+        ) : null}
+        {detail.units.map((hit) => (
+          <div key={hit.unit.id} className="mt-1">
+            {hit.unit.seasonContext ? <p>{hit.unit.seasonContext}</p> : null}
+            {hit.unit.forest ? <p>{hit.unit.forest}</p> : null}
+            {hit.unit.landNote && hit.unit.landNote !== hit.unit.forest && hit.unit.landNote !== land?.label ? <p>{hit.unit.landNote}</p> : null}
+            {hit.unit.speciesTags.length > 0 ? (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {hit.unit.speciesTags.map((name) => (
+                  <span key={name} className="rounded-md bg-bg px-1.5 py-0.5 text-xs text-fg">
+                    {name}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <p className="mt-0.5 text-xs text-subtle">
+              {unitAdapterById(hit.unit.providerId)?.info.caveat ?? ""}
+              {hit.approximate ? " From the saved copy; edges may be simplified." : ""}
+            </p>
+          </div>
+        ))}
+        {detail.unitsPending && detail.units.length === 0 && unitCoverage.some(({ status }) => status.status === "available") ? (
+          <p className="mt-1">Checking hunt units…</p>
+        ) : null}
+        {!detail.unitsPending && detail.units.length === 0
+          ? unitCoverage.map(({ place, status }) => (
+              <p key={place.id} className="mt-1 text-xs text-subtle">
+                {status.status === "available" ? `No ${place.name} hunt unit found at this point.` : `${place.name}: ${status.note}`}
+              </p>
+            ))
+          : null}
         <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
-          <SpotFact label="Elevation" value={weather?.elevationM != null ? formatElev(weather.elevationM, imperial) : null} />
+          <SpotFact label="Elevation" value={weather?.elevationM != null ? formatElev(weather.elevationM, units.elevationUnit) : null} />
           <SpotFact label="Slope" value={slope} />
           <SpotFact label="Air" value={temp} />
           <SpotFact label="Pressure" value={pressure} />
           <SpotFact label="Wind" value={wind} wide />
-          <SpotFact label="Shooting light" value={light} wide />
+          <SpotFact label="Your light window (not legal hours)" value={light} wide />
         </div>
         {!weather ? <p className="mt-2 text-xs text-subtle">Reading elevation and weather…</p> : null}
         <p className="mt-2 font-mono text-xs leading-relaxed text-subtle tabular-nums">
@@ -2322,6 +2513,62 @@ function SpotInfo({
         </button>
       </div>
     </article>
+  );
+}
+
+function AgencyLinks({ agencies }: { agencies: { name: string; url: string }[] }) {
+  if (agencies.length === 0) return <>Check the state wildlife agency. </>;
+  return (
+    <>
+      Check{" "}
+      {agencies.map((agency, index) => (
+        <span key={agency.url}>
+          {index > 0 ? " or " : ""}
+          <a className="underline" href={agency.url} target="_blank" rel="noopener noreferrer">
+            {agency.name}
+          </a>
+        </span>
+      ))}
+      .{" "}
+    </>
+  );
+}
+
+/** What Fieldline has for the states in view: honest per-layer status, including runtime load results. */
+function CoverageHere({ bounds, providers }: { bounds: Bounds | null; providers: ProviderLoad[] }) {
+  if (!bounds) return null;
+  const places = jurisdictionsInBounds(bounds);
+  if (places.length === 0) {
+    return <p className="py-2 text-sm text-muted">No state coverage information for this view.</p>;
+  }
+  const shown = places.slice(0, 6);
+  return (
+    <section className="my-2 rounded-lg bg-bg px-3 py-2" aria-label="Coverage in view">
+      <p className="text-xs tracking-wide text-subtle uppercase">Coverage in view</p>
+      <ul className="mt-1 space-y-1.5">
+        {shown.map((place) => {
+          const load = providers.find((entry) => entry.info.jurisdictionIds.includes(place.id));
+          const register = layerStatus(place.id, "hunt-units");
+          const units = !load
+            ? register.status === "available"
+              ? "Hunt units: zoom in to load."
+              : "Hunt units: not in Fieldline yet."
+            : !load.result
+              ? "Hunt units: loading…"
+              : load.result.status === "available"
+                ? `Hunt units: ${load.result.units.length} from ${load.info.title}.`
+                : `Hunt units: ${load.result.message ?? load.result.status}`;
+          return (
+            <li key={place.id} className="text-sm">
+              <span className="text-fg">{place.name}</span>
+              <span className="block text-muted">{units}</span>
+            </li>
+          );
+        })}
+      </ul>
+      {places.length > shown.length ? <p className="mt-1 text-xs text-subtle">and {places.length - shown.length} more states in view.</p> : null}
+      <p className="mt-1 text-xs text-subtle">Public land colors cover every state. Parcel owners, access routes, and legal hours aren&apos;t in Fieldline yet.</p>
+    </section>
   );
 }
 
