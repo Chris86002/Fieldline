@@ -492,6 +492,7 @@ function buildStyle(opts: {
   const hybrid = opts.basemap === "hybrid";
   const street = opts.basemap === "street";
   const imagery = opts.basemap === "satellite" || hybrid;
+  const usgs = opts.basemap === "usgs";
   const shade = opts.showShade && opts.basemap !== "topo";
   const paint = overlayPaint(opts.basemap);
   const vector = opts.basemap !== "topo";
@@ -508,8 +509,16 @@ function buildStyle(opts: {
     version: 8,
     glyphs: GLYPHS,
     sources: {
-      satellite: { type: "raster", tiles: [cachedTile(TILES.satellite)], tileSize: 256, maxzoom: 19, attribution: "Imagery © Esri, Maxar, Earthstar Geographics" },
-      topo: { type: "raster", tiles: [cachedTile(TILES.topo)], tileSize: 256, maxzoom: 16, attribution: "Topo © USGS" },
+      // Esri imagery is fetched live and never written to the device cache (provider terms).
+      satellite: {
+        type: "raster",
+        tiles: [TILES.satellite],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: "Powered by Esri · Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community",
+      },
+      usgs: { type: "raster", tiles: [cachedTile(TILES.imagery)], tileSize: 256, maxzoom: 16, attribution: "Imagery: USGS The National Map, USDA" },
+      topo: { type: "raster", tiles: [cachedTile(TILES.topo)], tileSize: 256, maxzoom: 16, attribution: "Topo: USGS The National Map" },
       sma: { type: "raster", tiles: [cachedTile(TILES.sma)], tileSize: 256, maxzoom: 16, attribution: "Public land © BLM" },
       ofm: { type: "vector", url: OFM, attribution: "© OpenStreetMap, OpenFreeMap" },
       dem: { type: "raster-dem", tiles: [dem], encoding: "terrarium", tileSize: 256, maxzoom: 14, attribution: "Terrain © AWS Terrain Tiles" },
@@ -526,6 +535,7 @@ function buildStyle(opts: {
     layers: [
       { id: "land", type: "background", paint: { "background-color": paint.land } },
       { id: "satellite", type: "raster", source: "satellite", layout: { visibility: vis(imagery) }, paint: { "raster-opacity": 1, "raster-resampling": "linear", "raster-fade-duration": 0 } },
+      { id: "usgs", type: "raster", source: "usgs", layout: { visibility: vis(usgs) }, paint: { "raster-resampling": "linear", "raster-fade-duration": 0 } },
       { id: "topo", type: "raster", source: "topo", layout: { visibility: vis(opts.basemap === "topo") }, paint: { "raster-resampling": "linear", "raster-fade-duration": 0 } },
       ...overlay.slice(0, 3),
       { id: "sma", type: "raster", source: "sma", layout: { visibility: vis(opts.showPublic) }, paint: { "raster-opacity": opts.publicOpacity, "raster-resampling": "linear", "raster-fade-duration": 0 } },
@@ -960,6 +970,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     const vector = props.basemap !== "topo";
     show("hillshade", props.showShade && props.basemap !== "topo");
     show("satellite", imagery);
+    show("usgs", props.basemap === "usgs");
     show("topo", props.basemap === "topo");
     show("sma", props.showPublic);
     for (const id of STREET_FILLS) show(id, street);

@@ -82,13 +82,20 @@ export type FieldSpec =
 const BASEMAPS: Choice<Basemap>[] = [
   { value: "hybrid", label: "Hybrid" },
   { value: "satellite", label: "Satellite" },
+  { value: "usgs", label: "USGS imagery" },
   { value: "topo", label: "Topo" },
   { value: "street", label: "Street" },
 ];
 
 /** UI metadata and validation bounds for every setting, in display order. */
 export const FIELDS: Record<SettingKey, FieldSpec> = {
-  basemap: { kind: "choice", category: "map", label: "Base map", help: "Imagery, USGS topo scan, or street map.", choices: BASEMAPS },
+  basemap: {
+    kind: "choice",
+    category: "map",
+    label: "Base map",
+    help: "Esri imagery is live only. USGS imagery and the USGS topo scan can be saved for offline use.",
+    choices: BASEMAPS,
+  },
   showPublic: { kind: "toggle", category: "map", label: "Public land", help: "BLM surface-management agency colors." },
   publicOpacity: { kind: "range", category: "map", label: "Public land strength", help: "How strongly agency colors cover the map.", min: 0.1, max: 0.9, step: 0.05 },
   showUnits: { kind: "toggle", category: "map", label: "Hunt units", help: "Game-management unit lines where Fieldline has them." },

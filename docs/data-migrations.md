@@ -42,7 +42,11 @@ behave. Every schema change must update this file and add a fixture test.
 ## Other caches (replaceable provider data, not personal content)
 
 - Cache Storage `fieldline-tiles-v1` — viewed and pre-fetched map tiles
-  (`tiles.ts`). See ADR-006 for the Esri caching question.
+  (`tiles.ts`), limited to `OFFLINE_TEMPLATES` since 2026-10-14. On startup,
+  tiles from other sources (Esri imagery stored by older builds) are deleted;
+  this is replaceable provider data, not personal content (ADR-006).
+- Settings v1 gained the `basemap` value `"usgs"` on 2026-10-14. No version
+  bump: older builds never read `fieldline-settings`.
 - Cache Storage `fieldline-units-v2` / `fieldline-units-id-v1` — Arizona and
   Idaho unit GeoJSON (`units.ts`).
 - `fieldline-install-dismissed` (localStorage) — install banner flag.

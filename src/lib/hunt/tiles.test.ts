@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import { packTiles, TILES, tileCacheLabel } from "./tiles.ts";
+import { canStoreTile, packTiles, purgeRestrictedTiles, TILES, tileCacheLabel } from "./tiles.ts";
 
 const originalCaches = Object.getOwnPropertyDescriptor(globalThis, "caches");
 const originalFetch = globalThis.fetch;
@@ -21,6 +21,9 @@ function setCacheAvailable(available: boolean) {
     async keys() {
       return [...entries.keys()].map((url) => new Request(url));
     },
+    async delete(key: RequestInfo | URL) {
+      return entries.delete(key instanceof Request ? key.url : String(key));
+    },
   };
   Object.defineProperty(globalThis, "caches", {
     configurable: true,
@@ -40,7 +43,7 @@ describe("offline map tile packs", () => {
     setCacheAvailable(true);
     const bounds = { west: 0.01, east: 0.02, south: 0.01, north: 0.02, zoom: 8 };
     entries.set(
-      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/8/127/128",
+      "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/8/127/128",
       new Response("cached"),
     );
     globalThis.fetch = async (input) => {
@@ -50,7 +53,7 @@ describe("offline map tile packs", () => {
     const progress: number[] = [];
     const result = await packTiles({
       ...bounds,
-      templates: [TILES.satellite, TILES.topo, TILES.sma],
+      templates: [TILES.imagery, TILES.topo, TILES.sma],
       onProgress: (done) => progress.push(done),
     });
     assert.deepEqual(result, { saved: 1, reused: 1, failed: 1, total: 3, skipped: false });
@@ -69,7 +72,7 @@ describe("offline map tile packs", () => {
       south: -85,
       north: 85,
       zoom: 15,
-      templates: [TILES.satellite],
+      templates: [TILES.imagery],
     });
     assert.equal(result.skipped, true);
     assert.ok(result.total > 220);
@@ -89,10 +92,36 @@ describe("offline map tile packs", () => {
       south: 0.01,
       north: 0.02,
       zoom: 8,
-      templates: [TILES.satellite],
+      templates: [TILES.imagery],
     });
     assert.deepEqual(result, { saved: 0, reused: 0, failed: 1, total: 1, skipped: false });
     assert.equal(fetched, false);
+  });
+
+  it("never stores or pre-fetches Esri imagery, whose terms forbid it", async () => {
+    setCacheAvailable(true);
+    let fetched = false;
+    globalThis.fetch = async () => {
+      fetched = true;
+      return new Response("tile");
+    };
+    assert.equal(canStoreTile("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/8/1/1"), false);
+    assert.equal(canStoreTile("https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/8/1/1"), true);
+    assert.equal(canStoreTile("https://basemap.nationalmap.gov.evil.example/arcgis/rest/services/USGSTopo/MapServer/tile/8/1/1"), false);
+    const result = await packTiles({ west: 0.01, east: 0.02, south: 0.01, north: 0.02, zoom: 8, templates: [TILES.satellite] });
+    assert.equal(result.skipped, true);
+    assert.equal(fetched, false);
+    assert.equal(entries.size, 0);
+  });
+
+  it("removes Esri tiles stored by older builds and keeps permitted ones", async () => {
+    setCacheAvailable(true);
+    const esri = "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/8/127/128";
+    const topo = "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/8/127/128";
+    entries.set(esri, new Response("esri"));
+    entries.set(topo, new Response("topo"));
+    assert.equal(await purgeRestrictedTiles(), 1);
+    assert.deepEqual([...entries.keys()], [topo]);
   });
 
   it("labels only Fieldline tile entries rather than total origin storage", async () => {

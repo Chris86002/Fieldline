@@ -60,7 +60,7 @@ This register lists every external data provider that Fieldline calls today, plu
 - **Attribution:** "Powered by Esri" plus data-provider attribution, both required by Esri developer docs (via search summary; the docs page did not render for direct fetch). The current service copyrightText is "Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community". The app shows "Imagery © Esri, Maxar, Earthstar Geographics": Maxar is outdated, "GIS User Community" is missing, and "Powered by Esri" is missing.
 - **Coverage:** Worldwide. 15 m TerraColor at small scales; 30 cm HD across the US (Vantor Vivid Standard). AK/HI are covered within the worldwide mosaic; local resolution was not verified.
 - **Freshness:** No fixed cadence. The item says imagery is typically 3–5 years current.
-- **Current app behavior vs terms:** **CONFLICT.** The app uses the layer in a non-Esri client (MapLibre) without a subscription, caches every viewed tile with no expiry, and bulk pre-fetches through "save area".
+- **Current app behavior vs terms:** Since 2026-10-14 (ADR-006) the app shows this layer live only: tiles are fetched directly, never written to Cache Storage, never pre-fetched, and tiles stored by older builds are deleted on startup. "Save this view offline" stores USGS imagery (entry 4a) instead. **Still open:** keyless use in a non-Esri client without a subscription; resolving that needs an Esri license (ArcGIS Location Platform account with API key) or switching the live layer too.
 - **Maintainer:** unassigned.
 - **Fallback/exit:** USGS imagery (NAIP, CONUS only) or USGS TNM imagery basemaps for an offline-permitted option. Otherwise a licensed ArcGIS Location Platform key with Esri's offline terms (not reviewed here).
 - **Sources checked:** https://www.arcgis.com/sharing/rest/content/items/10df2279f9684e4a9f6a7f08febac2a9?f=json , https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer?f=pjson , https://goto.arcgis.com/termsofuse/viewsummary (redirects to https://www.esri.com/content/dam/arcgisonline/docs/tou_summary.pdf) , https://developers.arcgis.com/documentation/esri-and-data-attribution/ (did not render; content taken from search results)
@@ -92,8 +92,19 @@ This register lists every external data provider that Fieldline calls today, plu
 - **Freshness:** copyrightText reads "Data refreshed September 4, 2026-v1.2". No stated cadence.
 - **Current app behavior vs terms:** No conflict found.
 - **Maintainer:** unassigned.
-- **Fallback/exit:** Other TNM basemaps (not verified here), or self-built tiles from TNM downloads.
+- **Fallback/exit:** Other TNM basemaps (USGSImageryOnly verified, entry 4a), or self-built tiles from TNM downloads.
 - **Sources checked:** https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer?f=pjson , https://www.usgs.gov/faqs/what-are-terms-uselicensing-map-services-and-data-national-map , https://apps.nationalmap.gov/help/HowTo.htm (search summary only)
+
+### 4a. USGS The National Map — USGSImageryOnly basemap tiles
+- **Used by:** `tiles.ts` (`TILES.imagery`, in `OFFLINE_TEMPLATES`), `MapCanvas.tsx` (`usgs` source, cached through `fltile://`), "Save this view offline" for every imagery base map.
+- **Endpoint host:** `basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}`.
+- **Status:** in use (added 2026-10-14).
+- **View / cache / redistribution:** USGS public domain ("no restrictions", same FAQ as entry 4). Service metadata checked 2026-10-14: `exportTilesAllowed: true`, `maxExportTilesCount: 100000`.
+- **Attribution:** copyrightText "USDA, USGS The National Map: Orthoimagery. Data refreshed June, 2024.v1.2". The app shows "Imagery: USGS The National Map, USDA".
+- **Coverage:** US orthoimagery (6 in–1 m) with Blue Marble outside the US (service description). Visible to 1:9,028 (about zoom 16); the app caps the source at zoom 16 and does not upscale beyond it. AK/HI imagery resolution not verified.
+- **Freshness:** "Data refreshed June, 2024".
+- **Maintainer:** unassigned.
+- **Sources checked:** https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer?f=pjson
 
 ### 5. BLM Surface Management Agency (SMA) — tiles and identify
 - **Used by:**
@@ -348,9 +359,9 @@ This register lists every external data provider that Fieldline calls today, plu
 
 ## Risks and open questions
 
-1. **Esri World Imagery offline caching and pre-fetch (conflict).** Esri's ArcGIS Online FAQ requires Esri software or an ArcGIS Online subscription. It forbids harvesting tiles except via Esri Content Packages, forbids redistribution, and forbids Living Atlas commercial use. `tiles.ts` caches every viewed World Imagery tile with no expiry, and "save area" pre-fetches up to 220 tiles. The app also uses the tiles in MapLibre without a subscription. Remove Esri from `fltile://` caching and `packTiles`, and decide whether keyless viewing is acceptable at all; that is an owner and legal decision.
-2. **Esri attribution is out of date.** The app says "Maxar"; the service now says "Vantor". "GIS User Community" and "Powered by Esri" are missing.
-3. **Unused Esri templates remain in the `packTiles` allowlist** (hillshade, street, roads, places). World_Street_Map is "mature support; no longer updated."
+1. **Esri World Imagery.** Caching and pre-fetch were removed on 2026-10-14 (ADR-006); offline imagery now comes from USGS. Still open: Esri ties use to Esri software or a subscription, and Fieldline shows the tiles keyless in MapLibre. Options: an ArcGIS Location Platform account and API key (see ADR-006), or replacing the live layer.
+2. ~~Esri attribution out of date~~ — fixed 2026-10-14 ("Powered by Esri · Source: Esri, Vantor, Earthstar Geographics, and the GIS User Community").
+3. ~~Unused Esri templates in the `packTiles` allowlist~~ — removed 2026-10-14; `packTiles` now accepts only `OFFLINE_TEMPLATES` (USGS imagery, USGS topo, BLM SMA).
 4. **Open-Meteo is non-commercial only.** A free app with ads or subscriptions counts as commercial under its terms. A hosted web deployment would pool every user under one server IP against 10k calls/day. The app does not show the required linked "Weather data by Open-Meteo.com" attribution or the Copernicus credit for elevation.
 5. **Nominatim:** the policy requires that the app can be switched off at OSMF's request without a software update. The URL is hard-coded and there is no remote kill switch. The 60 s in-memory cache is minimal. The per-app 1 req/s limit is shared across all installs.
 6. **Photon** has undefined limits and no custom User-Agent. Commercial and attribution terms are not stated.

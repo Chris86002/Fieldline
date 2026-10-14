@@ -59,7 +59,7 @@ import { azBorder } from "@/lib/hunt/az-border";
 import { idBorder } from "@/lib/hunt/id-border";
 import { searchPlaces, type PlaceHit } from "@/lib/hunt/search.functions";
 import { getHuntStorageWarning, useHunt } from "@/lib/hunt/store";
-import { packTiles, TILES, tileCacheLabel } from "@/lib/hunt/tiles";
+import { packTiles, purgeRestrictedTiles, TILES, tileCacheLabel } from "@/lib/hunt/tiles";
 import { DEFAULT_VIEW, ID_JUMPS, JUMPS, REGION_VIEW, type Basemap, type HuntRegion, type LandHit, type LngLat, type MapView, type MarkKind, type Track, type TrackPoint, type Waypoint } from "@/lib/hunt/types";
 import { loadFieldWeather } from "@/lib/hunt/weather.functions";
 import type { DayOutlook, FieldWeather, WindHour } from "@/lib/hunt/weather";
@@ -107,9 +107,13 @@ type InstallPrompt = Event & {
 const BASEMAPS: { id: Basemap; label: string }[] = [
   { id: "hybrid", label: "Hybrid" },
   { id: "satellite", label: "Satellite" },
+  { id: "usgs", label: "USGS" },
   { id: "topo", label: "Topo" },
   { id: "street", label: "Street" },
 ];
+
+/** Esri imagery base maps: viewable live, never stored on the device. */
+const LIVE_ONLY_BASEMAPS: Basemap[] = ["hybrid", "satellite"];
 
 export function HuntApp() {
   const store = useHunt();
@@ -327,9 +331,12 @@ export function HuntApp() {
 
   useEffect(() => {
     if (!hydrated) return;
-    void tileCacheLabel().then((label) => {
-      if (label) setPackNote(label);
-    });
+    // Older builds stored Esri imagery tiles; remove them before reporting what's saved.
+    void purgeRestrictedTiles()
+      .then(() => tileCacheLabel())
+      .then((label) => {
+        if (label) setPackNote(label);
+      });
   }, [hydrated]);
 
   useEffect(() => {
@@ -801,13 +808,16 @@ export function HuntApp() {
     const bounds = mapRef.current?.getBounds();
     if (!bounds || packing) return;
     const templates: string[] = [];
+    // Esri imagery can't be stored, so imagery views save USGS imagery instead.
+    const swapped = LIVE_ONLY_BASEMAPS.includes(settings.basemap);
     if (settings.basemap === "topo") templates.push(TILES.topo);
-    else if (settings.basemap !== "street") templates.push(TILES.satellite);
+    else if (settings.basemap !== "street") templates.push(TILES.imagery);
     if (settings.showPublic) templates.push(TILES.sma);
     if (templates.length === 0) {
-      setPackNote("Street roads and labels are streamed live. Switch to Satellite or Topo to save a base map.");
+      setPackNote("Street roads and labels are streamed live. Switch to USGS imagery or Topo to save a base map.");
       return;
     }
+    const swapNote = swapped ? " Esri imagery can't be stored, so USGS imagery was saved instead; switch the base map to USGS when you're offline." : "";
     setPacking(true);
     setPackNote("Preparing this view…");
     try {
@@ -823,9 +833,9 @@ export function HuntApp() {
       } else {
         const parts = [`${result.saved} new`, `${result.reused} already saved`];
         if (result.failed) parts.push(`${result.failed} not saved`);
-        setPackNote(`${parts.join(", ")}. One zoom level only; roads, labels, weather, and search still need a connection.`);
+        setPackNote(`${parts.join(", ")}. One zoom level only; roads, labels, weather, and search still need a connection.${swapNote}`);
         void tileCacheLabel().then((label) => {
-          if (label) setPackNote(`${parts.join(", ")}. ${label}. Roads, labels, weather, and search still need a connection.`);
+          if (label) setPackNote(`${parts.join(", ")}. ${label}. Roads, labels, weather, and search still need a connection.${swapNote}`);
         });
       }
     } catch {
@@ -1596,7 +1606,7 @@ export function HuntApp() {
               {PRESETS[activePreset].label} preset is on. Changing a layer it controls edits the preset; turn presets off in Settings.
             </p>
           ) : null}
-          <div className="grid grid-cols-4 gap-1 rounded-lg bg-bg p-2">
+          <div className="grid grid-cols-5 gap-1 rounded-lg bg-bg p-2">
             {BASEMAPS.map((item) => (
               <button
                 key={item.id}
@@ -1668,7 +1678,7 @@ export function HuntApp() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. {region === "id" ? "Unit lines are Idaho Fish and Game reference geometry, not the legal description." : "Unit lines are Arizona Game and Fish reference geometry, not the legal description in Commission Rule R12-4-108."} Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. A small, one-zoom tile cache is available for Satellite or Topo; streets, labels, units, weather, and search remain online.</p>
+          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. {region === "id" ? "Unit lines are Idaho Fish and Game reference geometry, not the legal description." : "Unit lines are Arizona Game and Fish reference geometry, not the legal description in Commission Rule R12-4-108."} Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. Satellite and Hybrid use Esri imagery, which is live only. Save this view offline stores one zoom level of USGS imagery or Topo plus public land; streets, labels, units, weather, and search remain online.</p>
           <button type="button" disabled={packing} onClick={() => void saveArea()} className="mt-3 h-11 w-full rounded-md bg-accent text-sm font-medium text-accent-fg disabled:opacity-50">
             {packing ? "Saving tiles…" : "Save this view offline"}
           </button>

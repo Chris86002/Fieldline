@@ -4,14 +4,26 @@ const MAX_PACK_TILES = 220;
 const TILE_TIMEOUT_MS = 8_000;
 
 export const TILES = {
+  /** Esri World Imagery: live viewing only. Esri's terms forbid storing or pre-fetching its tiles. */
   satellite: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-  hillshade: "https://server.arcgisonline.com/ArcGIS/rest/services/Elevation/World_Hillshade/MapServer/tile/{z}/{y}/{x}",
+  /** USGS The National Map orthoimagery: public domain, tile export allowed. */
+  imagery: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}",
   topo: "https://basemap.nationalmap.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}",
-  street: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
-  roads: "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}",
-  places: "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
   sma: "https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_Cached_without_PriUnk/MapServer/tile/{z}/{y}/{x}",
 } as const;
+
+/**
+ * Tile sources whose published terms allow storing tiles on the device.
+ * See docs/data-sources.md before adding one.
+ */
+export const OFFLINE_TEMPLATES: readonly string[] = [TILES.imagery, TILES.topo, TILES.sma];
+
+const STORABLE_PREFIXES = OFFLINE_TEMPLATES.map((template) => template.slice(0, template.indexOf("{")));
+
+/** True when this tile URL comes from a source that permits device storage. */
+export function canStoreTile(url: string): boolean {
+  return STORABLE_PREFIXES.some((prefix) => url.startsWith(prefix));
+}
 
 let installed = false;
 
@@ -33,7 +45,7 @@ export function installTileProtocol(ml: { addProtocol: typeof import("maplibre-g
 
     let cache: Cache | null = null;
     try {
-      if (typeof caches !== "undefined") cache = await caches.open(CACHE);
+      if (typeof caches !== "undefined" && canStoreTile(url)) cache = await caches.open(CACHE);
     } catch {
       cache = null;
     }
@@ -114,9 +126,7 @@ function emptyPack(total = 0, skipped = false): PackResult {
 }
 
 export async function packTiles(options: PackOptions): Promise<PackResult> {
-  const templates = [...new Set(options.templates)].filter((template) =>
-    (Object.values(TILES) as string[]).includes(template),
-  );
+  const templates = [...new Set(options.templates)].filter((template) => OFFLINE_TEMPLATES.includes(template));
   if (!validBounds(options) || !Number.isFinite(options.zoom) || templates.length === 0) {
     return emptyPack(0, true);
   }
@@ -171,6 +181,25 @@ export async function packTiles(options: PackOptions): Promise<PackResult> {
     }
   }
   return { saved, reused, failed, total, skipped: false };
+}
+
+/**
+ * Deletes stored tiles from sources that don't permit device storage (older
+ * builds cached Esri imagery). Returns how many were removed.
+ */
+export async function purgeRestrictedTiles(): Promise<number> {
+  try {
+    if (typeof caches === "undefined") return 0;
+    const cache = await caches.open(CACHE);
+    let removed = 0;
+    for (const request of await cache.keys()) {
+      if (canStoreTile(request.url)) continue;
+      if (await cache.delete(request)) removed += 1;
+    }
+    return removed;
+  } catch {
+    return 0;
+  }
 }
 
 export async function tileCacheLabel(): Promise<string | null> {

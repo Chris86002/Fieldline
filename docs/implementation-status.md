@@ -38,7 +38,7 @@ blocked. Device certification is tracked separately from code completion.
 | CC-02 Correctness and settings | verified (automated + manual browser); see deferred items | Slices below. Independent CC-12 review found 0 blockers, 2 major, 10 minor; both majors and 7 minors fixed with regression tests. |
 | CC-03 Nationwide catalog | not started | Depends on CC-02 contracts. Removes AZ/ID mode switch. |
 | CC-04 Map design | not started | MAP-01..06. Default public-land opacity change waits for the before/after gallery. |
-| CC-05 Storage and offline | not started | Blocked in part by ADR-006 (Esri caching decision). |
+| CC-05 Storage and offline | not started | ADR-006 done: tile storage restricted to `OFFLINE_TEMPLATES`; USGS imagery base map added. |
 | CC-06 Navigation | not started | Recording thresholds from settings are in place (CC-02). |
 | CC-07 Maintenance and reports | not started | REL-04 fields listed as "not tracked" in data-sources.md. |
 | CC-08 Weather platform | not started | Point-forecast nullability and provenance done in CC-02. |
@@ -105,17 +105,19 @@ preset (CC-08).
 
 ## Blockers and external decisions
 
-1. **Esri World Imagery caching (ADR-006)** — owner/legal decision. Affects
-   CC-05 offline packages and the existing "Save this view offline".
-2. **Open-Meteo commercial terms** — free tier is non-commercial only. Fine
-   for a free, ad-free app; must be revisited if Fieldline ever adds ads or
-   subscriptions, or is hosted for many users from one server IP.
-3. **Required attributions missing** (Open-Meteo link, Copernicus, Esri
-   "Powered by Esri"/Vantor, USGS credit line, Terrain Tiles per-source
-   credits) — fix in CC-04/CC-07; no decision needed.
+1. **Esri imagery (ADR-006)** — resolved for offline: Esri is live only and
+   offline imagery comes from USGS (2026-10-14, verified in headless
+   Chromium: 0 Esri tiles stored, old ones purged, saves store USGS imagery).
+   Still open: licensing of keyless live Esri use.
+2. **Open-Meteo commercial terms** — fine for a free, ad-free app. ADR-007
+   proposes NWS gridpoints as the primary US source in CC-08.
+3. **Required attributions missing** (Open-Meteo link, Copernicus, USGS
+   credit line, Terrain Tiles per-source credits) — Esri fixed; rest in
+   CC-04/CC-07.
 4. **Nominatim remote kill switch** — OSMF policy requires one; needs a small
    remotely served config or a self-hosted geocoder. CC-07.
-5. **Physical phone devices** — required for REL-03 certification.
+5. **Physical phone devices** — targets set (iPhone 13+, Google Pixel); the
+   Pixel model and the locked-screen requirement are still open (REL-03).
 6. **Data maintainers** — every provider is "unassigned" (REL-04).
 
 ## Next runnable work
@@ -126,4 +128,4 @@ preset (CC-08).
    (finding H), then removing the mandatory AZ/ID switch.
 2. CC-01 PWA recording prototype behind the proposed `LocationSource`
    interface (isolated files; can overlap CC-03).
-3. Owner decision on ADR-006 (Esri caching) before CC-05 offline packages.
+3. CC-08 (when reached): implement ADR-007 NWS gridpoint primary source.

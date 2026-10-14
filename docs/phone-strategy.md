@@ -48,12 +48,18 @@ either choice can plug in:
 - `PackageStore`: write/read package assets with byte budgets and integrity
   checks (CC-05).
 
+## Target devices (owner, 2026-10-14)
+
+- **iPhone 13 and newer** (current iOS versions on those models).
+- **Google Pixel** (specific model still to name).
+
 ## Decision inputs still needed from the owner
 
-- Target phones (iOS/Android versions, specific models available for testing).
+- Which Pixel model(s) are available for testing.
 - Required recording duration and whether locked-screen recording is a
   release requirement for the first field release.
-- Willingness to pay for app-store distribution and signing.
+- Willingness to pay for app-store distribution and signing (Apple developer
+  program; Google Play Console).
 
 ## Field test protocol
 
@@ -114,5 +120,5 @@ Result: pass / fail / limited
 | Platform | Foreground recording | Locked-screen recording | Kill/restart recovery | Offline maps | Status |
 | --- | --- | --- | --- | --- | --- |
 | Desktop (Electron, Windows) | Depends on OS location | n/a | Not implemented (CC-06) | Partial tile cache only | Unverified |
-| Android browser / PWA | Expected | Not expected | Not implemented | Partial | Pending device tests |
-| iOS Safari / home-screen app | Expected | Not expected | Not implemented | Partial | Pending device tests |
+| Google Pixel, Chrome / PWA | Expected | Not expected | Not implemented | Partial | Pending device tests |
+| iPhone 13+, Safari / home-screen app | Expected | Not expected | Not implemented | Partial | Pending device tests |

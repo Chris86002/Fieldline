@@ -33,7 +33,8 @@ export type Track = {
   visible: boolean;
 };
 
-export type Basemap = "hybrid" | "satellite" | "topo" | "street";
+/** "satellite"/"hybrid" use Esri imagery (live only); "usgs" uses USGS imagery, which can be saved offline. */
+export type Basemap = "hybrid" | "satellite" | "usgs" | "topo" | "street";
 
 export type MapView = {
   lng: number;
