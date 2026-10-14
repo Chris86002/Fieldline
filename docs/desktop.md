@@ -5,8 +5,8 @@
 
 This guide is for maintainers building source or sharing installers. Recipients
 install a provided binary and do **not** need Node, npm, a browser, or developer
-tools. The repository is private; do not assume public releases or existing
-installer artifacts.
+tools. The repository is public. Verified Windows ZIPs are published to GitHub Releases;
+Mac/Linux installer artifacts are available after successful native packaging.
 
 ## Build from source
 
@@ -57,16 +57,23 @@ checks for security updates.
 ## Download and share workflow artifacts
 
 The manual workflow is [`Fieldline desktop installers`](../.github/workflows/desktop.yml).
-In this private repository, a maintainer with permission can open **Actions →
+A maintainer with permission can open **Actions →
 Fieldline desktop installers → Run workflow**. The workflow must be on the
 default branch for manual dispatch; select the intended branch/ref.
 
 It uses native Windows, Intel Mac, Apple Silicon Mac, and Linux runners with
 Node 22 and `npm ci`, runs all four web checks plus desktop tests and packaged
 smoke tests, generates share ZIPs, and uploads them for **14 days** after successful
-packaging. It does **not** publish releases or run on every push; permissions are
-read-only and no signing secrets are required. A configured workflow is not
-proof that installers have already been built or tested.
+packaging. It also runs when app or packaging files change on main. After the
+Windows job passes every check, it publishes the Windows ZIP and SHA-256 checksum
+to a public GitHub Release with a unique workflow-run/attempt tag. The package job
+has contents-write permission for that publication; no signing secrets are required.
+Other platform failures do not prevent a verified Windows release.
+A configured workflow is not proof that installers have already been built or tested.
+
+For Windows, use [the latest release](https://github.com/Chris86002/Fieldline/releases/latest)
+and download the Fieldline ZIP under Assets. Do not download the automatic Source code ZIP.
+The artifact instructions below remain useful for Mac/Linux and troubleshooting.
 
 One build/download/share path:
 
@@ -94,8 +101,10 @@ cleanup. Override `FIELDLINE_DESKTOP_EXECUTABLE` with an absolute executable
 path for another native package (including `release/mac-arm64/...`); on Linux run
 under `xvfb-run -a` when no display is available.
 
-Linux headless smoke uses SwiftShader software rendering flags only in the test
-launcher, not in the distributed app, and never disables the renderer sandbox.
+Native smoke tests use SwiftShader software rendering flags only in the test
+launcher, not in the distributed app, and never disable the renderer sandbox.
+The test removes developer runtimes from PATH, retaining only Windows System32
+on Windows because Playwright needs the system shell to launch Electron.
 It does not verify live provider availability, real GPS hardware, or installer
 dialogs. Before sharing, verify each actual ZIP on a clean matching OS/architecture:
 

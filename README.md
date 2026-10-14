@@ -18,10 +18,10 @@ Fieldline desktop includes Chromium, Node, the production UI, assets, and local
 server functions. **Recipients do not install Node, npm, a browser, or developer
 tools.** It opens its own Fieldline window, not a hosted website.
 
-1. Get the matching **Fieldline ZIP** from a **trusted maintainer** (message, USB, or their
-   download). This repository is private: there is no public installer download
-   promised here, and workflow artifacts exist only after a successful packaging
-   run. Recipients do not need a GitHub account or repository access.
+1. Download the Windows **Fieldline ZIP** from [Releases](https://github.com/Chris86002/Fieldline/releases/latest).
+   Choose `Fieldline-…-win-x64.zip` under **Assets**, not GitHub's **Source code** ZIP.
+   Downloads appear only after the Windows packaging and launch checks pass.
+   No GitHub account is required. Mac/Linux builds remain available as workflow artifacts.
 2. **Windows 10/11, Intel/AMD 64-bit:** get `Fieldline-…-win-x64.zip`.
    Right-click it → **Extract All**, open the extracted folder, and double-click
    **Install-Fieldline.exe**. It installs for your user without a directory wizard,
@@ -64,7 +64,7 @@ from **Saved** before updates or uninstalling. For browser-to-desktop transfer a
 ### Developers: local browser run
 
 Building source requires **Git and Node.js 22.13+ (22.x) or 24+ (with npm)**,
-matching the locked dependency requirements. Private repository access is needed to clone:
+matching the locked dependency requirements. Clone the public repository:
 
 ```sh
 git clone https://github.com/Chris86002/Fieldline.git
@@ -88,9 +88,8 @@ provide complete offline maps or transfer data between origins.
 
 ## Troubleshooting
 
-- **Cannot find an installer or access the repository?** Ask the trusted
-  maintainer for a matching installer ZIP; downloading a source ZIP is not installing
-  the desktop app. See [maintainer download directions](docs/desktop.md#download-and-share-workflow-artifacts).
+- **Cannot find an installer?** Check the Releases page for a successful Windows build;
+  downloading a source ZIP is not installing the desktop app. See [maintainer download directions](docs/desktop.md#download-and-share-workflow-artifacts).
 - **Unsigned app blocked or desktop won't start?** Keep OS protections enabled;
   see [desktop troubleshooting](docs/desktop.md#troubleshooting).
 - **`npm ci`, startup, or port errors?** See [local troubleshooting](docs/development.md#troubleshooting).
