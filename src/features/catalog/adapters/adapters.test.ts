@@ -382,7 +382,7 @@ describe("unit adapter registry", () => {
   it("registers both providers with complete info", () => {
     assert.deepEqual(
       UNIT_ADAPTERS.map((adapter) => adapter.info.id),
-      ["azgfd-gmu", "idfg-gmu"],
+      ["azgfd-gmu", "idfg-gmu", "mtfwp-deer-elk-lion"],
     );
     const az = unitAdapterById("azgfd-gmu")?.info;
     const id = unitAdapterById("idfg-gmu")?.info;

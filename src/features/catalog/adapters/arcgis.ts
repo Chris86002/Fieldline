@@ -19,7 +19,11 @@ import type { UnitStorage, UnitStore } from "../unit-store.ts";
 import { abortError, createUnitStore, UnitValidationError } from "../unit-store.ts";
 
 /** The only hosts adapters may query. Add a host here only with a data-sources.md entry. */
-export const ARCGIS_ALLOWED_HOSTS: readonly string[] = ["services8.arcgis.com", "gisportal-idfg.idaho.gov"];
+export const ARCGIS_ALLOWED_HOSTS: readonly string[] = [
+  "services8.arcgis.com",
+  "gisportal-idfg.idaho.gov",
+  "fwp-gis.mt.gov",
+];
 export const DEFAULT_TIMEOUT_MS = 20_000;
 export const DEFAULT_MAX_PAGES = 25;
 export const DEFAULT_MAX_FEATURES = 20_000;

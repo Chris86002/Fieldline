@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 import { isValidBounds } from "../../lib/geo/bounds.ts";
 import { coverageFor, jurisdictionsAt, jurisdictionsInBounds, layerStatus } from "./coverage.ts";
 import { JURISDICTIONS, LAYER_CATEGORIES } from "./coverage-data.ts";
+import { UNIT_ADAPTERS } from "./adapters/index.ts";
 
 const USPS = [
   "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN", "IA", "KS",
@@ -69,11 +70,20 @@ describe("layer statuses", () => {
     assert.equal(layerStatus("us-az", "hunt-units").status, "available");
     assert.deepEqual(layerStatus("us-id", "hunt-units").providerIds, ["idfg-gmu"]);
     assert.equal(layerStatus("us-id", "hunt-units").status, "available");
+    assert.deepEqual(layerStatus("us-mt", "hunt-units").providerIds, ["mtfwp-deer-elk-lion"]);
+    assert.equal(layerStatus("us-mt", "hunt-units").status, "available");
+    assert.match(layerStatus("us-mt", "hunt-units").note, /deer, elk and mountain lion .* only; .*other species .* not included/);
     for (const j of JURISDICTIONS) {
-      if (j.id === "us-az" || j.id === "us-id") continue;
+      if (j.id === "us-az" || j.id === "us-id" || j.id === "us-mt") continue;
       assert.equal(layerStatus(j.id, "hunt-units").status, "unavailable", j.id);
       assert.deepEqual(layerStatus(j.id, "hunt-units").providerIds, [], j.id);
     }
+  });
+
+  it("lists exactly the registered unit adapters, each under its own jurisdictions", () => {
+    const listed = JURISDICTIONS.flatMap((j) => layerStatus(j.id, "hunt-units").providerIds.map((p) => [j.id, p]));
+    const registered = UNIT_ADAPTERS.flatMap((a) => a.info.jurisdictionIds.map((id) => [id, a.info.id]));
+    assert.deepEqual(listed.sort(), registered.sort());
   });
 
   it("claims no parcels, access or legal hours anywhere", () => {

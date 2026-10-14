@@ -18,9 +18,12 @@
  * for discovery only: neighbors overlap, and a box is not a boundary.
  *
  * Agencies: each URL returned HTTP 200 after redirects on 2026-10-13 and is
- * the agency's own site. Arizona, Nebraska and Rhode Island answered every
- * automated request with a bot-check page (HTTP 403), so they are null until
- * someone verifies them by hand. New Jersey answered 200 but with a bot-check
+ * the agency's own site. Nebraska and Rhode Island answered every automated
+ * request with a bot-check page (HTTP 403), so they are null until someone
+ * verifies them by hand. Arizona's site also answers automated requests with
+ * a bot check; the coordinator confirmed by hand on 2026-10-14 that
+ * azgfd.com is the agency's domain (already used as the AZGFD adapter's
+ * sourceUrl). New Jersey answered 200 but with a bot-check
  * page; its URL is where the agency's old domain (njfishandwildlife.com)
  * redirects.
  *
@@ -53,6 +56,10 @@ const HUNT_UNIT_PROVIDERS: Partial<Record<JurisdictionId, { providerId: string; 
   "us-id": {
     providerId: "idfg-gmu",
     note: "Idaho Fish and Game game management units. Reference lines, not the legal description.",
+  },
+  "us-mt": {
+    providerId: "mtfwp-deer-elk-lion",
+    note: "Montana Fish, Wildlife & Parks deer, elk and mountain lion hunting districts only; districts for other species (antelope, moose, sheep, goat, bear, birds) are not included. Reference boundaries; check current Montana regulations and district descriptions.",
   },
 };
 
@@ -129,7 +136,7 @@ export const JURISDICTIONS: readonly JurisdictionCoverage[] = [
     "Alaska Department of Fish and Game",
     "https://www.adfg.alaska.gov/",
   ),
-  jurisdiction("AZ", "Arizona", [{ west: -114.82, south: 31.33, east: -109.04, north: 37.01 }], null, null),
+  jurisdiction("AZ", "Arizona", [{ west: -114.82, south: 31.33, east: -109.04, north: 37.01 }], "Arizona Game and Fish Department", "https://www.azgfd.com/"),
   jurisdiction("AR", "Arkansas", [{ west: -94.62, south: 33.0, east: -89.64, north: 36.5 }], "Arkansas Game and Fish Commission", "https://www.agfc.com/"),
   jurisdiction("CA", "California", [{ west: -124.49, south: 32.52, east: -114.13, north: 42.01 }], "California Department of Fish and Wildlife", "https://wildlife.ca.gov/"),
   jurisdiction("CO", "Colorado", [{ west: -109.07, south: 36.99, east: -102.04, north: 41.01 }], "Colorado Parks and Wildlife", "https://cpw.state.co.us/"),
