@@ -49,6 +49,8 @@ async function launch() {
     return route.continue();
   });
   const page = await launched.firstWindow();
+  // Hosted desktops can clamp native windows below the desktop layout breakpoint.
+  await page.setViewportSize({ width: 1280, height: 850 });
   page.on("pageerror", (error) => console.error("Desktop page error:", error.message));
   await page.waitForURL(`${ORIGIN}/`);
   await page.getByText("FIELDLINE", { exact: true }).filter({ visible: true }).first().waitFor();
@@ -95,7 +97,7 @@ try {
     const saved = JSON.parse(localStorage.getItem("fieldline-v1") ?? "null");
     return saved?.state.waypoints.some((waypoint) => waypoint.name === name);
   }, waypointName);
-  await page.getByText(waypointName, { exact: true }).first().waitFor();
+  await page.getByText(waypointName, { exact: true }).filter({ visible: true }).first().waitFor();
   // Exercise and persist a real map pose before taking the restart baseline.
   await page.locator(".maplibregl-canvas").press("ArrowRight");
   await page.waitForFunction(() =>
@@ -134,7 +136,7 @@ try {
   desktop = undefined;
   await assertPortClosed();
   ({ launched: desktop, page } = await launch());
-  await page.getByText(waypointName, { exact: true }).waitFor();
+  await page.getByText(waypointName, { exact: true }).filter({ visible: true }).first().waitFor();
   assert.deepEqual(await page.evaluate(() => JSON.parse(localStorage.getItem("fieldline-v1"))), saved,
     "waypoints, tracks, and settings survive full restart on the same origin/profile");
   await desktop.close();
