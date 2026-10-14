@@ -53,19 +53,24 @@ import {
   windFits,
 } from "@/lib/hunt/format";
 import { toGpx } from "@/lib/hunt/gpx";
-import { guessRegion, readTrailFile, trackKey, waypointKey } from "@/lib/hunt/transfer";
+import { readTrailFile, trackKey, waypointKey } from "@/lib/hunt/transfer";
 import { identifyLand, landTag, LEGEND } from "@/lib/hunt/land";
-import { azBorder } from "@/lib/hunt/az-border";
-import { idBorder } from "@/lib/hunt/id-border";
 import { searchPlaces, type PlaceHit } from "@/lib/hunt/search.functions";
 import { getHuntStorageWarning, useHunt } from "@/lib/hunt/store";
 import { packTiles, purgeRestrictedTiles, TILES, tileCacheLabel } from "@/lib/hunt/tiles";
-import { DEFAULT_VIEW, ID_JUMPS, JUMPS, REGION_VIEW, type Basemap, type HuntRegion, type LandHit, type LngLat, type MapView, type MarkKind, type Track, type TrackPoint, type Waypoint } from "@/lib/hunt/types";
+import { DEFAULT_VIEW, JUMPS, NATIONAL_VIEW, type Basemap, type LandHit, type LngLat, type MapView, type MarkKind, type Track, type TrackPoint, type Waypoint } from "@/lib/hunt/types";
 import { loadFieldWeather } from "@/lib/hunt/weather.functions";
 import type { DayOutlook, FieldWeather, WindHour } from "@/lib/hunt/weather";
 import { weatherLabel } from "@/lib/hunt/weather";
-import { hitFromUnit, identifyUnit, loadUnits, matchUnit, unitAt, unitsCollection, type HuntUnit, type UnitHit } from "@/lib/hunt/units";
-import { formatUtm, localDate, localMinutes, sunPosition, zoneAt } from "@/lib/hunt/sun";
+import { UNIT_ADAPTERS, unitAdapterById } from "@/features/catalog/adapters";
+import { coverageFor, jurisdictionsAt, jurisdictionsInBounds, layerStatus } from "@/features/catalog/coverage";
+import { providersAt } from "@/features/catalog/discovery";
+import { searchUnits } from "@/features/catalog/search";
+import type { Bounds, HuntUnit, JurisdictionCoverage, UnitHit } from "@/features/catalog/types";
+import { hitsTag, unitLabels as toUnitLabels, unitsAt, unitShapes } from "@/features/catalog/units-view";
+import { deleteLegacyUnitCaches, useHuntUnits, type ProviderLoad } from "@/features/catalog/use-hunt-units";
+import { normalizeBounds } from "@/lib/geo/bounds";
+import { formatUtm, localDate, localMinutes, sunPosition } from "@/lib/hunt/sun";
 import { noiseWord, rmsDb } from "@/lib/hunt/noise";
 
 type Tool = "none" | "drop" | "measure";
@@ -74,11 +79,22 @@ type Units = Pick<AppSettings, "distanceUnit" | "elevationUnit" | "areaUnit" | "
 
 const NEXT_FORMAT: Record<CoordinateFormat, CoordinateFormat> = { dd: "dms", dms: "utm", utm: "dd" };
 
-/** Agency pages for checking legal hours. Fieldline does not hold verified hunting-hour rules. */
-const AGENCY_LINKS: Record<HuntRegion, { name: string; url: string }> = {
-  az: { name: "Arizona Game and Fish", url: "https://www.azgfd.com/" },
-  id: { name: "Idaho Fish and Game", url: "https://idfg.idaho.gov/" },
-};
+/** State agencies to check at a point (legal hours, regulations). Near borders there can be two. */
+function agenciesAt(lng: number, lat: number): { name: string; url: string }[] {
+  return jurisdictionsAt({ lng, lat })
+    .filter((place): place is JurisdictionCoverage & { agencyName: string; agencyUrl: string } => Boolean(place.agencyName && place.agencyUrl))
+    .slice(0, 2)
+    .map((place) => ({ name: place.agencyName, url: place.agencyUrl }));
+}
+
+/** States with a hunt-unit source in Fieldline, e.g. "Arizona, Idaho, and Montana". */
+function unitStatesText(): string {
+  const names = UNIT_ADAPTERS.flatMap((adapter) => adapter.info.jurisdictionIds)
+    .map((id) => coverageFor(id)?.name ?? id.slice(3).toUpperCase())
+    .filter((name, index, all) => all.indexOf(name) === index);
+  if (names.length <= 1) return names.join("");
+  return `${names.slice(0, -1).join(", ")}${names.length > 2 ? "," : ""} and ${names[names.length - 1]}`;
+}
 
 function allUnits(system: DistanceUnit): Units {
   const imperial = system === "imperial";
@@ -97,7 +113,8 @@ type LandState =
   | { status: "error"; lng: number; lat: number };
 
 type Spot = { lng: number; lat: number; x: number; y: number };
-type Detail = Spot & { unit: UnitHit | null; land: LandHit | null; pending: boolean };
+/** `units` holds every overlapping hunt unit; `unitsPending` while providers are still answering. */
+type Detail = Spot & { units: UnitHit[]; unitsPending: boolean; land: LandHit | null; pending: boolean };
 
 type InstallPrompt = Event & {
   prompt: () => Promise<void>;
@@ -134,10 +151,9 @@ export function HuntApp() {
   const dragDepth = useRef(0);
   const searchReq = useRef(0);
   const landAbort = useRef<AbortController | null>(null);
-  const unitAbort = useRef<AbortController | null>(null);
   const detailAbort = useRef<AbortController | null>(null);
   const mapWrapRef = useRef<HTMLDivElement>(null);
-  const unitsRef = useRef<HuntUnit[]>([]);
+  const huntUnitsRef = useRef<HuntUnit[]>([]);
   const pinnedRef = useRef<Spot | null>(null);
   const landTimer = useRef<number | null>(null);
   const landKey = useRef("");
@@ -160,7 +176,7 @@ export function HuntApp() {
   const [recStart, setRecStart] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [land, setLand] = useState<LandState | null>(null);
-  const [spotUnit, setSpotUnit] = useState<UnitHit | null>(null);
+  const [spotUnits, setSpotUnits] = useState<UnitHit[]>([]);
   const [pinned, setPinned] = useState<Spot | null>(null);
   const [hover, setHover] = useState<Spot | null>(null);
   const [detail, setDetail] = useState<Detail | null>(null);
@@ -170,7 +186,7 @@ export function HuntApp() {
   const [installHelp, setInstallHelp] = useState(false);
   const [listening, setListening] = useState(false);
   const [finePointer, setFinePointer] = useState(false);
-  const [units, setUnits] = useState<HuntUnit[]>([]);
+  const [viewBounds, setViewBounds] = useState<Bounds | null>(null);
   const [weather, setWeather] = useState<FieldWeather | null>(null);
   const [weatherAt, setWeatherAt] = useState<{ lng: number; lat: number } | null>(null);
   const [weatherRefresh, setWeatherRefresh] = useState(0);
@@ -189,11 +205,11 @@ export function HuntApp() {
   const reduceMotion = settings.motion === "reduce" || (settings.motion === "system" && systemReduce);
 
   const selected = store.waypoints.find((waypoint) => waypoint.id === selectedId) ?? null;
-  unitsRef.current = units;
+  const { units: huntUnits, inView: unitProviders } = useHuntUnits(viewBounds, hydrated && settings.showUnits, searchOpen);
+  huntUnitsRef.current = huntUnits;
   pinnedRef.current = pinned;
-  const region: HuntRegion = store.huntRegion === "id" ? "id" : "az";
-  const jumps = region === "id" ? ID_JUMPS : JUMPS;
-  const clockZone = zoneAt(view.lng, view.lat);
+  // The forecast reports the point's IANA zone; until it arrives, use the device's zone.
+  const clockZone = weather?.source.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   useEffect(() => {
     const iosBar = (navigator as Navigator & { standalone?: boolean }).standalone === true;
@@ -248,7 +264,12 @@ export function HuntApp() {
           /* settings keep their defaults; the store reports why */
         }
         const prefs = useSettings.getState().effective;
-        const saved = prefs.startupView === "home" && prefs.homeView ? prefs.homeView : useHunt.getState().lastView;
+        const saved =
+          prefs.startupView === "national"
+            ? NATIONAL_VIEW
+            : prefs.startupView === "home" && prefs.homeView
+              ? prefs.homeView
+              : useHunt.getState().lastView;
         if (saved) {
           initialViewRef.current = saved;
           setView(saved);
@@ -341,19 +362,20 @@ export function HuntApp() {
 
   useEffect(() => {
     if (!hydrated) return;
-    const region: HuntRegion = useHunt.getState().huntRegion === "id" ? "id" : "az";
-    let live = true;
-    void loadUnits(region)
-      .then((rows) => {
-        if (live) setUnits(rows);
-      })
-      .catch(() => {
-        /* the unit layer stays off if the service is down */
-      });
-    return () => {
-      live = false;
-    };
-  }, [hydrated, store.huntRegion]);
+    // Unit caches from the Arizona/Idaho-only builds are replaced by the catalog's own store.
+    void deleteLegacyUnitCaches();
+  }, [hydrated]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    // Which providers apply depends on what's on screen, across state lines, never on a state mode.
+    const timer = window.setTimeout(() => {
+      const bounds = mapRef.current?.getBounds();
+      const next = bounds ? normalizeBounds(bounds) : null;
+      if (next) setViewBounds(next);
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [view, hydrated]);
 
   useEffect(() => {
     if (!detail || land?.status !== "ready") return;
@@ -368,17 +390,19 @@ export function HuntApp() {
   }, [land, detail]);
 
   useEffect(() => {
-    if (units.length === 0) return;
     const point = hover ?? pinned;
-    if (!point) return;
-    const local = unitAt(units, point.lng, point.lat);
-    const next = local ? hitFromUnit(local, false) : null;
-    setSpotUnit((prev) => (prev?.gmu === next?.gmu && prev?.forest === next?.forest && prev?.species === next?.species ? prev : next));
-  }, [units, hover, pinned]);
+    if (!point || huntUnits.length === 0) return;
+    syncUnit(point.lng, point.lat);
+  }, [huntUnits, hover, pinned]);
 
-  const unitsGeo = useMemo(() => unitsCollection(units), [units]);
-  const unitLabels = useMemo(() => units.map((unit) => ({ gmu: unit.gmu, lng: unit.label.lng, lat: unit.label.lat })), [units]);
-  const unitMatch = query.trim() ? matchUnit(units, query) : null;
+  const unitsGeo = useMemo(() => unitShapes(huntUnits), [huntUnits]);
+  const unitLabels = useMemo(() => toUnitLabels(huntUnits), [huntUnits]);
+  const unitMatches = useMemo(
+    () => (query.trim() ? searchUnits(huntUnits, query, { near: { lng: view.lng, lat: view.lat } }).slice(0, 5) : []),
+    // Distance ranking uses the view at the time of typing; it needn't re-rank on every pan.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [huntUnits, query],
+  );
 
   const probe = hover ?? pinned;
   const readLng = probe?.lng ?? view.lng;
@@ -439,7 +463,7 @@ export function HuntApp() {
         setPinned(null);
         setHover(null);
         setLand(null);
-        setSpotUnit(null);
+        setSpotUnits([]);
       }
     }
     window.addEventListener("keydown", onKey);
@@ -571,29 +595,46 @@ export function HuntApp() {
     setHover(null);
     setDetail(null);
     setLand(null);
-    setSpotUnit(null);
+    setSpotUnits([]);
   }
 
+  /** Hover/pin readout from units already loaded; no network request per pointer move. */
   function syncUnit(lng: number, lat: number) {
-    const rows = unitsRef.current;
-    if (rows.length > 0) {
-      const local = unitAt(rows, lng, lat);
-      const next = local ? hitFromUnit(local, false) : null;
-      setSpotUnit((prev) => (prev?.gmu === next?.gmu && prev?.forest === next?.forest && prev?.species === next?.species ? prev : next));
+    const next = unitsAt(huntUnitsRef.current, { lng, lat });
+    const key = next.map((hit) => hit.unit.id).join("|");
+    setSpotUnits((prev) => (prev.map((hit) => hit.unit.id).join("|") === key ? prev : next));
+  }
+
+  /**
+   * Authoritative unit answer for an inspected point: asks every provider whose
+   * coverage includes it (across state lines) and lists every overlapping unit.
+   */
+  function inspectUnits(lng: number, lat: number, signal: AbortSignal) {
+    const providers = providersAt({ lng, lat }, UNIT_ADAPTERS.map((adapter) => adapter.info), "hunt-units");
+    if (providers.length === 0) {
+      setDetail((current) => (current && current.lng === lng && current.lat === lat ? { ...current, unitsPending: false } : current));
       return;
     }
-    unitAbort.current?.abort();
-    const unitController = new AbortController();
-    unitAbort.current = unitController;
-    void identifyUnit(lng, lat, unitController.signal, region)
-      .then((hit) => {
-        if (!unitController.signal.aborted) setSpotUnit(hit);
-      })
-      .catch(() => {
-        if (!unitController.signal.aborted) setSpotUnit(null);
-      })
-      .finally(() => {
-      });
+    const answers = new Map<string, UnitHit[]>();
+    let remaining = providers.length;
+    for (const info of providers) {
+      void unitAdapterById(info.id)
+        ?.identify({ lng, lat }, signal)
+        .then((result) => {
+          answers.set(info.id, result.hits);
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          remaining -= 1;
+          if (signal.aborted) return;
+          setDetail((current) => {
+            if (!current || current.lng !== lng || current.lat !== lat) return current;
+            // Providers that answered replace their local guesses; others keep the local copy.
+            const kept = current.units.filter((hit) => !answers.has(hit.unit.providerId));
+            return { ...current, units: [...kept, ...[...answers.values()].flat()], unitsPending: remaining > 0 };
+          });
+        });
+    }
   }
 
   function runIdentify(lng: number, lat: number) {
@@ -637,7 +678,7 @@ export function HuntApp() {
     setHover(null);
     const pin = pinnedRef.current;
     if (!pin) {
-      setSpotUnit(null);
+      setSpotUnits([]);
       setLand(null);
       landKey.current = "";
       return;
@@ -648,9 +689,7 @@ export function HuntApp() {
 
   function openDetail(lng: number, lat: number, x: number, y: number) {
     if (sheet) return;
-    const rows = unitsRef.current;
-    const local = rows.length ? unitAt(rows, lng, lat) : null;
-    setDetail({ lng, lat, x, y, unit: local ? hitFromUnit(local, false) : null, land: null, pending: true });
+    setDetail({ lng, lat, x, y, units: unitsAt(huntUnitsRef.current, { lng, lat }), unitsPending: true, land: null, pending: true });
     setPinned({ lng, lat, x, y });
     setHover(null);
     syncUnit(lng, lat);
@@ -668,15 +707,7 @@ export function HuntApp() {
         if (error instanceof DOMException && error.name === "AbortError") return;
         setDetail((current) => (current && current.lng === lng && current.lat === lat ? { ...current, pending: false } : current));
       });
-    if (!local) {
-      void identifyUnit(lng, lat, controller.signal, region)
-        .then((hit) => {
-          if (!controller.signal.aborted) {
-            setDetail((current) => (current && current.lng === lng && current.lat === lat ? { ...current, unit: hit ?? current.unit } : current));
-          }
-        })
-        .catch(() => undefined);
-    }
+    inspectUnits(lng, lat, controller.signal);
   }
 
   function onMapClick(lng: number, lat: number, x = 0, y = 0) {
@@ -780,28 +811,12 @@ export function HuntApp() {
 
   function goToUnit(unit: HuntUnit) {
     mapRef.current?.fit([
-      { lng: unit.west, lat: unit.south },
-      { lng: unit.east, lat: unit.north },
+      { lng: unit.bounds.west, lat: unit.bounds.south },
+      { lng: unit.bounds.east, lat: unit.bounds.north },
     ]);
     setSearchOpen(false);
     setQuery("");
     setHits([]);
-  }
-
-  function pickRegion(next: HuntRegion) {
-    const target = REGION_VIEW[next];
-    if (store.huntRegion !== next) {
-      store.setHuntRegion(next);
-      setUnits([]);
-      setSpotUnit(null);
-      setDetail(null);
-      setHover(null);
-      setPinned(null);
-      setLand(null);
-      landKey.current = "";
-    }
-    mapRef.current?.easeTo(target.lng, target.lat, target.zoom);
-    setSearchOpen(false);
   }
 
   async function saveArea() {
@@ -922,20 +937,6 @@ export function HuntApp() {
     }
     if (waypoints.length || tracks.length) {
       store.importAll(waypoints, tracks);
-      const regionHit = guessRegion([
-        ...waypoints.map((mark) => ({ lng: mark.lng, lat: mark.lat })),
-        ...tracks.flatMap((track) => [track.points[0], track.points[track.points.length - 1]]),
-      ]);
-      if (regionHit && regionHit !== useHunt.getState().huntRegion) {
-        useHunt.getState().setHuntRegion(regionHit);
-        setUnits([]);
-        setSpotUnit(null);
-        setDetail(null);
-        setHover(null);
-        setPinned(null);
-        setLand(null);
-        landKey.current = "";
-      }
       const fitPts = [
         ...waypoints.map((mark) => ({ lng: mark.lng, lat: mark.lat })),
         ...tracks.flatMap((track) => {
@@ -1188,7 +1189,6 @@ export function HuntApp() {
         showRings={settings.showRings}
         showUnits={settings.showUnits}
         unitsGeo={unitsGeo}
-        borderGeo={region === "id" ? idBorder : azBorder}
         unitLabels={unitLabels}
         windFrom={weather?.windFrom ?? null}
         sunLng={selected?.lng ?? null}
@@ -1249,8 +1249,8 @@ export function HuntApp() {
             className="relative min-w-0 flex-1"
             onSubmit={(event) => {
               event.preventDefault();
-              if (unitMatch) {
-                goToUnit(unitMatch);
+              if (unitMatches[0]) {
+                goToUnit(unitMatches[0].unit);
                 return;
               }
               if (hits[0]) {
@@ -1269,7 +1269,7 @@ export function HuntApp() {
                 setSearchOpen(true);
               }}
               onFocus={() => setSearchOpen(true)}
-              placeholder="Search a unit, town, or ridge"
+              placeholder="Search a unit (az 22), town, or ridge"
               aria-label="Search places"
               autoCapitalize="off"
               autoCorrect="off"
@@ -1289,22 +1289,23 @@ export function HuntApp() {
             ) : null}
             {searchOpen ? (
               <div className="absolute inset-x-0 top-12 overflow-hidden rounded-lg border border-line bg-surface shadow-lg">
-                {unitMatch ? (
+                {unitMatches.map((match) => (
                   <button
+                    key={match.unit.id}
                     type="button"
                     className="flex min-h-11 w-full flex-col items-start justify-center px-3 text-left hover:bg-surface-2"
-                    onClick={() => goToUnit(unitMatch)}
+                    onClick={() => goToUnit(match.unit)}
                   >
-                    <span>Unit {unitMatch.gmu}</span>
+                    <span>{match.label}</span>
                     <span className="text-sm text-muted">
-                      {[unitMatch.regionName, unitMatch.forest].filter(Boolean).join(" · ") || (region === "id" ? "Idaho game unit" : "Arizona game unit")}
+                      {[match.unit.regionName, match.unit.seasonContext, match.unit.forest].filter(Boolean).join(" · ") || "Hunt unit"}
                     </span>
                   </button>
-                ) : null}
+                ))}
                 {query.trim().length < 2 ? (
                   <div className="p-2">
                     <p className="px-2 py-1 text-xs tracking-wide text-subtle uppercase">Jump</p>
-                    {jumps.map((place) => (
+                    {JUMPS.map((place) => (
                       <button
                         key={place.name}
                         type="button"
@@ -1336,24 +1337,6 @@ export function HuntApp() {
               </div>
             ) : null}
           </form>
-          <div className="flex h-11 shrink-0 overflow-hidden rounded-full border border-line bg-surface" role="group" aria-label="Hunt state">
-            <button
-              type="button"
-              data-on={region === "az"}
-              className="h-11 px-2.5 text-sm font-medium text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
-              onClick={() => pickRegion("az")}
-            >
-              AZ
-            </button>
-            <button
-              type="button"
-              data-on={region === "id"}
-              className="h-11 px-2.5 text-sm font-medium text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
-              onClick={() => pickRegion("id")}
-            >
-              ID
-            </button>
-          </div>
           <button
             type="button"
             onClick={() => {
@@ -1381,8 +1364,7 @@ export function HuntApp() {
               {coordMode === "dd" ? formatDd(readLng, readLat) : coordMode === "dms" ? formatDms(readLng, readLat) : formatUtm(readLng, readLat)}
             </span>
             <span className="mt-0.5 block max-w-[18rem] truncate text-muted">
-              {probe && spotUnit ? `Unit ${spotUnit.gmu}` : null}
-              {probe && spotUnit ? " · " : ""}
+              {probe && spotUnits.length > 0 ? `${hitsTag(spotUnits)} · ` : ""}
               {landHit ? `${landTag(landHit)} · ` : landDown ? "Land unavailable · " : ""}
               {readoutWeather && lightWindow ? `Your window ${lightWindow} · ` : ""}
               {readoutWeather?.elevationM != null ? `${formatElev(readoutWeather.elevationM, unitPrefs.elevationUnit)} elev` : "Elev —"}
@@ -1620,8 +1602,14 @@ export function HuntApp() {
             ))}
           </div>
           <Toggle checked={settings.showPublic} onChange={bind("showPublic")} label="Public land" hint="BLM surface-management agencies. Blank ground has no agency record; that doesn't make it private or public." />
-          <Toggle checked={settings.showUnits} onChange={bind("showUnits")} label="Hunt units" hint={region === "id" ? "Idaho Fish and Game units. Reference lines, not the legal boundary." : "Arizona game management units. The lines meet at shared borders."} />
-          <Toggle checked={settings.showBorder} onChange={bind("showBorder")} label="State border" hint={region === "id" ? "The Idaho state line, closed around the whole state." : "The Arizona state line, closed around the whole state."} />
+          <Toggle
+            checked={settings.showUnits}
+            onChange={bind("showUnits")}
+            label="Hunt units"
+            hint={`State agency unit lines where Fieldline has them (${unitStatesText()}). Reference lines, not legal boundaries.`}
+          />
+          <Toggle checked={settings.showBorder} onChange={bind("showBorder")} label="State lines" hint="State and national lines from OpenStreetMap. Reference lines, not legal boundaries." />
+          <CoverageHere bounds={viewBounds} providers={unitProviders} />
           <Toggle checked={settings.showUnitLabels} onChange={bind("showUnitLabels")} label="Unit numbers" hint="They hide when you zoom out." />
           <Toggle checked={settings.showRoads} onChange={bind("showRoads")} label="Roads" hint="Freeways are orange, highways gold, local roads gray. Off on the topo scan." />
           <Toggle checked={settings.showTracks} onChange={bind("showTracks")} label="Forest tracks" hint="Tracks and trails, from closer zoom." />
@@ -1678,7 +1666,7 @@ export function HuntApp() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. {region === "id" ? "Unit lines are Idaho Fish and Game reference geometry, not the legal description." : "Unit lines are Arizona Game and Fish reference geometry, not the legal description in Commission Rule R12-4-108."} Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. Satellite and Hybrid use Esri imagery, which is live only. Save this view offline stores one zoom level of USGS imagery or Topo plus public land; streets, labels, units, weather, and search remain online.</p>
+          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. Unit lines are state agency reference geometry, not legal descriptions. Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. Satellite and Hybrid use Esri imagery, which is live only. Save this view offline stores one zoom level of USGS imagery or Topo plus public land; streets, labels, units, weather, and search remain online.</p>
           <button type="button" disabled={packing} onClick={() => void saveArea()} className="mt-3 h-11 w-full rounded-md bg-accent text-sm font-medium text-accent-fg disabled:opacity-50">
             {packing ? "Saving tiles…" : "Save this view offline"}
           </button>
@@ -1729,11 +1717,9 @@ export function HuntApp() {
             {lightWindow
               ? `Your light window is ${settings.daylightBeforeMin} min before sunrise to ${settings.daylightAfterMin} min after sunset, a personal setting, not a legal rule. `
               : ""}
-            Legal shooting hours depend on the state, species, season, and method; Fieldline doesn't hold verified rules. Check{" "}
-            <a className="underline" href={AGENCY_LINKS[region].url} target="_blank" rel="noopener noreferrer">
-              {AGENCY_LINKS[region].name}
-            </a>
-            . Sun direction is for the selected mark. The barometer trend compares now with three hours ago.
+            Legal shooting hours depend on the state, species, season, and method; Fieldline doesn&apos;t hold verified rules.{" "}
+            <AgencyLinks agencies={agenciesAt(weatherPoint.lng, weatherPoint.lat)} />
+            Sun direction is for the selected mark. The barometer trend compares now with three hours ago.
           </p>
           <p className="mt-2 text-xs text-subtle">
             {weather.source.label}.{" "}
@@ -2423,10 +2409,11 @@ function SpotInfo({
   onMark: () => void;
 }) {
   const land = detail.land;
-  const unit = detail.unit;
   const landDown = !land && !detail.pending;
   const title = land?.label ?? (detail.pending ? "This spot" : "Land record unavailable");
-  const species = unit?.species.split(/,\s*/).map((name) => name.trim()).filter(Boolean) ?? [];
+  const places = jurisdictionsAt({ lng: detail.lng, lat: detail.lat });
+  const multiState = new Set(detail.units.map((hit) => hit.unit.jurisdictionId)).size > 1;
+  const unitCoverage = places.map((place) => ({ place, status: layerStatus(place.id, "hunt-units") }));
   const light =
     weather && daylight.daylightWindow ? personalWindow(weather.sunrise, weather.sunset, daylight.daylightBeforeMin, daylight.daylightAfterMin) : null;
   const gusty = weather?.gustMps != null && weather.windMps != null && weather.gustMps > weather.windMps + 1.5;
@@ -2444,13 +2431,14 @@ function SpotInfo({
         <span className="mt-1 size-3 shrink-0 rounded-sm border border-line" style={{ background: land?.swatch ?? "transparent" }} />
         <div className="min-w-0 flex-1">
           <h2 className="text-sm leading-tight">{title}</h2>
-          {unit ? (
-            <p className="mt-0.5 text-sm text-muted">
-              Unit {unit.gmu}
-              {unit.regionName ? ` · ${unit.regionName}` : ""}
-              {unit.sqMiles != null ? ` · ${Math.round(unit.sqMiles).toLocaleString("en-US")} sq mi` : ""}
+          {detail.units.map((hit) => (
+            <p key={hit.unit.id} className="mt-0.5 text-sm text-muted">
+              {hit.unit.label}
+              {multiState ? ` · ${coverageFor(hit.unit.jurisdictionId)?.name ?? hit.unit.jurisdictionId}` : ""}
+              {hit.unit.regionName ? ` · ${hit.unit.regionName}` : ""}
+              {hit.unit.sqMiles != null ? ` · ${Math.round(hit.unit.sqMiles).toLocaleString("en-US")} sq mi` : ""}
             </p>
-          ) : null}
+          ))}
         </div>
         <button type="button" aria-label="Close spot info" className="grid size-8 shrink-0 place-items-center text-muted" onClick={onClose}>
           <X className="size-4" />
@@ -2471,17 +2459,36 @@ function SpotInfo({
             {land.source}, checked {new Date(land.checkedAt).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}
           </p>
         ) : null}
-        {unit?.forest ? <p className="mt-1">{unit.forest}</p> : null}
-        {unit?.land && unit.land !== unit.forest && unit.land !== land?.label ? <p className="mt-1">{unit.land}</p> : null}
-        {species.length > 0 ? (
-          <div className="mt-2 flex flex-wrap gap-1">
-            {species.map((name) => (
-              <span key={name} className="rounded-md bg-bg px-1.5 py-0.5 text-xs text-fg">
-                {name}
-              </span>
-            ))}
+        {detail.units.map((hit) => (
+          <div key={hit.unit.id} className="mt-1">
+            {hit.unit.seasonContext ? <p>{hit.unit.seasonContext}</p> : null}
+            {hit.unit.forest ? <p>{hit.unit.forest}</p> : null}
+            {hit.unit.landNote && hit.unit.landNote !== hit.unit.forest && hit.unit.landNote !== land?.label ? <p>{hit.unit.landNote}</p> : null}
+            {hit.unit.speciesTags.length > 0 ? (
+              <div className="mt-1 flex flex-wrap gap-1">
+                {hit.unit.speciesTags.map((name) => (
+                  <span key={name} className="rounded-md bg-bg px-1.5 py-0.5 text-xs text-fg">
+                    {name}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            <p className="mt-0.5 text-xs text-subtle">
+              {unitAdapterById(hit.unit.providerId)?.info.caveat ?? ""}
+              {hit.approximate ? " From the saved copy; edges may be simplified." : ""}
+            </p>
           </div>
+        ))}
+        {detail.unitsPending && detail.units.length === 0 && unitCoverage.some(({ status }) => status.status === "available") ? (
+          <p className="mt-1">Checking hunt units…</p>
         ) : null}
+        {!detail.unitsPending && detail.units.length === 0
+          ? unitCoverage.map(({ place, status }) => (
+              <p key={place.id} className="mt-1 text-xs text-subtle">
+                {status.status === "available" ? `No ${place.name} hunt unit found at this point.` : `${place.name}: ${status.note}`}
+              </p>
+            ))
+          : null}
         <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
           <SpotFact label="Elevation" value={weather?.elevationM != null ? formatElev(weather.elevationM, units.elevationUnit) : null} />
           <SpotFact label="Slope" value={slope} />
@@ -2506,6 +2513,62 @@ function SpotInfo({
         </button>
       </div>
     </article>
+  );
+}
+
+function AgencyLinks({ agencies }: { agencies: { name: string; url: string }[] }) {
+  if (agencies.length === 0) return <>Check the state wildlife agency. </>;
+  return (
+    <>
+      Check{" "}
+      {agencies.map((agency, index) => (
+        <span key={agency.url}>
+          {index > 0 ? " or " : ""}
+          <a className="underline" href={agency.url} target="_blank" rel="noopener noreferrer">
+            {agency.name}
+          </a>
+        </span>
+      ))}
+      .{" "}
+    </>
+  );
+}
+
+/** What Fieldline has for the states in view: honest per-layer status, including runtime load results. */
+function CoverageHere({ bounds, providers }: { bounds: Bounds | null; providers: ProviderLoad[] }) {
+  if (!bounds) return null;
+  const places = jurisdictionsInBounds(bounds);
+  if (places.length === 0) {
+    return <p className="py-2 text-sm text-muted">No state coverage information for this view.</p>;
+  }
+  const shown = places.slice(0, 6);
+  return (
+    <section className="my-2 rounded-lg bg-bg px-3 py-2" aria-label="Coverage in view">
+      <p className="text-xs tracking-wide text-subtle uppercase">Coverage in view</p>
+      <ul className="mt-1 space-y-1.5">
+        {shown.map((place) => {
+          const load = providers.find((entry) => entry.info.jurisdictionIds.includes(place.id));
+          const register = layerStatus(place.id, "hunt-units");
+          const units = !load
+            ? register.status === "available"
+              ? "Hunt units: zoom in to load."
+              : "Hunt units: not in Fieldline yet."
+            : !load.result
+              ? "Hunt units: loading…"
+              : load.result.status === "available"
+                ? `Hunt units: ${load.result.units.length} from ${load.info.title}.`
+                : `Hunt units: ${load.result.message ?? load.result.status}`;
+          return (
+            <li key={place.id} className="text-sm">
+              <span className="text-fg">{place.name}</span>
+              <span className="block text-muted">{units}</span>
+            </li>
+          );
+        })}
+      </ul>
+      {places.length > shown.length ? <p className="mt-1 text-xs text-subtle">and {places.length - shown.length} more states in view.</p> : null}
+      <p className="mt-1 text-xs text-subtle">Public land colors cover every state. Parcel owners, access routes, and legal hours aren&apos;t in Fieldline yet.</p>
+    </section>
   );
 }
 

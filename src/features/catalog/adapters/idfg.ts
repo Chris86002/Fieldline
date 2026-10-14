@@ -1,7 +1,9 @@
 /**
  * Idaho Fish and Game game management units, Hunting MapServer layer 3
- * (docs/data-sources.md entry 7). CC BY Idaho Fish and Game. Reference
- * lines, not the legal boundary.
+ * (docs/data-sources.md entry 7). Reference lines, not the legal boundary.
+ * The layer's copyright text read "CC-BY Idaho Fish and Game" when first
+ * checked but only "Idaho Fish and Game" on 2026-10-14, so download and
+ * redistribution rights are treated as unverified until IDFG confirms.
  */
 import type { ProviderInfo } from "../types.ts";
 import type { ArcgisAdapterOptions, ArcgisUnitSource, UnitFields } from "./arcgis.ts";
@@ -16,10 +18,10 @@ export const IDFG_INFO: ProviderInfo = {
   jurisdictionIds: ["us-id"],
   // Layer extent (EPSG:3857) converted to degrees, rounded outward.
   coverage: [{ west: -117.3, south: 41.9, east: -110.9, north: 49.1 }],
-  attribution: "Idaho Fish and Game (CC BY)",
+  attribution: "Idaho Fish and Game",
   sourceUrl: "https://idfg.idaho.gov/",
   licenseUrl: null,
-  capabilities: { view: true, identify: true, search: true, download: true, redistribution: true },
+  capabilities: { view: true, identify: true, search: true, download: "unknown", redistribution: "unknown" },
   caveat: "Reference lines, not the legal boundary.",
 };
 

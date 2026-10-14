@@ -41,8 +41,7 @@ type Props = {
   showRings: boolean;
   showUnits: boolean;
   unitsGeo: FC;
-  borderGeo: FC;
-  unitLabels: { gmu: string; lng: number; lat: number }[];
+  unitLabels: { id: string; code: string; lng: number; lat: number }[];
   windFrom: number | null;
   sunLng: number | null;
   sunLat: number | null;
@@ -95,6 +94,13 @@ type JsonFeature = {
 type FC = { type: "FeatureCollection"; features: JsonFeature[] };
 
 const EMPTY: FC = { type: "FeatureCollection", features: [] };
+
+/** Country and state lines (OpenMapTiles admin levels 2 and 4), without maritime boundaries. */
+const STATE_LINE_FILTER: ExpressionSpecification = [
+  "all",
+  ["<=", ["get", "admin_level"], 4],
+  ["!=", ["coalesce", ["get", "maritime"], 0], 1],
+];
 
 const OFM = "https://tiles.openfreemap.org/planet";
 const GLYPHS = "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf";
@@ -487,6 +493,7 @@ function buildStyle(opts: {
   showCreeks: boolean;
   showPeaks: boolean;
   showShade: boolean;
+  showBorder: boolean;
   publicOpacity: number;
 }): StyleSpecification {
   const hybrid = opts.basemap === "hybrid";
@@ -528,9 +535,8 @@ function buildStyle(opts: {
       accuracy: { type: "geojson", data: EMPTY },
       sun: { type: "geojson", data: EMPTY },
       rings: { type: "geojson", data: EMPTY },
-      units: { type: "geojson", data: EMPTY },
+      units: { type: "geojson", data: EMPTY, attribution: "Hunt units: state wildlife agencies (reference only)" },
       "unit-labels": { type: "geojson", data: EMPTY },
-      border: { type: "geojson", data: EMPTY },
     },
     layers: [
       { id: "land", type: "background", paint: { "background-color": paint.land } },
@@ -584,7 +590,7 @@ function buildStyle(opts: {
         source: "unit-labels",
         minzoom: 8,
         layout: {
-          "text-field": ["get", "gmu"],
+          "text-field": ["get", "code"],
           "text-font": ["Noto Sans Bold"],
           "text-size": 13,
           "text-allow-overlap": true,
@@ -592,11 +598,15 @@ function buildStyle(opts: {
         },
         paint: { "text-color": "#f3f1ea", "text-halo-color": "#121410", "text-halo-width": 1.5 },
       },
+      // State and national lines for every state, from the OpenFreeMap (OpenMapTiles) boundary layer.
+      // Sea boundaries are left out; these are reference lines, not legal boundaries.
       {
         id: "border-casing",
         type: "line",
-        source: "border",
-        layout: { "line-join": "round", "line-cap": "round" },
+        source: "ofm",
+        "source-layer": "boundary",
+        filter: STATE_LINE_FILTER,
+        layout: { "line-join": "round", "line-cap": "round", visibility: vis(opts.showBorder) },
         paint: {
           "line-color": "#0c0e0a",
           "line-width": ["interpolate", ["linear"], ["zoom"], 4, 3.4, 7, 5.2, 11, 7],
@@ -606,8 +616,10 @@ function buildStyle(opts: {
       {
         id: "border-line",
         type: "line",
-        source: "border",
-        layout: { "line-join": "round", "line-cap": "round" },
+        source: "ofm",
+        "source-layer": "boundary",
+        filter: STATE_LINE_FILTER,
+        layout: { "line-join": "round", "line-cap": "round", visibility: vis(opts.showBorder) },
         paint: {
           "line-color": "#fffaf0",
           "line-width": ["interpolate", ["linear"], ["zoom"], 4, 1.6, 7, 2.5, 11, 3.5],
@@ -802,6 +814,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
             showCreeks: state.showCreeks,
             showPeaks: state.showPeaks,
             showShade: state.showShade,
+            showBorder: state.showBorder,
             publicOpacity: state.publicOpacity,
           }),
           center: [saved.lng, saved.lat],
@@ -1127,11 +1140,9 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map) return;
-    setGeo(map, "border", props.borderGeo);
-    const on = props.showBorder && props.borderGeo.features.length > 0;
-    if (map.getLayer("border-casing")) map.setLayoutProperty("border-casing", "visibility", vis(on));
-    if (map.getLayer("border-line")) map.setLayoutProperty("border-line", "visibility", vis(on));
-  }, [ready, props.showBorder, props.borderGeo]);
+    if (map.getLayer("border-casing")) map.setLayoutProperty("border-casing", "visibility", vis(props.showBorder));
+    if (map.getLayer("border-line")) map.setLayoutProperty("border-line", "visibility", vis(props.showBorder));
+  }, [ready, props.showBorder]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1143,7 +1154,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
       type: "FeatureCollection",
       features: props.unitLabels.map((label) => ({
         type: "Feature",
-        properties: { gmu: label.gmu },
+        properties: { id: label.id, code: label.code },
         geometry: { type: "Point", coordinates: [label.lng, label.lat] },
       })),
     });

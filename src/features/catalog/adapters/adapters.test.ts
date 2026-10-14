@@ -390,7 +390,8 @@ describe("unit adapter registry", () => {
     assert.deepEqual(az.jurisdictionIds, ["us-az"]);
     assert.deepEqual(id.jurisdictionIds, ["us-id"]);
     assert.equal(az.capabilities.download, "unknown");
-    assert.equal(id.capabilities.redistribution, true);
+    // The live layer's copyright text no longer says CC BY (2026-10-14), so storage rights are unverified.
+    assert.equal(id.capabilities.redistribution, "unknown");
     assert.match(az.caveat, /R12-4-108/);
     assert.match(id.caveat, /not the legal boundary/);
     assert.equal(unitAdapterById("nope"), null);

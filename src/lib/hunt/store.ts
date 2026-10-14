@@ -78,12 +78,13 @@ type LegacyPreferences = {
   showSun: boolean;
   showRings: boolean;
   imperial: boolean;
+  /** The old Arizona/Idaho mode; the app is nationwide now. */
+  huntRegion: HuntRegion;
 };
 
 type HuntState = LegacyPreferences & {
   waypoints: Waypoint[];
   tracks: Track[];
-  huntRegion: HuntRegion;
   lastKind: MarkKind;
   activeHunt: string;
   introDismissed: boolean;
@@ -95,7 +96,6 @@ type HuntState = LegacyPreferences & {
   toggleTrack: (id: string) => void;
   removeTrack: (id: string) => void;
   importAll: (waypoints: Waypoint[], tracks: Track[]) => void;
-  setHuntRegion: (huntRegion: HuntRegion) => void;
   setLastKind: (lastKind: MarkKind) => void;
   setActiveHunt: (activeHunt: string) => void;
   dismissIntro: () => void;
@@ -146,7 +146,6 @@ export const useHunt = create<HuntState>()(
           waypoints: [...waypoints, ...s.waypoints],
           tracks: [...tracks, ...s.tracks],
         })),
-      setHuntRegion: (huntRegion) => set({ huntRegion }),
       setLastKind: (lastKind) => set({ lastKind }),
       setActiveHunt: (activeHunt) => set({ activeHunt }),
       dismissIntro: () => set({ introDismissed: true }),

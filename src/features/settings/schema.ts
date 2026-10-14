@@ -17,7 +17,7 @@ export type AreaUnit = "acres" | "hectares";
 export type SpeedUnit = "mph" | "kmh" | "mps" | "knots";
 export type TemperatureUnit = "F" | "C";
 export type PressureUnit = "inHg" | "hPa";
-export type StartupView = "last" | "home";
+export type StartupView = "last" | "home" | "national";
 export type MotionPreference = "system" | "reduce" | "full";
 export type WeatherLocation = "pointer" | "center" | "selected";
 
@@ -193,6 +193,7 @@ export const FIELDS: Record<SettingKey, FieldSpec> = {
     choices: [
       { value: "last", label: "Last view" },
       { value: "home", label: "Home area" },
+      { value: "national", label: "National overview" },
     ],
   },
   homeView: { kind: "view", category: "map", label: "Home area", help: "Saved from the current map view." },
