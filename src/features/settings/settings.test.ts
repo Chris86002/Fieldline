@@ -78,6 +78,35 @@ describe("settings schema", () => {
     assert.equal(settings.startupView, "last");
   });
 
+  it("changes the public-land default only for new profiles (MAP-02)", () => {
+    assert.ok(DEFAULT_SETTINGS.publicOpacity <= 0.25, "new profiles start with lighter public land");
+    // An older profile saved with the old 0.62 default, or any other strength, keeps it.
+    for (const saved of [0.62, 0.35, 0.9]) {
+      assert.equal(migrateLegacy({ ...legacyProfile.state, publicOpacity: saved }).publicOpacity, saved);
+      assert.equal(parseSettings({ publicOpacity: saved }).settings.publicOpacity, saved);
+    }
+    // A profile with nothing saved gets the new default.
+    assert.equal(migrateLegacy(null).publicOpacity, DEFAULT_SETTINGS.publicOpacity);
+  });
+
+  it("validates boundary strength and label density, defaulting them for older saves", () => {
+    const { settings, rejected } = parseSettings({ boundaryStrength: "strong", labelDensity: "loud" });
+    assert.equal(settings.boundaryStrength, "strong");
+    assert.equal(settings.labelDensity, DEFAULT_SETTINGS.labelDensity);
+    assert.deepEqual(rejected, ["labelDensity"]);
+    // A settings file saved before these existed loads without warnings and keeps its other values.
+    const older = parseSettings({ basemap: "topo", publicOpacity: 0.62 });
+    assert.deepEqual(older.rejected, []);
+    assert.equal(older.settings.boundaryStrength, "standard");
+    assert.equal(older.settings.labelDensity, "standard");
+    assert.equal(older.settings.publicOpacity, 0.62);
+    let state = applySetting(base(), "labelDensity", "fewer");
+    state = applySetting(state, "boundaryStrength", "subtle");
+    state = resetCategory(state, "map");
+    assert.equal(state.prefs.labelDensity, "standard");
+    assert.equal(state.prefs.boundaryStrength, "standard");
+  });
+
   it("keeps valid values and rejects invalid ones individually", () => {
     const { settings, rejected } = parseSettings({ basemap: "moon", publicOpacity: 4, terrain: true, speedUnit: "knots", gpsMinMoveM: Number.NaN });
     assert.deepEqual(rejected.sort(), ["basemap", "gpsMinMoveM", "publicOpacity"]);
@@ -180,6 +209,19 @@ describe("settings persistence", () => {
     assert.equal(saved.version, 1);
     assert.equal(saved.state.prefs.speedUnit, "kmh");
     assert.equal(saved.state.prefs.distanceUnit, "metric");
+  });
+
+  it("loads a saved public-land strength unchanged after the default moved", () => {
+    installStorage({ "fieldline-settings": JSON.stringify({ version: 1, state: { prefs: { publicOpacity: 0.62 } } }) });
+    hydrateSettings();
+    assert.equal(useSettings.getState().effective.publicOpacity, 0.62);
+    assert.equal(useSettings.getState().warning, null);
+    installStorage({ "fieldline-v1": JSON.stringify({ ...legacyProfile, state: { ...legacyProfile.state, publicOpacity: 0.62 } }) });
+    hydrateSettings();
+    assert.equal(useSettings.getState().effective.publicOpacity, 0.62, "migrated from fieldline-v1");
+    installStorage({});
+    hydrateSettings();
+    assert.equal(useSettings.getState().effective.publicOpacity, DEFAULT_SETTINGS.publicOpacity, "new profile");
   });
 
   it("survives a restart", () => {

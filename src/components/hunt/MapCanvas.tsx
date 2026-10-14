@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import type { ExpressionSpecification, GeoJSONSource, LayerSpecification, Map as MlMap, Marker, StyleSpecification } from "maplibre-gl";
+import type { GeoJSONSource, Map as MlMap, Marker, StyleSpecification } from "maplibre-gl";
 import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?url";
 import { circlePolygon, windFits } from "@/lib/hunt/format";
 import { destination } from "@/lib/hunt/sun";
@@ -8,7 +8,25 @@ import { MARKS } from "@/components/hunt/marks";
 import { cachedTile, installTileProtocol, TILES } from "@/lib/hunt/tiles";
 import type { Basemap, LngLat, MapView, Track, TrackPoint, Waypoint } from "@/lib/hunt/types";
 import { DEFAULT_VIEW } from "@/lib/hunt/types";
-import type { DistanceUnit, ElevationUnit } from "@/features/settings/schema";
+import type { BoundaryStrength, DistanceUnit, ElevationUnit, LabelDensity } from "@/features/settings/schema";
+import { firstLayerAbove } from "@/features/map/layer-groups";
+import { LABEL_LAYER_IDS, labelRules } from "@/features/map/labels";
+import {
+  BORDER_LAYERS,
+  buildLayers,
+  CREEK_LAYERS,
+  DYNAMIC_PAINT_LAYERS,
+  mapLayerGroups,
+  PEAK_LAYERS,
+  ROAD_LINE_LAYERS,
+  ROAD_NAME_LAYERS,
+  STREET_FILLS,
+  TOWN_LAYERS,
+  TRACK_LAYERS,
+  UNIT_LINE_LAYERS,
+  type StyleOptions,
+} from "@/features/map/style-layers";
+import { reliefPaint } from "@/features/map/tokens";
 
 export type GpsFix = { lng: number; lat: number; accuracy: number; heading: number | null };
 
@@ -36,6 +54,10 @@ type Props = {
   showPeaks: boolean;
   showUnitLabels: boolean;
   showBorder: boolean;
+  /** Weight of hunt-unit and state lines. */
+  boundaryStrength: BoundaryStrength;
+  /** How many ordinary labels show, and from which zoom. */
+  labelDensity: LabelDensity;
   showShade: boolean;
   showSun: boolean;
   showRings: boolean;
@@ -95,423 +117,59 @@ type FC = { type: "FeatureCollection"; features: JsonFeature[] };
 
 const EMPTY: FC = { type: "FeatureCollection", features: [] };
 
-/** Country and state lines (OpenMapTiles admin levels 2 and 4), without maritime boundaries. */
-const STATE_LINE_FILTER: ExpressionSpecification = [
-  "all",
-  ["<=", ["get", "admin_level"], 4],
-  ["!=", ["coalesce", ["get", "maritime"], 0], 1],
-];
-
 const OFM = "https://tiles.openfreemap.org/planet";
 const GLYPHS = "https://tiles.openfreemap.org/fonts/{fontstack}/{range}.pbf";
-
-const ROAD_LINE_LAYERS = ["vx-local-casing", "vx-local", "vx-highway-casing", "vx-highway", "vx-freeway-casing", "vx-freeway"] as const;
-const TRACK_LAYERS = ["vx-track"] as const;
-const CREEK_LAYERS = ["vx-creek-line", "vx-creek"] as const;
-const ROAD_NAME_LAYERS = ["vx-road-major", "vx-road-minor", "vx-shield"] as const;
-const TOWN_LAYERS = ["vx-place-city", "vx-place-town", "vx-place-small"] as const;
-const PEAK_LAYERS = ["vx-peak"] as const;
-const STREET_FILLS = ["vx-water", "vx-wood", "vx-park"] as const;
-
-type OverlayPaint = {
-  street: boolean;
-  freeway: string;
-  freewayCasing: string;
-  highway: string;
-  highwayCasing: string;
-  local: string;
-  localCasing: string;
-  track: string;
-  text: string;
-  halo: string;
-  creek: string;
-  land: string;
-};
-
-function overlayPaint(basemap: Basemap): OverlayPaint {
-  const street = basemap === "street";
-  return street
-    ? {
-        street,
-        freeway: "#e25c12",
-        freewayCasing: "#7a3410",
-        highway: "#c9842e",
-        highwayCasing: "#8a6230",
-        local: "#fffcf7",
-        localCasing: "#b7b1a6",
-        track: "#6d675c",
-        text: "#1a1e16",
-        halo: "#f3f0e8",
-        creek: "#3e6278",
-        land: "#e4dfd4",
-      }
-    : {
-        street,
-        freeway: "#ff7a1a",
-        freewayCasing: "#2a1004",
-        highway: "#f0d56a",
-        highwayCasing: "#1a1408",
-        local: "#c5d2e0",
-        localCasing: "#12161c",
-        track: "#e4efd8",
-        text: "#f7f4ea",
-        halo: "#141810",
-        creek: "#d5e6f2",
-        land: "#1c2418",
-      };
-}
-
-function lineGeom(): ExpressionSpecification {
-  return ["match", ["geometry-type"], ["LineString", "MultiLineString"], true, false];
-}
-
-function roadFilter(classes: string[]): ExpressionSpecification {
-  return ["all", lineGeom(), ["match", ["get", "class"], classes, true, false], ["!=", ["get", "brunnel"], "tunnel"]];
-}
-
-function nameFilter(classes: string[]): ExpressionSpecification {
-  return ["all", lineGeom(), ["match", ["get", "class"], classes, true, false], ["has", "name"]];
-}
-
-const NAME_FIELD: ExpressionSpecification = ["coalesce", ["get", "name_en"], ["get", "name"]];
-
-function zoomWidth(stops: number[]): ExpressionSpecification {
-  const expr: unknown[] = ["interpolate", ["exponential", 1.35], ["zoom"]];
-  for (let i = 0; i < stops.length; i += 2) expr.push(stops[i], stops[i + 1]);
-  return expr as ExpressionSpecification;
-}
-
-function overlayLayers(
-  paint: OverlayPaint,
-  flags: { roads: boolean; tracks: boolean; creeks: boolean; peaks: boolean; towns: boolean; street: boolean },
-): LayerSpecification[] {
-  const roadVis = vis(flags.roads);
-  const trackVis = vis(flags.tracks);
-  const creekVis = vis(flags.creeks);
-  const peakVis = vis(flags.peaks);
-  const townVis = vis(flags.towns);
-  const fillVis = vis(flags.street);
-  return [
-    {
-      id: "vx-water",
-      type: "fill",
-      source: "ofm",
-      "source-layer": "water",
-      layout: { visibility: fillVis },
-      paint: { "fill-color": "#c5d4e2" },
-    },
-    {
-      id: "vx-wood",
-      type: "fill",
-      source: "ofm",
-      "source-layer": "landcover",
-      filter: ["==", ["get", "class"], "wood"],
-      layout: { visibility: fillVis },
-      paint: { "fill-color": "#d3dcc8", "fill-opacity": 0.65 },
-    },
-    {
-      id: "vx-park",
-      type: "fill",
-      source: "ofm",
-      "source-layer": "park",
-      layout: { visibility: fillVis },
-      paint: { "fill-color": "#d7e3c4", "fill-opacity": 0.55 },
-    },
-    {
-      id: "vx-creek-line",
-      type: "line",
-      source: "ofm",
-      "source-layer": "waterway",
-      minzoom: 11,
-      filter: ["match", ["get", "class"], ["river", "stream", "canal"], true, false],
-      layout: { visibility: creekVis, "line-cap": "round", "line-join": "round" },
-      paint: {
-        "line-color": paint.creek,
-        "line-width": zoomWidth([11, 0.4, 14, 1.15, 17, 2.2]),
-        "line-opacity": 0.85,
-      },
-    },
-    {
-      id: "vx-track",
-      type: "line",
-      source: "ofm",
-      "source-layer": "transportation",
-      minzoom: 12,
-      filter: roadFilter(["track", "path"]),
-      layout: { visibility: trackVis, "line-cap": "butt", "line-join": "round" },
-      paint: {
-        "line-color": paint.track,
-        "line-width": zoomWidth([12, 0.7, 14, 1.3, 17, 2.4]),
-        "line-dasharray": [1.1, 1.35],
-        "line-opacity": 0.95,
-      },
-    },
-    {
-      id: "vx-local-casing",
-      type: "line",
-      source: "ofm",
-      "source-layer": "transportation",
-      minzoom: 11,
-      filter: roadFilter(["tertiary", "minor", "service", "unclassified"]),
-      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": paint.localCasing, "line-width": zoomWidth([11, 1, 14, 3, 17, 7]), "line-opacity": 0.9 },
-    },
-    {
-      id: "vx-local",
-      type: "line",
-      source: "ofm",
-      "source-layer": "transportation",
-      minzoom: 11,
-      filter: roadFilter(["tertiary", "minor", "service", "unclassified"]),
-      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": paint.local, "line-width": zoomWidth([11, 0.4, 14, 1.5, 17, 4.2]) },
-    },
-    {
-      id: "vx-highway-casing",
-      type: "line",
-      source: "ofm",
-      "source-layer": "transportation",
-      minzoom: 7,
-      filter: roadFilter(["primary", "secondary"]),
-      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": paint.highwayCasing, "line-width": zoomWidth([7, 1.4, 10, 2.6, 14, 5.5, 17, 10]), "line-opacity": 0.92 },
-    },
-    {
-      id: "vx-highway",
-      type: "line",
-      source: "ofm",
-      "source-layer": "transportation",
-      minzoom: 7,
-      filter: roadFilter(["primary", "secondary"]),
-      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": paint.highway, "line-width": zoomWidth([7, 0.6, 10, 1.4, 14, 3.2, 17, 6.4]) },
-    },
-    {
-      id: "vx-freeway-casing",
-      type: "line",
-      source: "ofm",
-      "source-layer": "transportation",
-      minzoom: 5,
-      filter: roadFilter(["motorway", "trunk"]),
-      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": paint.freewayCasing, "line-width": zoomWidth([5, 1.8, 8, 3.2, 12, 6.4, 16, 12]), "line-opacity": 0.94 },
-    },
-    {
-      id: "vx-freeway",
-      type: "line",
-      source: "ofm",
-      "source-layer": "transportation",
-      minzoom: 5,
-      filter: roadFilter(["motorway", "trunk"]),
-      layout: { visibility: roadVis, "line-cap": "round", "line-join": "round" },
-      paint: { "line-color": paint.freeway, "line-width": zoomWidth([5, 0.85, 8, 1.8, 12, 3.8, 16, 8]) },
-    },
-    {
-      id: "vx-road-major",
-      type: "symbol",
-      source: "ofm",
-      "source-layer": "transportation_name",
-      minzoom: 11,
-      filter: nameFilter(["motorway", "trunk", "primary", "secondary", "tertiary"]),
-      layout: {
-        visibility: roadVis,
-        "symbol-placement": "line",
-        "symbol-spacing": 320,
-        "text-field": NAME_FIELD,
-        "text-font": ["Noto Sans Regular"],
-        "text-size": 13,
-        "text-pitch-alignment": "viewport",
-        "text-rotation-alignment": "map",
-      },
-      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.6, "text-halo-blur": 0.15 },
-    },
-    {
-      id: "vx-road-minor",
-      type: "symbol",
-      source: "ofm",
-      "source-layer": "transportation_name",
-      minzoom: 14,
-      filter: nameFilter(["minor", "service", "track"]),
-      layout: {
-        visibility: roadVis,
-        "symbol-placement": "line",
-        "symbol-spacing": 280,
-        "text-field": NAME_FIELD,
-        "text-font": ["Noto Sans Regular"],
-        "text-size": 12,
-        "text-pitch-alignment": "viewport",
-        "text-rotation-alignment": "map",
-      },
-      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.5, "text-halo-blur": 0.15 },
-    },
-    {
-      id: "vx-shield",
-      type: "symbol",
-      source: "ofm",
-      "source-layer": "transportation_name",
-      minzoom: 8,
-      filter: ["all", lineGeom(), ["match", ["get", "class"], ["motorway", "trunk", "primary"], true, false], ["has", "ref"]],
-      layout: {
-        visibility: roadVis,
-        "symbol-placement": "line",
-        "symbol-spacing": 360,
-        "text-field": ["to-string", ["get", "ref"]],
-        "text-font": ["Noto Sans Bold"],
-        "text-size": 11,
-        "text-pitch-alignment": "viewport",
-      },
-      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.8, "text-halo-blur": 0.1 },
-    },
-    {
-      id: "vx-creek",
-      type: "symbol",
-      source: "ofm",
-      "source-layer": "waterway",
-      minzoom: 12,
-      filter: ["all", lineGeom(), ["has", "name"]],
-      layout: {
-        visibility: creekVis,
-        "symbol-placement": "line",
-        "symbol-spacing": 400,
-        "text-field": NAME_FIELD,
-        "text-font": ["Noto Sans Italic"],
-        "text-size": 12,
-        "text-letter-spacing": 0.04,
-        "text-pitch-alignment": "viewport",
-      },
-      paint: { "text-color": paint.creek, "text-halo-color": paint.halo, "text-halo-width": 1.4, "text-halo-blur": 0.15 },
-    },
-    {
-      id: "vx-place-city",
-      type: "symbol",
-      source: "ofm",
-      "source-layer": "place",
-      minzoom: 4,
-      filter: ["==", ["get", "class"], "city"],
-      layout: {
-        visibility: townVis,
-        "text-field": NAME_FIELD,
-        "text-font": ["Noto Sans Bold"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 4, 12, 8, 16, 12, 22],
-        "text-padding": 6,
-        "text-letter-spacing": 0.02,
-        "text-pitch-alignment": "viewport",
-        "text-rotation-alignment": "viewport",
-      },
-      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.7, "text-halo-blur": 0.15 },
-    },
-    {
-      id: "vx-place-town",
-      type: "symbol",
-      source: "ofm",
-      "source-layer": "place",
-      minzoom: 7,
-      filter: ["==", ["get", "class"], "town"],
-      layout: {
-        visibility: townVis,
-        "text-field": NAME_FIELD,
-        "text-font": ["Noto Sans Bold"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 7, 12, 11, 15, 14, 18],
-        "text-padding": 4,
-        "text-pitch-alignment": "viewport",
-        "text-rotation-alignment": "viewport",
-      },
-      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.6, "text-halo-blur": 0.15 },
-    },
-    {
-      id: "vx-place-small",
-      type: "symbol",
-      source: "ofm",
-      "source-layer": "place",
-      minzoom: 11,
-      filter: ["match", ["get", "class"], ["village", "hamlet", "suburb", "neighbourhood"], true, false],
-      layout: {
-        visibility: townVis,
-        "text-field": NAME_FIELD,
-        "text-font": ["Noto Sans Regular"],
-        "text-size": ["interpolate", ["linear"], ["zoom"], 11, 11, 14, 14],
-        "text-padding": 3,
-        "text-pitch-alignment": "viewport",
-        "text-rotation-alignment": "viewport",
-      },
-      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.5, "text-halo-blur": 0.15 },
-    },
-    {
-      id: "vx-peak",
-      type: "symbol",
-      source: "ofm",
-      "source-layer": "mountain_peak",
-      minzoom: 11,
-      filter: ["has", "name"],
-      layout: {
-        visibility: peakVis,
-        "text-field": NAME_FIELD,
-        "text-font": ["Noto Sans Regular"],
-        "text-size": 12,
-        "text-padding": 2,
-        "text-pitch-alignment": "viewport",
-        "text-rotation-alignment": "viewport",
-        "text-offset": [0, 0.6],
-      },
-      paint: { "text-color": paint.text, "text-halo-color": paint.halo, "text-halo-width": 1.5, "text-halo-blur": 0.15 },
-    },
-  ];
-}
-
-function applyOverlayPaint(map: MlMap, basemap: Basemap) {
-  const paint = overlayPaint(basemap);
-  const set = (id: string, prop: string, value: unknown) => {
-    if (map.getLayer(id)) map.setPaintProperty(id, prop as never, value as never);
-  };
-  set("land", "background-color", paint.land);
-  set("vx-freeway-casing", "line-color", paint.freewayCasing);
-  set("vx-freeway", "line-color", paint.freeway);
-  set("vx-highway-casing", "line-color", paint.highwayCasing);
-  set("vx-highway", "line-color", paint.highway);
-  set("vx-local-casing", "line-color", paint.localCasing);
-  set("vx-local", "line-color", paint.local);
-  set("vx-track", "line-color", paint.track);
-  for (const id of ["vx-road-major", "vx-road-minor", "vx-shield", "vx-place-city", "vx-place-town", "vx-place-small", "vx-peak"]) {
-    set(id, "text-color", paint.text);
-    set(id, "text-halo-color", paint.halo);
-  }
-  set("vx-creek", "text-color", paint.creek);
-  set("vx-creek", "text-halo-color", paint.halo);
-  set("vx-creek-line", "line-color", paint.creek);
-}
 
 function vis(on: boolean): "visible" | "none" {
   return on ? "visible" : "none";
 }
 
-function buildStyle(opts: {
-  basemap: Basemap;
-  showPublic: boolean;
-  showLabels: boolean;
-  showRoads: boolean;
-  showTracks: boolean;
-  showCreeks: boolean;
-  showPeaks: boolean;
-  showShade: boolean;
-  showBorder: boolean;
-  publicOpacity: number;
-}): StyleSpecification {
-  const hybrid = opts.basemap === "hybrid";
-  const street = opts.basemap === "street";
-  const imagery = opts.basemap === "satellite" || hybrid;
-  const usgs = opts.basemap === "usgs";
-  const shade = opts.showShade && opts.basemap !== "topo";
-  const paint = overlayPaint(opts.basemap);
-  const vector = opts.basemap !== "topo";
+/**
+ * Repaints every layer for the current style options (base map, boundary
+ * strength, public-land opacity) from the same builder that made the style, so
+ * a style switch never leaves a stale color behind. Visibility and the
+ * sun-linked hillshade are handled by their own effects.
+ */
+function applyStylePaint(map: MlMap, options: StyleOptions) {
+  for (const layer of buildLayers(options)) {
+    if ((DYNAMIC_PAINT_LAYERS as readonly string[]).includes(layer.id) || !map.getLayer(layer.id)) continue;
+    const paint = (layer as { paint?: Record<string, unknown> }).paint;
+    if (!paint) continue;
+    for (const [prop, value] of Object.entries(paint)) map.setPaintProperty(layer.id, prop as never, value as never);
+  }
+}
+
+/** Applies label density: first zoom, collision padding and line-label spacing per label layer. */
+function applyLabelDensity(map: MlMap, density: LabelDensity) {
+  const rules = labelRules(density);
+  for (const id of LABEL_LAYER_IDS) {
+    if (!map.getLayer(id)) continue;
+    const rule = rules[id];
+    map.setLayerZoomRange(id, rule.minzoom, 24);
+    map.setLayoutProperty(id, "text-padding", rule.padding);
+    if (rule.spacing != null) map.setLayoutProperty(id, "symbol-spacing", rule.spacing);
+  }
+}
+
+function styleOptions(p: Props): StyleOptions {
+  return {
+    basemap: p.basemap,
+    showPublic: p.showPublic,
+    showLabels: p.showLabels,
+    showRoads: p.showRoads,
+    showTracks: p.showTracks,
+    showCreeks: p.showCreeks,
+    showPeaks: p.showPeaks,
+    showShade: p.showShade,
+    showBorder: p.showBorder,
+    publicOpacity: p.publicOpacity,
+    boundaryStrength: p.boundaryStrength,
+    labelDensity: p.labelDensity,
+  };
+}
+
+function buildStyle(opts: StyleOptions): StyleSpecification {
   const dem = `${window.location.origin}/api/dem/{z}/{x}/{y}`;
-  const overlay = overlayLayers(paint, {
-    roads: vector && opts.showRoads,
-    tracks: vector && opts.showTracks,
-    creeks: vector && opts.showCreeks,
-    peaks: vector && opts.showPeaks,
-    towns: vector && opts.showLabels,
-    street,
-  });
   return {
     version: 8,
     glyphs: GLYPHS,
@@ -538,151 +196,8 @@ function buildStyle(opts: {
       units: { type: "geojson", data: EMPTY, attribution: "Hunt units: state wildlife agencies (reference only)" },
       "unit-labels": { type: "geojson", data: EMPTY },
     },
-    layers: [
-      { id: "land", type: "background", paint: { "background-color": paint.land } },
-      { id: "satellite", type: "raster", source: "satellite", layout: { visibility: vis(imagery) }, paint: { "raster-opacity": 1, "raster-resampling": "linear", "raster-fade-duration": 0 } },
-      { id: "usgs", type: "raster", source: "usgs", layout: { visibility: vis(usgs) }, paint: { "raster-resampling": "linear", "raster-fade-duration": 0 } },
-      { id: "topo", type: "raster", source: "topo", layout: { visibility: vis(opts.basemap === "topo") }, paint: { "raster-resampling": "linear", "raster-fade-duration": 0 } },
-      ...overlay.slice(0, 3),
-      { id: "sma", type: "raster", source: "sma", layout: { visibility: vis(opts.showPublic) }, paint: { "raster-opacity": opts.publicOpacity, "raster-resampling": "linear", "raster-fade-duration": 0 } },
-      {
-        id: "hillshade",
-        type: "hillshade",
-        source: "dem",
-        layout: { visibility: vis(shade) },
-        paint: {
-          "hillshade-method": "basic",
-          "hillshade-illumination-anchor": "map",
-          "hillshade-illumination-direction": 180,
-          "hillshade-illumination-altitude": 35,
-          "hillshade-exaggeration": 0.65,
-          "hillshade-shadow-color": "rgba(8, 12, 10, 0.82)",
-          "hillshade-highlight-color": "rgba(255, 236, 196, 0.42)",
-          "hillshade-accent-color": "rgba(0, 0, 0, 0)",
-        },
-      },
-      ...overlay.slice(3, 11),
-      {
-        id: "units-casing",
-        type: "line",
-        source: "units",
-        layout: { "line-join": "round", "line-cap": "round" },
-        paint: {
-          "line-color": "#141910",
-          "line-width": ["interpolate", ["linear"], ["zoom"], 5, 2.6, 8, 4.2, 12, 6.5],
-          "line-opacity": 0.75,
-        },
-      },
-      {
-        id: "units-line",
-        type: "line",
-        source: "units",
-        layout: { "line-join": "round", "line-cap": "round" },
-        paint: {
-          "line-color": "#f4efe2",
-          "line-width": ["interpolate", ["linear"], ["zoom"], 5, 1.2, 8, 2, 12, 3.1],
-          "line-opacity": 0.96,
-        },
-      },
-      {
-        id: "unit-labels",
-        type: "symbol",
-        source: "unit-labels",
-        minzoom: 8,
-        layout: {
-          "text-field": ["get", "code"],
-          "text-font": ["Noto Sans Bold"],
-          "text-size": 13,
-          "text-allow-overlap": true,
-          "text-ignore-placement": true,
-        },
-        paint: { "text-color": "#f3f1ea", "text-halo-color": "#121410", "text-halo-width": 1.5 },
-      },
-      // State and national lines for every state, from the OpenFreeMap (OpenMapTiles) boundary layer.
-      // Sea boundaries are left out; these are reference lines, not legal boundaries.
-      {
-        id: "border-casing",
-        type: "line",
-        source: "ofm",
-        "source-layer": "boundary",
-        filter: STATE_LINE_FILTER,
-        layout: { "line-join": "round", "line-cap": "round", visibility: vis(opts.showBorder) },
-        paint: {
-          "line-color": "#0c0e0a",
-          "line-width": ["interpolate", ["linear"], ["zoom"], 4, 3.4, 7, 5.2, 11, 7],
-          "line-opacity": 0.9,
-        },
-      },
-      {
-        id: "border-line",
-        type: "line",
-        source: "ofm",
-        "source-layer": "boundary",
-        filter: STATE_LINE_FILTER,
-        layout: { "line-join": "round", "line-cap": "round", visibility: vis(opts.showBorder) },
-        paint: {
-          "line-color": "#fffaf0",
-          "line-width": ["interpolate", ["linear"], ["zoom"], 4, 1.6, 7, 2.5, 11, 3.5],
-          "line-opacity": 1,
-        },
-      },
-      { id: "rings", type: "line", source: "rings", paint: { "line-color": "#f3f1ea", "line-width": 1.25, "line-opacity": 0.8, "line-dasharray": [1.4, 1.1] } },
-      {
-        id: "sun-casing",
-        type: "line",
-        source: "sun",
-        filter: ["==", ["geometry-type"], "LineString"],
-        paint: { "line-color": "#121410", "line-width": 4.5, "line-opacity": 0.8 },
-      },
-      {
-        id: "sun-line",
-        type: "line",
-        source: "sun",
-        filter: ["==", ["geometry-type"], "LineString"],
-        paint: {
-          "line-color": ["match", ["get", "kind"], "rise", "#f6e7b0", "sun", "#fffdf6", "#e39455"],
-          "line-width": 2.5,
-        },
-      },
-      {
-        id: "sun-label",
-        type: "symbol",
-        source: "sun",
-        filter: ["==", ["geometry-type"], "Point"],
-        layout: {
-          "text-field": ["get", "label"],
-          "text-font": ["Noto Sans Regular"],
-          "text-size": 13,
-          "text-offset": [0, -0.6],
-          "text-anchor": "bottom",
-          "text-allow-overlap": true,
-        },
-        paint: { "text-color": "#f3f1ea", "text-halo-color": "#121410", "text-halo-width": 1.4 },
-      },
-      { id: "accuracy", type: "fill", source: "accuracy", paint: { "fill-color": "#d7e2c8", "fill-opacity": 0.18 } },
-      { id: "accuracy-line", type: "line", source: "accuracy", paint: { "line-color": "#d7e2c8", "line-width": 1, "line-opacity": 0.75 } },
-      { id: "tracks-casing", type: "line", source: "tracks", paint: { "line-color": "#121410", "line-width": 5 } },
-      { id: "tracks", type: "line", source: "tracks", paint: { "line-color": "#d7e2c8", "line-width": 2.5 } },
-      { id: "live-casing", type: "line", source: "live", paint: { "line-color": "#121410", "line-width": 5 } },
-      { id: "live", type: "line", source: "live", paint: { "line-color": "#f3f1ea", "line-width": 2.5, "line-dasharray": [1.4, 1.2] } },
-      {
-        id: "measure-fill",
-        type: "fill",
-        source: "measure",
-        filter: ["==", ["geometry-type"], "Polygon"],
-        paint: { "fill-color": "#d7e2c8", "fill-opacity": 0.22 },
-      },
-      { id: "measure-casing", type: "line", source: "measure", paint: { "line-color": "#121410", "line-width": 5 } },
-      { id: "measure", type: "line", source: "measure", paint: { "line-color": "#f3f1ea", "line-width": 2 } },
-      {
-        id: "measure-pts",
-        type: "circle",
-        source: "measure",
-        filter: ["==", ["geometry-type"], "Point"],
-        paint: { "circle-radius": 4, "circle-color": "#f3f1ea", "circle-stroke-width": 2, "circle-stroke-color": "#121410" },
-      },
-      ...overlay.slice(11),
-    ],
+    // Named render groups (src/features/map/layer-groups.ts), never positional slices.
+    layers: buildLayers(opts),
   };
 }
 
@@ -805,18 +320,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
         const saved = state.initialView;
         map = new ml.Map({
           container: el,
-          style: buildStyle({
-            basemap: state.basemap,
-            showPublic: state.showPublic,
-            showLabels: state.showLabels,
-            showRoads: state.showRoads,
-            showTracks: state.showTracks,
-            showCreeks: state.showCreeks,
-            showPeaks: state.showPeaks,
-            showShade: state.showShade,
-            showBorder: state.showBorder,
-            publicOpacity: state.publicOpacity,
-          }),
+          style: buildStyle(styleOptions(state)),
           center: [saved.lng, saved.lat],
           zoom: saved.zoom,
           bearing: saved.bearing,
@@ -843,8 +347,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
         const boot = () => {
           if (dead || !map || booted) return;
           booted = true;
-          mapRef.current = map;
-          fit();
+          mapRef.current = map;          fit();
           if (propsRef.current.terrain) {
             map.setTerrain({ source: "dem", exaggeration: propsRef.current.terrainExaggeration });
             map.touchPitch.enable();
@@ -993,10 +496,20 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     for (const id of CREEK_LAYERS) show(id, vector && props.showCreeks);
     for (const id of TOWN_LAYERS) show(id, vector && props.showLabels);
     for (const id of PEAK_LAYERS) show(id, vector && props.showPeaks);
-    map.setPaintProperty("sma", "raster-opacity", props.publicOpacity);
-    map.setPaintProperty("satellite", "raster-opacity", 1);
-    applyOverlayPaint(map, props.basemap);
-  }, [ready, props.basemap, props.showPublic, props.showLabels, props.showRoads, props.showTracks, props.showCreeks, props.showPeaks, props.showShade, props.publicOpacity]);
+  }, [ready, props.basemap, props.showPublic, props.showLabels, props.showRoads, props.showTracks, props.showCreeks, props.showPeaks, props.showShade]);
+
+  // Colors, weights and public-land opacity come from the design tokens of the current style.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    applyStylePaint(map, styleOptions(propsRef.current));
+  }, [ready, props.basemap, props.boundaryStrength, props.publicOpacity]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    applyLabelDensity(map, props.labelDensity);
+  }, [ready, props.labelDensity]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1006,33 +519,15 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
       if (existing) map.removeLayer("hillshade");
       if (map.getSource("hillshade")) map.removeSource("hillshade");
       if (!map.getSource("dem")) return;
-      map.addLayer(
-        {
-          id: "hillshade",
-          type: "hillshade",
-          source: "dem",
-          layout: { visibility: props.showShade && props.basemap !== "topo" ? "visible" : "none" },
-          paint: {
-            "hillshade-method": "basic",
-            "hillshade-illumination-anchor": "map",
-            "hillshade-illumination-direction": props.shadeAz ?? 180,
-            "hillshade-illumination-altitude": 35,
-            "hillshade-exaggeration": 0.65,
-            "hillshade-shadow-color": "rgba(8, 12, 10, 0.82)",
-            "hillshade-highlight-color": "rgba(255, 236, 196, 0.42)",
-            "hillshade-accent-color": "rgba(0, 0, 0, 0)",
-          },
-        },
-        map.getLayer("units-casing") ? "units-casing" : undefined,
-      );
+      const groups = mapLayerGroups(styleOptions(propsRef.current));
+      const relief = groups.relief.find((layer) => layer.id === "hillshade");
+      if (!relief) return;
+      // Back on top of the relief group, under public land and everything above it.
+      map.addLayer(relief, firstLayerAbove(groups, "relief", (id) => Boolean(map.getLayer(id))));
     }
-    if (props.shadeAz == null || props.shadeEl == null) return;
-    const altitude = props.shadeEl <= 0 ? 3 : Math.min(80, Math.max(4, props.shadeEl));
-    const exaggeration = props.shadeEl <= 0 ? 0.4 : props.shadeEl < 15 ? 0.85 : 0.42 + (1 - altitude / 90) * 0.35;
-    map.setPaintProperty("hillshade", "hillshade-illumination-direction", props.shadeAz);
-    map.setPaintProperty("hillshade", "hillshade-illumination-altitude", altitude);
-    map.setPaintProperty("hillshade", "hillshade-exaggeration", exaggeration);
-    map.setPaintProperty("hillshade", "hillshade-shadow-color", props.shadeEl <= 0 ? "rgba(8, 12, 10, 0.4)" : "rgba(8, 12, 10, 0.82)");
+    // Sun-direction hillshade (not cast shadows); strength depends on the base map.
+    const paint = reliefPaint(props.basemap, props.shadeAz, props.shadeEl);
+    for (const [prop, value] of Object.entries(paint)) map.setPaintProperty("hillshade", prop as never, value as never);
   }, [ready, props.basemap, props.showShade, props.shadeAz, props.shadeEl]);
 
   useEffect(() => {
@@ -1133,15 +628,13 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     if (!ready || !map) return;
     setGeo(map, "units", props.unitsGeo);
     const on = props.showUnits && props.unitsGeo.features.length > 0;
-    if (map.getLayer("units-casing")) map.setLayoutProperty("units-casing", "visibility", vis(on));
-    if (map.getLayer("units-line")) map.setLayoutProperty("units-line", "visibility", vis(on));
+    for (const id of UNIT_LINE_LAYERS) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", vis(on));
   }, [ready, props.showUnits, props.unitsGeo]);
 
   useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map) return;
-    if (map.getLayer("border-casing")) map.setLayoutProperty("border-casing", "visibility", vis(props.showBorder));
-    if (map.getLayer("border-line")) map.setLayoutProperty("border-line", "visibility", vis(props.showBorder));
+    for (const id of BORDER_LAYERS) if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", vis(props.showBorder));
   }, [ready, props.showBorder]);
 
   useEffect(() => {

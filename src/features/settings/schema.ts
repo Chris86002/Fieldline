@@ -1,4 +1,8 @@
 import type { Basemap, MapView } from "@/lib/hunt/types";
+import type { LabelDensity } from "@/features/map/labels";
+import type { BoundaryStrength } from "@/features/map/tokens";
+
+export type { BoundaryStrength, LabelDensity };
 
 /**
  * Versioned, validated user preferences. Every field has a default, a
@@ -28,11 +32,13 @@ export type AppSettings = {
   showUnits: boolean;
   showUnitLabels: boolean;
   showBorder: boolean;
+  boundaryStrength: BoundaryStrength;
   showRoads: boolean;
   showTracks: boolean;
   showCreeks: boolean;
   showPeaks: boolean;
   showLabels: boolean;
+  labelDensity: LabelDensity;
   showMarks: boolean;
   showShade: boolean;
   showSun: boolean;
@@ -101,11 +107,33 @@ export const FIELDS: Record<SettingKey, FieldSpec> = {
   showUnits: { kind: "toggle", category: "map", label: "Hunt units", help: "Game-management unit lines where Fieldline has them." },
   showUnitLabels: { kind: "toggle", category: "map", label: "Unit numbers", help: "Hidden when zoomed far out." },
   showBorder: { kind: "toggle", category: "map", label: "State border", help: "The state outline for the current hunt state." },
+  boundaryStrength: {
+    kind: "choice",
+    category: "map",
+    label: "Boundary strength",
+    help: "How heavily hunt-unit and state lines draw. Strong is close to the older, heavier lines.",
+    choices: [
+      { value: "subtle", label: "Subtle" },
+      { value: "standard", label: "Standard" },
+      { value: "strong", label: "Strong" },
+    ],
+  },
   showRoads: { kind: "toggle", category: "map", label: "Roads", help: "A drawn road is not proof of legal access." },
   showTracks: { kind: "toggle", category: "map", label: "Forest tracks", help: "Tracks and trails, from closer zoom." },
   showCreeks: { kind: "toggle", category: "map", label: "Creeks", help: "Rivers and named creeks. A symbol is not proof of water." },
   showPeaks: { kind: "toggle", category: "map", label: "Peaks", help: "Summit names and elevations." },
   showLabels: { kind: "toggle", category: "map", label: "Towns", help: "Cities, towns, and small places." },
+  labelDensity: {
+    kind: "choice",
+    category: "map",
+    label: "Label density",
+    help: "How many town, peak, creek, and road names show, and how soon as you zoom in. Unit numbers and your own marks are not reduced.",
+    choices: [
+      { value: "fewer", label: "Fewer" },
+      { value: "standard", label: "Standard" },
+      { value: "more", label: "More" },
+    ],
+  },
   showMarks: { kind: "toggle", category: "map", label: "My marks", help: "Your saved waypoints on the map." },
   showShade: { kind: "toggle", category: "map", label: "Sun shade", help: "Shaded faces follow the sun time on the shade bar. Not cast shadows." },
   showSun: { kind: "toggle", category: "map", label: "Sun lines", help: "Sunrise, sunset, and current sun direction from the selected mark." },
@@ -244,15 +272,18 @@ export const FIELDS: Record<SettingKey, FieldSpec> = {
 export const DEFAULT_SETTINGS: AppSettings = {
   basemap: "hybrid",
   showPublic: true,
-  publicOpacity: 0.62,
+  // 0.62 before MAP-02. New profiles only: saved and migrated values are kept (see docs/map-design.md).
+  publicOpacity: 0.25,
   showUnits: true,
   showUnitLabels: true,
   showBorder: true,
+  boundaryStrength: "standard",
   showRoads: true,
   showTracks: true,
   showCreeks: true,
   showPeaks: true,
   showLabels: true,
+  labelDensity: "standard",
   showMarks: true,
   showShade: true,
   showSun: true,
