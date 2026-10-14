@@ -36,7 +36,7 @@ blocked. Device certification is tracked separately from code completion.
 | CC-00 Baseline and contracts | verified | Baseline report above; test glob widened to `src/**/*.test.ts` (verified a feature-folder test runs); provider register; ADR-001–006; ownership table above. |
 | CC-01 Phone feasibility | in progress | [phone-strategy.md](phone-strategy.md): options, proposed `LocationSource` / `TrackCheckpointStore` / `PackageStore` interfaces, 13-scenario device protocol, result template, capability matrix. No physical devices available; decision and certification pending (REL-02/03). Prototype not built yet. |
 | CC-02 Correctness and settings | verified (automated + manual browser); see deferred items | Slices below. Independent CC-12 review found 0 blockers, 2 major, 10 minor; both majors and 7 minors fixed with regression tests. |
-| CC-03 Nationwide catalog | not started | Depends on CC-02 contracts. Removes AZ/ID mode switch. |
+| CC-03 Nationwide catalog | in progress | Contracts in `src/features/catalog/types.ts` (coordinator). Wave: worker A = AZ/ID unit adapters (`src/features/catalog/adapters/`, `unit-store.ts`); worker B = coverage register + discovery (`src/features/catalog/coverage*.ts`, `src/lib/geo/`). Then worker C = one new state adapter; coordinator = shell integration (remove AZ/ID switch). |
 | CC-04 Map design | not started | MAP-01..06. Default public-land opacity change waits for the before/after gallery. |
 | CC-05 Storage and offline | not started | ADR-006 done: tile storage restricted to `OFFLINE_TEMPLATES`; USGS imagery base map added. |
 | CC-06 Navigation | not started | Recording thresholds from settings are in place (CC-02). |
