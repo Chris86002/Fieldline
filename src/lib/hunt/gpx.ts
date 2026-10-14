@@ -1,4 +1,5 @@
 import type { MarkKind, Track, TrackPoint, Waypoint } from "@/lib/hunt/types";
+import { trackSegments } from "./track-segments.ts";
 
 const KINDS = new Set<MarkKind>(["stand", "blind", "camp", "camera", "parking", "gate", "water", "glass", "pin"]);
 
@@ -33,10 +34,16 @@ export function toGpx(waypoints: Waypoint[], tracks: Track[]): string {
     .join("\n");
   const trks = tracks
     .map((track) => {
-      const pts = track.points
-        .map((p) => `        <trkpt lat="${p.lat}" lon="${p.lng}"><time>${new Date(p.t).toISOString()}</time></trkpt>`)
-        .join("\n");
-      return `  <trk><name>${esc(track.name)}</name><trkseg>\n${pts}\n      </trkseg></trk>`;
+      // Recording gaps become separate segments, so other apps don't draw a line across them.
+      const segs = trackSegments(track)
+        .map((segment) => {
+          const pts = segment
+            .map((p) => `        <trkpt lat="${p.lat}" lon="${p.lng}"><time>${new Date(p.t).toISOString()}</time></trkpt>`)
+            .join("\n");
+          return `<trkseg>\n${pts}\n      </trkseg>`;
+        })
+        .join("");
+      return `  <trk><name>${esc(track.name)}</name>${segs}</trk>`;
     })
     .join("\n");
   return `<?xml version="1.0" encoding="UTF-8"?>\n<gpx version="1.1" creator="Fieldline" xmlns="http://www.topografix.com/GPX/1/1">\n${wpts}\n${trks}\n</gpx>\n`;

@@ -6,6 +6,7 @@ import { circlePolygon, windFits } from "@/lib/hunt/format";
 import { destination } from "@/lib/hunt/sun";
 import { MARKS } from "@/components/hunt/marks";
 import { cachedTile, installTileProtocol, TILES } from "@/lib/hunt/tiles";
+import { trackSegments } from "@/lib/hunt/track-segments";
 import type { Basemap, LngLat, MapView, Track, TrackPoint, Waypoint } from "@/lib/hunt/types";
 import { DEFAULT_VIEW } from "@/lib/hunt/types";
 import type { BoundaryStrength, DistanceUnit, ElevationUnit, LabelDensity } from "@/features/settings/schema";
@@ -103,6 +104,7 @@ type Props = {
 
 type JsonGeometry =
   | { type: "LineString"; coordinates: number[][] }
+  | { type: "MultiLineString"; coordinates: number[][][] }
   | { type: "Polygon"; coordinates: number[][][] }
   | { type: "MultiPolygon"; coordinates: number[][][][] }
   | { type: "Point"; coordinates: number[] };
@@ -662,7 +664,8 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
       .map((track) => ({
         type: "Feature",
         properties: { id: track.id },
-        geometry: { type: "LineString", coordinates: track.points.map((point) => [point.lng, point.lat]) },
+        // Recording gaps stay gaps: each segment is its own line.
+        geometry: { type: "MultiLineString", coordinates: trackSegments(track).map((segment) => segment.map((point) => [point.lng, point.lat])) },
       }));
     setGeo(map, "tracks", { type: "FeatureCollection", features });
   }, [ready, props.tracks]);

@@ -59,11 +59,13 @@ behave. Every schema change must update this file and add a fixture test.
 | settings v1 profile | older 1.0.0 build | Older build reads `fieldline-v1` only, with its frozen legacy preferences | By construction; not run against the packaged 1.0.0 binary |
 | settings from a future version | settings v1 build | Read-only, warning shown | `settings.test.ts` "does not overwrite corrupt or newer settings" |
 
-## `fieldline-content` (IndexedDB) — personal content, schema 1 (CC-05 wave 1, library only)
+## `fieldline-content` (IndexedDB) — personal content, schema 1
 
-Built and tested in `src/lib/storage/` but **not yet used by the app**; until
-the coordinator wires it in, `fieldline-v1` remains the store of record. Full
-design in [storage.md](storage.md).
+In use since 2026-10-14 (ADR-008): when migration succeeds and storage is
+durable this is the store of record for marks and tracks, and the
+`waypoints`/`tracks` inside `fieldline-v1` are frozen at their pre-migration
+value; otherwise `fieldline-v1` remains the store of record. Full design in
+[storage.md](storage.md).
 
 - **Layout.** IndexedDB database `fieldline-content`, version 1, object stores
   `waypoints`, `tracks`, `trash`, `sessions`, `chunks`, `meta` (string keys).

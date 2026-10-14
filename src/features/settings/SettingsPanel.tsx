@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { Badge, Choice, Toggle } from "@/components/hunt/controls";
 import type { MapView } from "@/lib/hunt/types";
 import { CATEGORIES, FIELDS, PRESET_IDS, PRESETS, presetControls, SETTING_KEYS, type AppSettings, type SettingKey } from "./schema.ts";
+import { BackupSection } from "./BackupSection.tsx";
 import { useSettings } from "./store.ts";
 
 /** Why a setting can't take effect here, or null when it can. */
@@ -223,6 +224,7 @@ export function SettingsPanel({ currentView, onNotice }: { currentView: MapView;
           />
         </section>
       ) : null}
+      {!needle ? <BackupSection onNotice={onNotice} /> : null}
     </div>
   );
 }

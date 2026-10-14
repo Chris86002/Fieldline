@@ -70,6 +70,22 @@ import type { Bounds, HuntUnit, JurisdictionCoverage, UnitHit } from "@/features
 import { hitsTag, unitLabels as toUnitLabels, unitsAt, unitShapes } from "@/features/catalog/units-view";
 import { deleteLegacyUnitCaches, useHuntUnits, type ProviderLoad } from "@/features/catalog/use-hunt-units";
 import { normalizeBounds } from "@/lib/geo/bounds";
+import { trackLength } from "@/lib/hunt/track-segments";
+import {
+  beginRecording,
+  cancelRecording,
+  deleteForever,
+  discardRecovered,
+  finishRecording,
+  isDurableRecording,
+  recordFix,
+  recordGap,
+  restoreFromTrash,
+  saveRecovered,
+  startContentSync,
+  useContentSync,
+} from "@/lib/hunt/content-sync";
+import type { Fix, TrashEntry } from "@/lib/storage";
 import { formatUtm, localDate, localMinutes, sunPosition } from "@/lib/hunt/sun";
 import { noiseWord, rmsDb } from "@/lib/hunt/noise";
 
@@ -78,6 +94,27 @@ type Sheet = null | "layers" | "saved" | "wind" | "edit" | "settings";
 type Units = Pick<AppSettings, "distanceUnit" | "elevationUnit" | "areaUnit" | "speedUnit" | "temperatureUnit" | "pressureUnit">;
 
 const NEXT_FORMAT: Record<CoordinateFormat, CoordinateFormat> = { dd: "dms", dms: "utm", utm: "dd" };
+
+function trackName(stamp: Date): string {
+  return `Track ${stamp.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
+}
+
+/** A recorded fix with everything the device reported. Unknown values stay null, never 0. */
+function fixFrom(pos: GeolocationPosition): Fix {
+  const known = (value: number | null | undefined) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const { coords } = pos;
+  const heading = known(coords.heading);
+  return {
+    lng: coords.longitude,
+    lat: coords.latitude,
+    t: Number.isFinite(pos.timestamp) && pos.timestamp > 0 ? pos.timestamp : Date.now(),
+    accuracy: coords.accuracy,
+    altitude: known(coords.altitude),
+    altitudeAccuracy: known(coords.altitudeAccuracy),
+    speed: known(coords.speed),
+    heading: heading != null && heading >= 0 && heading < 360 ? heading : null,
+  };
+}
 
 /** State agencies to check at a point (legal hours, regulations). Near borders there can be two. */
 function agenciesAt(lng: number, lat: number): { name: string; url: string }[] {
@@ -137,6 +174,9 @@ export function HuntApp() {
   const settings = useSettings((state) => state.effective);
   const setSetting = useSettings((state) => state.set);
   const activePreset = useSettings((state) => state.preset);
+  const contentMode = useContentSync((state) => state.mode);
+  const recovered = useContentSync((state) => state.recovered);
+  const trash = useContentSync((state) => state.trash);
   const bind = <K extends SettingKey>(key: K) => (value: AppSettings[K]) => setSetting(key, value);
   const mapRef = useRef<MapHandle>(null);
   const initialViewRef = useRef<MapView>(DEFAULT_VIEW);
@@ -146,6 +186,10 @@ export function HuntApp() {
   const recRef = useRef(false);
   const recordPendingRef = useRef(false);
   const lastRecRef = useRef<LngLat | null>(null);
+  /** Point indices where a new segment starts after a GPS outage (in-memory recording). */
+  const recSegStartsRef = useRef<number[]>([]);
+  /** True between a lost GPS signal and the next usable fix. */
+  const gapOpenRef = useRef(false);
   const recPtsRef = useRef<TrackPoint[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -263,6 +307,11 @@ export function HuntApp() {
         } catch {
           /* settings keep their defaults; the store reports why */
         }
+        // Marks and tracks move to durable storage before anything can edit them.
+        return startContentSync().catch(() => "legacy" as const);
+      })
+      .then(() => {
+        if (!live) return;
         const prefs = useSettings.getState().effective;
         const saved =
           prefs.startupView === "national"
@@ -275,7 +324,7 @@ export function HuntApp() {
           setView(saved);
         }
         setHydrated(true);
-        const warning = getHuntStorageWarning() ?? useSettings.getState().warning;
+        const warning = getHuntStorageWarning() ?? useSettings.getState().warning ?? useContentSync.getState().message;
         if (warning) setNotice(warning);
       });
     return () => {
@@ -288,8 +337,16 @@ export function HuntApp() {
       const warning = getHuntStorageWarning();
       if (warning) setNotice(warning);
     };
+    const onContentError = () => {
+      const message = useContentSync.getState().message;
+      if (message) setNotice(message);
+    };
     window.addEventListener("fieldline:storage-error", onStorageError);
-    return () => window.removeEventListener("fieldline:storage-error", onStorageError);
+    window.addEventListener("fieldline:content-error", onContentError);
+    return () => {
+      window.removeEventListener("fieldline:storage-error", onStorageError);
+      window.removeEventListener("fieldline:content-error", onContentError);
+    };
   }, []);
 
   useEffect(() => {
@@ -517,8 +574,13 @@ export function HuntApp() {
             setRecordPending(false);
             recRef.current = true;
             lastRecRef.current = next;
+            recSegStartsRef.current = [];
+            gapOpenRef.current = false;
             const start = Date.now();
             const points = [{ lng: next.lng, lat: next.lat, t: start }];
+            // Durable storage checkpoints every kept fix, so a crash or reload doesn't lose the track.
+            void beginRecording(trackName(new Date(start)));
+            recordFix(fixFrom(pos));
             recPtsRef.current = points;
             setRecPts(points);
             setRecStart(start);
@@ -527,16 +589,33 @@ export function HuntApp() {
             setNotice("Track recording started.");
           } else if (recRef.current && usable) {
             const prev = lastRecRef.current;
-            if (!prev || haversine(prev, next) >= field.gpsMinMoveM) {
+            const afterGap = gapOpenRef.current;
+            if (afterGap || !prev || haversine(prev, next) >= field.gpsMinMoveM) {
+              if (afterGap) {
+                // The signal is back: the next point starts a new segment instead of a line across the gap.
+                gapOpenRef.current = false;
+                if (recPtsRef.current.length > 0) recSegStartsRef.current = [...recSegStartsRef.current, recPtsRef.current.length];
+              }
               lastRecRef.current = next;
               const points = [...recPtsRef.current, { lng: next.lng, lat: next.lat, t: Date.now() }];
+              recordFix(fixFrom(pos));
               recPtsRef.current = points;
               setRecPts(points);
             }
           }
         },
         (err) => {
-          const message = err.code === 1 ? "Location permission denied." : "Couldn't get a GPS fix.";
+          // Only a denied permission ends location. A lost or slow signal (tunnels, canyons, canopy)
+          // keeps the watch and the recording going; the outage is recorded as a gap.
+          if (err.code !== 1) {
+            setGpsError(recRef.current ? "GPS signal lost. Still recording; the gap won't be drawn as a line." : "Waiting for a GPS signal…");
+            if (recRef.current && !gapOpenRef.current) {
+              gapOpenRef.current = true;
+              recordGap();
+            }
+            return;
+          }
+          const message = "Location permission denied.";
           if (watchRef.current != null) navigator.geolocation.clearWatch(watchRef.current);
           watchRef.current = null;
           followRef.current = false;
@@ -549,12 +628,15 @@ export function HuntApp() {
           } else if (recRef.current) {
             recRef.current = false;
             setRecording(false);
-            saveRecordedTrack(recPtsRef.current);
+            void saveRecordedTrack(recPtsRef.current, recSegStartsRef.current).then((result) =>
+              setNotice(`Location permission was turned off, so recording stopped. ${result}`),
+            );
             recPtsRef.current = [];
+            recSegStartsRef.current = [];
+            gapOpenRef.current = false;
             setRecPts([]);
             setRecStart(null);
             lastRecRef.current = null;
-            setNotice("GPS was lost. Recording stopped; any recorded points were saved.");
           }
         },
         { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 },
@@ -726,17 +808,36 @@ export function HuntApp() {
     queueLand(lng, lat, true);
   }
 
-  function saveRecordedTrack(points: TrackPoint[]) {
-    if (points.length < 2) return false;
+  /**
+   * Saves the recording and returns the notice to show. With durable storage
+   * the track comes from the crash-safe checkpoints; otherwise from memory as
+   * before.
+   */
+  async function saveRecordedTrack(points: TrackPoint[], segmentStarts: number[] = []): Promise<string> {
+    if (isDurableRecording()) {
+      try {
+        if (points.length < 2) {
+          await cancelRecording();
+          return "Track was too short to save.";
+        }
+        const { track, message } = await finishRecording();
+        if (!track) return "Track couldn't be saved.";
+        return message ? `Track saved on this device. ${message}` : "Track saved on this device.";
+      } catch (error) {
+        return `Track couldn't be saved yet (${error instanceof Error ? error.message : "storage error"}). It will be offered again when Fieldline restarts.`;
+      }
+    }
+    if (points.length < 2) return "Track was too short to save.";
     const stamp = new Date();
     store.addTrack({
       id: crypto.randomUUID(),
-      name: `Track ${stamp.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`,
+      name: trackName(stamp),
       points,
       createdAt: stamp.getTime(),
       visible: true,
+      ...(segmentStarts.length ? { segmentStarts } : {}),
     });
-    return true;
+    return "Track saved on this device.";
   }
 
   function toggleRecord() {
@@ -749,13 +850,10 @@ export function HuntApp() {
     if (recording) {
       recRef.current = false;
       setRecording(false);
-      const points = recPtsRef.current;
-      if (!saveRecordedTrack(points)) {
-        setNotice("Track was too short to save.");
-      } else {
-        setNotice("Track saved on this device.");
-      }
+      void saveRecordedTrack(recPtsRef.current, recSegStartsRef.current).then(setNotice);
       recPtsRef.current = [];
+      recSegStartsRef.current = [];
+      gapOpenRef.current = false;
       setRecPts([]);
       setRecStart(null);
       lastRecRef.current = null;
@@ -772,6 +870,9 @@ export function HuntApp() {
   }
 
   function discardTrack() {
+    void cancelRecording();
+    recSegStartsRef.current = [];
+    gapOpenRef.current = false;
     recRef.current = false;
     recordPendingRef.current = false;
     setRecording(false);
@@ -1152,6 +1253,7 @@ export function HuntApp() {
             />
             <h2 className="mt-4 font-display text-xl tracking-wide">Tracks</h2>
             <TrackRows tracks={store.tracks} units={unitPrefs} onFit={(points) => mapRef.current?.fit(points)} onToggle={store.toggleTrack} onDelete={store.removeTrack} />
+            {contentMode === "repository" ? <TrashRows entries={trash} onNotice={setNotice} /> : null}
           </div>
         </aside>
       ) : null}
@@ -1411,6 +1513,37 @@ export function HuntApp() {
           </div>
         </div>
 
+        {recovered && !recording ? (
+          <div role="alert" className="pointer-events-auto flex flex-col gap-2 rounded-lg border border-line bg-surface px-3 py-2.5 text-sm">
+            <p>
+              A recording from {new Date(recovered.session.startedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}{" "}
+              was interrupted. {recovered.fixCount} point{recovered.fixCount === 1 ? " was" : "s were"} kept
+              {recovered.intact ? "." : `; ${recovered.lostFixes} couldn't be recovered.`}
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="h-10 flex-1 rounded-md bg-accent text-sm font-medium text-accent-fg"
+                onClick={() => {
+                  void saveRecovered()
+                    .then(setNotice)
+                    .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Couldn't save the track."));
+                }}
+              >
+                Save track
+              </button>
+              <button
+                type="button"
+                className="h-10 flex-1 rounded-md border border-line text-sm"
+                onClick={() => {
+                  void discardRecovered().then(() => setNotice("Interrupted recording discarded."));
+                }}
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        ) : null}
         {hydrated && !store.introDismissed ? (
           <div className="pointer-events-auto flex items-start gap-3 rounded-lg border border-line bg-surface px-3 py-2.5 text-sm text-muted lg:hidden">
             <p>
@@ -1789,6 +1922,7 @@ export function HuntApp() {
             onToggle={store.toggleTrack}
             onDelete={store.removeTrack}
           />
+          {contentMode === "repository" ? <TrashRows entries={trash} onNotice={setNotice} /> : null}
         </Panel>
       ) : null}
 
@@ -1815,6 +1949,7 @@ export function HuntApp() {
               store.removeWaypoint(selected.id);
               setSelectedId(null);
               setSheet(null);
+              if (contentMode === "repository") setNotice(`${selected.name} moved to Recently deleted in Saved.`);
             }}
           />
         </Panel>
@@ -1908,7 +2043,7 @@ function TrackRows({
         <li key={track.id} className="flex min-h-12 items-center gap-2">
           <button type="button" className="min-w-0 flex-1 truncate text-left" onClick={() => onFit(track.points)}>
             <span className="block truncate">{track.name}</span>
-            <span className="text-sm text-muted">{formatDistance(pathLength(track.points), units.distanceUnit)}</span>
+            <span className="text-sm text-muted">{formatDistance(trackLength(track), units.distanceUnit)}</span>
           </button>
           <button type="button" className="h-9 px-2 text-sm text-muted" onClick={() => onToggle(track.id)}>
             {track.visible ? "Hide" : "Show"}
@@ -1942,6 +2077,60 @@ function TrackRows({
         </li>
       ))}
     </ul>
+  );
+}
+
+/** Deleted marks and tracks, kept until deleted forever. */
+function TrashRows({ entries, onNotice }: { entries: TrashEntry[]; onNotice: (message: string) => void }) {
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  if (entries.length === 0) return null;
+  return (
+    <section className="mt-4" aria-labelledby="trash-heading">
+      <h3 id="trash-heading" className="font-display text-xl tracking-wide">
+        Recently deleted
+      </h3>
+      <p className="text-sm text-muted">Kept on this device until you delete them forever.</p>
+      <ul className="mt-1">
+        {entries.map((entry) => (
+          <li key={entry.id} className="flex min-h-12 items-center gap-2">
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{entry.item.name}</span>
+              <span className="text-sm text-muted">
+                {entry.kind === "waypoint" ? "Mark" : "Track"} · deleted{" "}
+                {new Date(entry.deletedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+              </span>
+            </span>
+            <button
+              type="button"
+              className="h-9 px-2 text-sm"
+              onClick={() => {
+                void restoreFromTrash(entry.id)
+                  .then(() => onNotice(`Restored ${entry.item.name}.`))
+                  .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "Couldn't restore that."));
+              }}
+            >
+              Restore
+            </button>
+            {confirmId === entry.id ? (
+              <button
+                type="button"
+                className="h-9 px-2 text-sm text-danger"
+                onClick={() => {
+                  setConfirmId(null);
+                  void deleteForever(entry.id).then(() => onNotice(`Deleted ${entry.item.name} forever.`));
+                }}
+              >
+                Delete forever
+              </button>
+            ) : (
+              <button type="button" aria-label={`Delete ${entry.item.name} forever`} className="h-9 px-2 text-sm text-danger" onClick={() => setConfirmId(entry.id)}>
+                Delete…
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 

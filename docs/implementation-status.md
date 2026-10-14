@@ -159,11 +159,25 @@ coordinator confirmed the file was byte-identical to HEAD before merging.
 
 ## Next runnable work
 
-1. Wire CC-05 storage into the app (coordinator; HuntApp/store.ts): content
-   repository when migration succeeds, recording via checkpoints with
-   segment-aware drawing/GPX export, backup/restore UI, surface
-   `legacy-changed-after-migration`. Then CC-05 wave 2 and CC-04 wave 2 in
-   parallel.
+1. Integrate CC-05 wave 2 (offline packages; worker running in
+   `Fieldline-wt-offline`) and build its download/coverage UI; then CC-04 wave 2
+   (MAP-03 signature styles, contours) once MapCanvas is free.
+
+**Storage wiring (coordinator, 2026-10-14) — verified.** `content-sync.ts`
+(ADR-008): repository is the store of record after a verified migration;
+changes mirrored in order; Recently deleted with restore / delete forever;
+recordings checkpointed per fix, recovered after reload (banner: save or
+discard), saved with `segmentStarts`; tracks drawn, measured and exported to
+GPX per segment; Settings → Backup and restore (plan shown before restore).
+ADR-009: transient GPS errors no longer end a recording. Evidence: 8
+content-sync tests + 4 track-segment tests (275 total); real-browser
+acceptance in Chromium against the production build — existing mark
+migrated, new mark persisted across reload with `fieldline-v1` content
+frozen, delete → restore, recording through simulated GPS outages recovered
+after a mid-recording reload (6 points), full backup restored into a fresh
+profile; smoke + desktop tests pass. Gaps: the live recording line still
+draws straight across an outage until the track is saved; no cross-tab
+change sync; old-build edits after upgrade are reported, not merged.
 2. CC-01 PWA recording prototype behind the proposed `LocationSource`
    interface (isolated files).
 3. More CC-03 jurisdiction adapters (each is an independent worker task).

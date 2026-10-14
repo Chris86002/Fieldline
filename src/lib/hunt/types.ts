@@ -31,6 +31,11 @@ export type Track = {
   points: TrackPoint[];
   createdAt: number;
   visible: boolean;
+  /**
+   * Indices into `points` where a new segment starts after a recording gap.
+   * Absent on tracks made before gaps were recorded (one continuous line).
+   */
+  segmentStarts?: number[];
 };
 
 /** "satellite"/"hybrid" use Esri imagery (live only); "usgs" uses USGS imagery, which can be saved offline. */
