@@ -286,9 +286,9 @@ describe("Idaho–Montana cross-border", () => {
     const units = [...id.units, ...mt.units];
     assert.deepEqual(
       searchUnits(units, "22").map((r) => r.label),
-      ["Unit 22 · Idaho", "Unit 22 · Montana"],
+      ["Unit 22 · Idaho", "Hunting District 22 · Montana"],
     );
-    for (const q of ["montana 22", "MT 22", "22 mt"]) {
+    for (const q of ["montana 22", "MT 22", "22 mt", "HD 22 montana", "district 22 mt"]) {
       const results = searchUnits(units, q);
       assert.deepEqual(results.map((r) => r.unit.id), ["us-mt:mtfwp-deer-elk-lion:22", "us-id:idfg-gmu:22"], q);
       assert.deepEqual(results.map((r) => r.jurisdictionMatch), [true, false], q);

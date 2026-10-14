@@ -36,7 +36,7 @@ blocked. Device certification is tracked separately from code completion.
 | CC-00 Baseline and contracts | verified | Baseline report above; test glob widened to `src/**/*.test.ts` (verified a feature-folder test runs); provider register; ADR-001–006; ownership table above. |
 | CC-01 Phone feasibility | in progress | [phone-strategy.md](phone-strategy.md): options, proposed `LocationSource` / `TrackCheckpointStore` / `PackageStore` interfaces, 13-scenario device protocol, result template, capability matrix. No physical devices available; decision and certification pending (REL-02/03). Prototype not built yet. |
 | CC-02 Correctness and settings | verified (automated + manual browser); see deferred items | Slices below. Independent CC-12 review found 0 blockers, 2 major, 10 minor; both majors and 7 minors fixed with regression tests. |
-| CC-03 Nationwide catalog | in progress | Contracts in `src/features/catalog/types.ts` (coordinator). Wave: worker A = AZ/ID unit adapters (`src/features/catalog/adapters/`, `unit-store.ts`); worker B = coverage register + discovery (`src/features/catalog/coverage*.ts`, `src/lib/geo/`). Then worker C = one new state adapter; coordinator = shell integration (remove AZ/ID switch). |
+| CC-03 Nationwide catalog | verified (first slices); see CC-03 detail | AZ/ID mode removed; catalog contracts, three unit adapters (AZ, ID, MT), protected unit store, 51-entry coverage register, discovery, nationwide unit search, shell integration. Remaining slices listed below. |
 | CC-04 Map design | not started | MAP-01..06. Default public-land opacity change waits for the before/after gallery. |
 | CC-05 Storage and offline | not started | ADR-006 done: tile storage restricted to `OFFLINE_TEMPLATES`; USGS imagery base map added. |
 | CC-06 Navigation | not started | Recording thresholds from settings are in place (CC-02). |
@@ -77,6 +77,43 @@ clouds / timeline / refresh policy / time-zone choice / alert channels
 (CC-08..10), offline package settings (CC-05), diagnostics / sharing / photo
 metadata (CC-07/CC-11), species filters and marker defaults (CC-11), Weather
 preset (CC-08).
+
+### CC-03 detail (2026-10-14)
+
+Delegation: coordinator wrote the contracts (`src/features/catalog/types.ts`)
+and owned the shell; three workers ran in separate git worktrees with
+disjoint file ownership (A and B in parallel, then C on the integrated
+branch). Each worker's diff was reviewed and its checks re-run by the
+coordinator before a `--no-ff` merge; the merged result was re-tested.
+
+| Slice | Owner | Status | Evidence |
+| --- | --- | --- | --- |
+| Catalog contracts (LayerDescriptor/ProviderInfo, HuntUnit with namespaced ids, DataStatus, UnitAdapter, JurisdictionCoverage) | coordinator | verified | typecheck; consumed unchanged by all three workers |
+| AZ/ID adapters behind the contract; ArcGIS paging/count/metadata helper; interior label points; protected unit store (finding H, REL-05) | worker A | verified | 41 tests; coordinator review of `unit-store.ts`; live: AZ 77 units, ID 100 units, all label points inside |
+| Antimeridian-aware bounds; 51-entry coverage register (TIGERweb extents; Alaska split at 180°); discovery; nationwide unit search; docs/coverage.md | worker B | verified | 52 tests incl. AZ–UT, ID–MT, PA–NY, Aleutians, Hawaii, DC |
+| Montana deer/elk/lion districts via adapter kit only (REL-10 demo) | worker C | verified | tests + opt-in live run: 139 districts available; no app-shell file in its diff |
+| Shell: remove AZ/ID switch; view-driven provider loading; multi-unit spot inspection; nationwide search; OFM state lines; "Coverage in view"; agency links per point; IANA clock zone; national default view | coordinator | verified | 167 unit tests; updated browser smoke (no state switch, three-state search via UI); live headless check below |
+
+Live cross-border check (headless Chromium, real providers, 2026-10-14):
+Idaho–Montana view loaded IDFG (100) and MTFWP (139); inspecting a point near
+Missoula returned "Hunting District 260 · Region 2". Arizona–Utah view loaded
+AZGFD (77) and reported "Utah — Hunt units: not in Fieldline yet"; a point on
+the Arizona Strip returned "Unit 12B · Flagstaff" on BLM land. No page errors.
+
+Incident: worker C's shell briefly wrote `docs/coverage.md` in the
+coordinator's checkout through a relative .NET path, then reverted it; the
+coordinator confirmed the file was byte-identical to HEAD before merging.
+
+**CC-03 remaining slices:**
+- More jurisdictions (one adapter each) — the coverage register lists 48
+  states + DC without a unit source.
+- Spatial index for local identify (linear scan today; fine at ~300 units).
+- Verified legal-hours rules registry (§7) — not started; UI links agencies.
+- Coverage boxes are discovery hints only; "which state am I in" needs real
+  boundaries (not needed yet).
+- AZ, NE, RI agency URLs: AZ filled in by coordinator confirmation; NE and RI
+  still null (bot-check blocked automated verification).
+- IDFG license reconfirmation (copyright text changed).
 
 ## Requirement-to-packet map
 
@@ -122,10 +159,9 @@ preset (CC-08).
 
 ## Next runnable work
 
-1. CC-03 first slice: catalog/provider contracts (`LayerDescriptor`,
-   `ProviderCapabilities`, namespaced `HuntUnit` IDs, `DataStatus`), moving
-   the AZ/ID unit adapters behind them with provider-specific validation
-   (finding H), then removing the mandatory AZ/ID switch.
+1. CC-04 map design (MAP-01 named render groups first) and CC-05 storage /
+   offline packages can now run in parallel with disjoint ownership.
 2. CC-01 PWA recording prototype behind the proposed `LocationSource`
-   interface (isolated files; can overlap CC-03).
+   interface (isolated files).
+3. More CC-03 jurisdiction adapters (each is an independent worker task).
 3. CC-08 (when reached): implement ADR-007 NWS gridpoint primary source.

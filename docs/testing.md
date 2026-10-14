@@ -46,6 +46,10 @@ is real provider data.
 | 2026-10-13 | 6caea69 (baseline) | Windows 11, Node 24.20.0, npm 11.19.0 | test 15/15, typecheck, lint, build, desktop:test 15/15 all pass |
 | 2026-10-13 | CC-02 before review | same | test 46/46, typecheck, lint, build, desktop:test 15/15 pass; `npm run smoke` passed desktop + mobile against `npm run start` |
 | 2026-10-13 | CC-02 after review fixes | same | test 52/52, typecheck, lint, build, desktop:test 15/15 pass; `npm run smoke` passed desktop + mobile |
+| 2026-10-14 | CC-03 integrated | same | test 167/167, typecheck, lint, build, desktop:test 15/15 pass; `npm run smoke` passed desktop + mobile (now mocks AZ/ID/MT ArcGIS layers and searches all three via the UI); live headless cross-border check passed |
+
+Opt-in live provider test: `FIELDLINE_LIVE=1 node --experimental-strip-types --test src/features/catalog/adapters/mtfwp.live.test.ts`
+(a few real requests to Montana FWP; never run in CI).
 
 Manual browser checks (2026-10-13, dev server and production build in the
 desktop app's built-in browser, desktop and 375×812 mobile): legacy profile

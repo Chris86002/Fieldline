@@ -270,7 +270,13 @@ export type ArcgisUnitSource = {
   maxAllowableOffset: number;
   /** Returns null for rows that are not real units (e.g. "N/A"). */
   mapAttributes(attributes: Record<string, unknown>): UnitFields | null;
+  /** What the agency calls a unit, e.g. "Hunting District". Defaults to "Unit". */
+  labelPrefix?: string;
 };
+
+function unitLabel(source: ArcgisUnitSource, code: string): string {
+  return `${source.labelPrefix ?? "Unit"} ${code}`;
+}
 
 export type ArcgisAdapterOptions = {
   storage?: UnitStorage;
@@ -350,7 +356,7 @@ function unitFrom(source: ArcgisUnitSource, fields: UnitFields, polygons: number
     jurisdictionId: source.jurisdictionId,
     providerId: source.info.id,
     sourceFeatureId: fields.code,
-    label: `Unit ${fields.code}`,
+    label: unitLabel(source, fields.code),
     ...fields,
     bounds,
     labelPoint,
@@ -393,7 +399,7 @@ function hitFrom(source: ArcgisUnitSource, fields: UnitFields, approximate: bool
       jurisdictionId: source.jurisdictionId,
       providerId: source.info.id,
       code: fields.code,
-      label: `Unit ${fields.code}`,
+      label: unitLabel(source, fields.code),
       regionName: fields.regionName,
       speciesTags: fields.speciesTags,
       seasonContext: fields.seasonContext,

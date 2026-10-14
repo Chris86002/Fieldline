@@ -16,7 +16,7 @@ This register lists every external data provider that Fieldline calls today, plu
 
 - `src/lib/hunt/tiles.ts:23-66`: map sources wrapped in `cachedTile()` go through the `fltile://` protocol. Every tile the user views is written to Cache Storage `fieldline-tiles-v1`, with no expiry. Wrapped sources: Esri World Imagery, USGS Topo and BLM SMA (`MapCanvas.tsx:504-506`).
 - `tiles.ts:116-174` (`packTiles`) and `HuntApp.tsx:694-714` ("save area"): pre-fetch up to 220 tiles at one zoom level (z8–15) for the current view. Templates: `TILES.topo`, `TILES.satellite` (Esri) and `TILES.sma`.
-- `src/lib/hunt/units.ts:188-215`: the full AZ / ID hunt-unit GeoJSON is stored in Cache Storage with no expiry.
+- `src/features/catalog/unit-store.ts` (since CC-03): each hunt-unit provider's processed units are stored in Cache Storage `fieldline-units-v3` with a manifest (retrieval time, source version, counts) and a 30-day refresh policy; updates are promoted only after validation. The older `fieldline-units-v2` / `fieldline-units-id-v1` caches are deleted on startup.
 - `src/routes/api/dem/$z/$x/$y.ts:20-26`: proxies AWS Terrain Tiles and sets `Cache-Control: public, max-age=604800` (7 days).
 - `src/lib/hunt/search-core.ts:18-22`: place-search results are kept in memory for 60 s, with at most 100 entries.
 - Weather and search run as server functions (`weather.functions.ts`, `search.functions.ts`). On desktop the local Electron server makes the upstream calls. On a hosted web deployment, every user's requests would come from the host's IP address.
@@ -128,7 +128,7 @@ This register lists every external data provider that Fieldline calls today, plu
 - **Sources checked:** https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_Cached_without_PriUnk/MapServer?f=pjson , https://gis.blm.gov/arcgis/rest/services/lands/BLM_Natl_SMA_Cached_without_PriUnk/MapServer/1/metadata , https://catalog.data.gov/dataset/blm-nv-surface-management-agency-sma (search summary only)
 
 ### 6. Arizona Game & Fish Department — Hunt Units (GMU) feature service
-- **Used by:** `src/lib/hunt/units.ts:37-41` (full GeoJSON download, cached with no expiry), identify query `units.ts:40-41`.
+- **Used by:** `src/features/catalog/adapters/azgfd.ts` (since CC-03). Metadata, `returnCountOnly`, paginated GeoJSON, and point identify through `adapters/arcgis.ts`; validated copy in Cache Storage `fieldline-units-v3` with a 30-day refresh policy and quarantine of empty/truncated/shrunken updates (`unit-store.ts`). Live check 2026-10-13: 80 features (filter `GMU NOT IN ('N/A',' ')`) → 77 units.
 - **Endpoint host:** `services8.arcgis.com/KyZIQDOsXnGaTxj2/arcgis/rest/services/AZ_Game_and_Fish_Hunt_Units/FeatureServer/0`. This is ArcGIS Online hosting; item `7c8d66aa4f3e4e62b243f1216734a581`.
 - **Status:** in use.
 - **View:** The item licenseInfo says the data are for reference only, and that legal GMU descriptions are in Commission Rule R12-4-108.
@@ -144,10 +144,10 @@ This register lists every external data provider that Fieldline calls today, plu
 - **Sources checked:** https://services8.arcgis.com/KyZIQDOsXnGaTxj2/arcgis/rest/services/AZ_Game_and_Fish_Hunt_Units/FeatureServer/0?f=pjson , https://services8.arcgis.com/KyZIQDOsXnGaTxj2/arcgis/rest/services/AZ_Game_and_Fish_Hunt_Units/FeatureServer?f=pjson , https://www.arcgis.com/sharing/rest/content/items/7c8d66aa4f3e4e62b243f1216734a581?f=json
 
 ### 7. Idaho Fish & Game — Hunting MapServer, layer 3 "Game Units"
-- **Used by:** `units.ts:43-46` (full GeoJSON download, cached with no expiry; identify query).
+- **Used by:** `src/features/catalog/adapters/idfg.ts` (since CC-03), same validated pipeline as entry 6. Live check 2026-10-13: 100 features → 100 units.
 - **Endpoint host:** `gisportal-idfg.idaho.gov/hosting/rest/services/Hunting/MapServer/3`.
 - **Status:** in use.
-- **License:** copyrightText "CC-BY Idaho Fish and Game". CC BY permits caching and redistribution with attribution. No separate terms page was found.
+- **License:** copyrightText read "CC-BY Idaho Fish and Game" on 2026-10-13, but the live layer read only "Idaho Fish and Game" on 2026-10-14. Until IDFG confirms the license, the adapter records download/redistribution as "unknown" (no offline packaging of these units). No separate terms page was found.
 - **Cache/offline:** `exportTilesAllowed: false`. That flag concerns tile export; the app downloads features, which CC BY permits.
 - **Auth:** None.
 - **Rate policy:** `maxRecordCount` 2000. No published rate limit.
@@ -159,6 +159,18 @@ This register lists every external data provider that Fieldline calls today, plu
 - **Maintainer:** unassigned.
 - **Fallback/exit:** The last cached copy. IDFG regulations.
 - **Sources checked:** https://gisportal-idfg.idaho.gov/hosting/rest/services/Hunting/MapServer?f=pjson
+
+### 7a. Montana Fish, Wildlife & Parks — huntingDistricts MapServer, layer 11 "Deer Elk Lion Hunting Districts"
+- **Used by:** `src/features/catalog/adapters/mtfwp.ts` (added in CC-03 through the adapter kit, with no app-shell change), same validated pipeline as entry 6. Labels read "Hunting District <n>".
+- **Endpoint host:** `fwp-gis.mt.gov/arcgis/rest/services/admbnd/huntingDistricts/MapServer/11`.
+- **Status:** in use (since 2026-10-14).
+- **Layer:** "This layer depicts the current deer-elk-lion hunting districts." Fields DISTRICT, REG, REGYEAR, AREA_MI and others. maxRecordCount 2000; JSON, geoJSON, PBF. No edit date published, so each 30-day refresh downloads the full set. Live check 2026-10-14: 139 features → 139 districts, regulation year 2026, every label point inside its district.
+- **License / terms:** copyrightText "Montana Fish, Wildlife & Parks"; the license field is empty and the layer metadata states no use limits. Download and redistribution: **unknown**. FWP metadata elsewhere disclaims accuracy and completeness.
+- **Attribution:** "Montana Fish, Wildlife & Parks".
+- **Coverage:** Montana only. Only deer, elk and mountain lion districts; other species' districts in the same service (antelope, moose, sheep, goat, bear, wolf, birds, furbearers) are not included.
+- **Maintainer:** unassigned.
+- **Fallback/exit:** The last validated copy; FWP's district PDFs and regulations at fwp.mt.gov.
+- **Sources checked:** https://fwp-gis.mt.gov/arcgis/rest/services/admbnd/huntingDistricts/MapServer?f=pjson , https://fwp-gis.mt.gov/arcgis/rest/services/admbnd/huntingDistricts/MapServer/11?f=pjson
 
 ### 8. Open-Meteo — Forecast API and Elevation API
 - **Used by:**

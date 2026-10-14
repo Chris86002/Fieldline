@@ -23,27 +23,71 @@ const savedWaypoint = {
   createdAt: 1,
 };
 
-function mockUnits(idaho = false) {
-  return {
-    features: Array.from({ length: 22 }, (_, index) => {
-      const lng = -111.38 + ((index % 5) - 2) * 0.02;
-      const lat = 33.95 + (Math.floor(index / 5) - 2) * 0.02;
-      const ring = [
-        [lng - 0.008, lat - 0.008],
-        [lng + 0.008, lat - 0.008],
-        [lng + 0.008, lat + 0.008],
-        [lng - 0.008, lat + 0.008],
-        [lng - 0.008, lat - 0.008],
-      ];
-      return {
-        type: "Feature",
-        properties: idaho
-          ? { NAME: `Zone ${index + 1}`, Elk_Zone: "Mock region" }
-          : { GMU: String(index + 1), REG_NAME: "Mock region", SQ_MILES: 100, LANDOWN: "Public", HUNT: "Deer", USFSName: "Mock forest" },
-        geometry: { type: "Polygon", coordinates: [ring] },
-      };
-    }),
-  };
+/**
+ * Mock ArcGIS hunt-unit layers (smoke fixtures, not real data). Each answers
+ * the adapters' metadata, count, paged GeoJSON and point queries, with units
+ * placed inside the provider's own state so coverage validation passes.
+ */
+const MOCK_LAYERS = {
+  "services8.arcgis.com": {
+    center: [-111.38, 33.95],
+    oid: "OBJECTID",
+    fields: ["OBJECTID", "GMU", "REG_NAME", "SQ_MILES", "LANDOWN", "HUNT", "USFSName"],
+    props: (code) => ({ GMU: code, REG_NAME: "Mock region", SQ_MILES: 100, LANDOWN: "Public", HUNT: "Deer", USFSName: "Mock forest" }),
+    code: (index) => String(index + 1),
+  },
+  "gisportal-idfg.idaho.gov": {
+    center: [-114.5, 44.4],
+    oid: "OBJECTID_1",
+    fields: ["OBJECTID_1", "NAME", "Elk_Zone"],
+    props: (code) => ({ NAME: code, Elk_Zone: "Mock zone" }),
+    code: (index) => String(index + 1),
+  },
+  "fwp-gis.mt.gov": {
+    center: [-112, 46.6],
+    oid: "OBJECTID",
+    fields: ["OBJECTID", "DISTRICT", "REG", "REGYEAR", "AREA_MI"],
+    props: (code) => ({ DISTRICT: code, REG: 3, REGYEAR: 2026, AREA_MI: 500 }),
+    code: (index) => String(101 + index),
+  },
+};
+
+function mockFeatures(layer) {
+  return Array.from({ length: 22 }, (_, index) => {
+    const lng = layer.center[0] + ((index % 5) - 2) * 0.02;
+    const lat = layer.center[1] + (Math.floor(index / 5) - 2) * 0.02;
+    const ring = [
+      [lng - 0.008, lat - 0.008],
+      [lng + 0.008, lat - 0.008],
+      [lng + 0.008, lat + 0.008],
+      [lng - 0.008, lat + 0.008],
+      [lng - 0.008, lat - 0.008],
+    ];
+    return {
+      type: "Feature",
+      id: index + 1,
+      properties: { [layer.oid]: index + 1, ...layer.props(layer.code(index)) },
+      geometry: { type: "Polygon", coordinates: [ring] },
+    };
+  });
+}
+
+function mockArcgisAnswer(url) {
+  const layer = MOCK_LAYERS[url.hostname];
+  const features = mockFeatures(layer);
+  if (!url.pathname.endsWith("/query")) {
+    return {
+      type: "Feature Layer",
+      geometryType: "esriGeometryPolygon",
+      maxRecordCount: 2000,
+      advancedQueryCapabilities: { supportsPagination: true },
+      supportedQueryFormats: "JSON, geoJSON, PBF",
+      fields: layer.fields.map((name) => ({ name, type: "esriFieldTypeString", alias: name })),
+    };
+  }
+  if (url.searchParams.get("returnCountOnly") === "true") return { count: features.length };
+  if (url.searchParams.has("geometry")) return { features: [] };
+  return { type: "FeatureCollection", features };
 }
 
 async function installMocks(page) {
@@ -85,12 +129,8 @@ async function installMocks(page) {
       await route.fulfill({ status: 200, contentType: "image/png", body: icon });
       return;
     }
-    if (url.hostname === "services8.arcgis.com") {
-      await route.fulfill({ status: 200, contentType: "application/geo+json", body: JSON.stringify(mockUnits()) });
-      return;
-    }
-    if (url.hostname === "gisportal-idfg.idaho.gov") {
-      await route.fulfill({ status: 200, contentType: "application/geo+json", body: JSON.stringify(mockUnits(true)) });
+    if (url.hostname in MOCK_LAYERS) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(mockArcgisAnswer(url)) });
       return;
     }
     if (url.pathname.startsWith("/api/dem/")) {
@@ -115,17 +155,17 @@ async function waitForBrand(page) {
 }
 
 async function exerciseMapControls(page) {
-  const state = page.getByRole("group", { name: "Hunt state" });
-  const arizona = state.getByRole("button", { name: "AZ", exact: true });
-  const idaho = state.getByRole("button", { name: "ID", exact: true });
-  await idaho.click();
-  assert.equal(await idaho.getAttribute("data-on"), "true");
+  // Nationwide: there is no state mode to pick.
+  assert.equal(await page.getByRole("group", { name: "Hunt state" }).count(), 0, "the AZ/ID switch should be gone");
 
   await page.getByRole("button", { name: "Layers", exact: true }).click();
   await page.getByRole("dialog", { name: "Layers" }).waitFor({ state: "visible" });
   await page
-    .getByText("Idaho Fish and Game units. Reference lines, not the legal boundary.", { exact: true })
+    .getByText("State agency unit lines where Fieldline has them (Arizona, Idaho, and Montana). Reference lines, not legal boundaries.", {
+      exact: true,
+    })
     .waitFor({ state: "visible" });
+  await page.getByRole("region", { name: "Coverage in view" }).waitFor({ state: "visible" });
   if (await page.evaluate(() => /iPhone|iPod|iPad/.test(navigator.userAgent))) {
     await page.getByRole("button", { name: "Add to home screen", exact: true }).click();
     await page.getByRole("dialog", { name: "iPhone" }).waitFor({ state: "visible" });
@@ -135,9 +175,16 @@ async function exerciseMapControls(page) {
     await page.getByRole("button", { name: "Close", exact: true }).click();
   }
 
-  await arizona.click();
-  assert.equal(await arizona.getAttribute("data-on"), "true");
+  // Unit search reaches every state's provider and names the state.
   const search = page.getByRole("textbox", { name: "Search places" });
+  for (const [query, label] of [
+    ["az 3", "Unit 3 · Arizona"],
+    ["id 2", "Unit 2 · Idaho"],
+    ["mt 101", "Hunting District 101 · Montana"],
+  ]) {
+    await search.fill(query);
+    await page.getByText(label, { exact: true }).waitFor({ state: "visible", timeout: 15_000 });
+  }
   await search.fill("smoke search");
   await page.getByText("Press Enter to search nearby places.", { exact: true }).waitFor({ state: "visible" });
   await search.fill("");

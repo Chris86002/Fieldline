@@ -78,6 +78,7 @@ export const MTFWP_SOURCE: ArcgisUnitSource = {
   geometryPrecision: 4,
   maxAllowableOffset: 0.002,
   mapAttributes: mapMtfwpAttributes,
+  labelPrefix: "Hunting District",
 };
 
 export function createMtfwpAdapter(options?: ArcgisAdapterOptions) {

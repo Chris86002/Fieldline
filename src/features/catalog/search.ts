@@ -26,8 +26,8 @@ export type UnitSearchResult = {
   distanceMeters: number | null;
 };
 
-/** Words people put around a unit code: "unit 22", "GMU 22", "game management unit 22". */
-const UNIT_WORDS = new Set(["unit", "units", "gmu", "gmus", "hunt", "game", "management"]);
+/** Words people put around a unit code: "unit 22", "GMU 22", "game management unit 22", "HD 204", "hunting district 204". */
+const UNIT_WORDS = new Set(["unit", "units", "gmu", "gmus", "hunt", "hunting", "game", "management", "hd", "district", "districts"]);
 
 const NAME_BY_ID = new Map<JurisdictionId, string>(JURISDICTIONS.map((j) => [j.id, j.name]));
 
