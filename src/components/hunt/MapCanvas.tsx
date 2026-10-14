@@ -8,7 +8,7 @@ import { MARKS } from "@/components/hunt/marks";
 import { cachedTile, installTileProtocol, TILES } from "@/lib/hunt/tiles";
 import type { Basemap, LngLat, MapView, Track, TrackPoint, Waypoint } from "@/lib/hunt/types";
 import { DEFAULT_VIEW } from "@/lib/hunt/types";
-import { useHunt } from "@/lib/hunt/store";
+import type { DistanceUnit, ElevationUnit } from "@/features/settings/schema";
 
 export type GpsFix = { lng: number; lat: number; accuracy: number; heading: number | null };
 
@@ -54,7 +54,14 @@ type Props = {
   viewZoom: number;
   ringAt: LngLat | null;
   terrain: boolean;
-  imperial: boolean;
+  /** Display-only vertical scale. Elevation values elsewhere stay real. */
+  terrainExaggeration: number;
+  distanceUnit: DistanceUnit;
+  elevationUnit: ElevationUnit;
+  /** Skip animated camera moves. */
+  reduceMotion: boolean;
+  /** Camera when the map first starts. */
+  initialView: MapView;
   showMarks: boolean;
   waypoints: Waypoint[];
   selectedId: string | null;
@@ -687,8 +694,11 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   const onViewRef = useRef(props.onView);
   const onDragRef = useRef(props.onDragStart);
   const terrainRef = useRef(props.terrain);
+  const propsRef = useRef(props);
   const [ready, setReady] = useState(false);
   const [mapError, setMapError] = useState<string | null>(null);
+  propsRef.current = props;
+  const motion = (ms: number) => (propsRef.current.reduceMotion ? 0 : ms);
 
   onMapClickRef.current = props.onMapClick;
   onContextRef.current = props.onContextMenu;
@@ -703,13 +713,13 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     easeTo(lng, lat, zoom) {
       const map = mapRef.current;
       if (!map) return;
-      map.easeTo({ center: [lng, lat], zoom: zoom ?? Math.max(map.getZoom(), 13), duration: 700 });
+      map.easeTo({ center: [lng, lat], zoom: zoom ?? Math.max(map.getZoom(), 13), duration: motion(700) });
     },
     fit(points) {
       const map = mapRef.current;
       if (!map || points.length === 0) return;
       if (points.length === 1) {
-        map.easeTo({ center: [points[0].lng, points[0].lat], zoom: Math.max(map.getZoom(), 14), duration: 700 });
+        map.easeTo({ center: [points[0].lng, points[0].lat], zoom: Math.max(map.getZoom(), 14), duration: motion(700) });
         return;
       }
       let west = Infinity;
@@ -727,7 +737,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           [west, south],
           [east, north],
         ],
-        { padding: 72, duration: 700, maxZoom: 15 },
+        { padding: 72, duration: motion(700), maxZoom: 15 },
       );
     },
     getCenter() {
@@ -749,7 +759,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     resetNorth() {
       const map = mapRef.current;
       if (!map) return;
-      map.easeTo({ bearing: 0, pitch: terrainRef.current ? Math.max(map.getPitch(), 48) : 0, duration: 450 });
+      map.easeTo({ bearing: 0, pitch: terrainRef.current ? Math.max(map.getPitch(), 48) : 0, duration: motion(450) });
     },
   }));
 
@@ -769,8 +779,8 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
         ml.setWorkerUrl(maplibreWorkerUrl);
         installTileProtocol(ml);
         mlRef.current = ml;
-        const saved = useHunt.getState().lastView ?? DEFAULT_VIEW;
-        const state = useHunt.getState();
+        const state = propsRef.current;
+        const saved = state.initialView;
         map = new ml.Map({
           container: el,
           style: buildStyle({
@@ -798,7 +808,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           canvasContextAttributes: { antialias: false, failIfMajorPerformanceCaveat: false, preserveDrawingBuffer: false },
         });
         map.touchPitch.disable();
-        const scale = new ml.ScaleControl({ maxWidth: 110, unit: state.imperial ? "imperial" : "metric" });
+        const scale = new ml.ScaleControl({ maxWidth: 110, unit: state.distanceUnit });
         scaleRef.current = scale;
         map.addControl(scale, "bottom-left");
         const fit = () => {
@@ -812,8 +822,8 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           booted = true;
           mapRef.current = map;
           fit();
-          if (useHunt.getState().terrain) {
-            map.setTerrain({ source: "dem", exaggeration: 1.15 });
+          if (propsRef.current.terrain) {
+            map.setTerrain({ source: "dem", exaggeration: propsRef.current.terrainExaggeration });
             map.touchPitch.enable();
           }
           const center = map.getCenter();
@@ -1005,22 +1015,25 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     const map = mapRef.current;
     if (!ready || !map) return;
     if (props.terrain) {
-      map.setTerrain({ source: "dem", exaggeration: 1.15 });
+      map.setTerrain({ source: "dem", exaggeration: props.terrainExaggeration });
       map.touchPitch.enable();
-      if (map.getPitch() < 20) map.easeTo({ pitch: 52, duration: 500 });
+      if (map.getPitch() < 20) map.easeTo({ pitch: 52, duration: motion(500) });
     } else {
       map.touchPitch.disable();
       map.setTerrain(null);
-      if (map.getPitch() > 0) map.easeTo({ pitch: 0, duration: 400 });
+      if (map.getPitch() > 0) map.easeTo({ pitch: 0, duration: motion(400) });
     }
-  }, [ready, props.terrain]);
+  }, [ready, props.terrain, props.terrainExaggeration]);
 
   useEffect(() => {
-    scaleRef.current?.setUnit(props.imperial ? "imperial" : "metric");
+    scaleRef.current?.setUnit(props.distanceUnit);
+  }, [props.distanceUnit, ready]);
+
+  useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map?.getLayer("vx-peak")) return;
-    const factor = props.imperial ? 3.28084 : 1;
-    const unit = props.imperial ? " ft" : " m";
+    const factor = props.elevationUnit === "ft" ? 3.28084 : 1;
+    const unit = props.elevationUnit === "ft" ? " ft" : " m";
     map.setLayoutProperty("vx-peak", "text-field", [
       "concat",
       ["coalesce", ["get", "name_en"], ["get", "name"]],
@@ -1031,7 +1044,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
         "",
       ],
     ]);
-  }, [props.imperial, ready]);
+  }, [props.elevationUnit, ready]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1211,7 +1224,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map) return;
-    const radii = props.imperial ? [91.44, 182.88, 365.76] : [100, 200, 400];
+    const radii = props.distanceUnit === "imperial" ? [91.44, 182.88, 365.76] : [100, 200, 400];
     const features: JsonFeature[] =
       props.showRings && props.ringAt
         ? radii.map((radius) => ({
@@ -1221,7 +1234,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
           }))
         : [];
     setGeo(map, "rings", { type: "FeatureCollection", features });
-  }, [ready, props.showRings, props.ringAt, props.imperial]);
+  }, [ready, props.showRings, props.ringAt, props.distanceUnit]);
 
   return (
     <div ref={stageRef} className="map-stage">

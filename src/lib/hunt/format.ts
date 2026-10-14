@@ -1,3 +1,4 @@
+import type { AreaUnit, DistanceUnit, ElevationUnit, PressureUnit, SpeedUnit, TemperatureUnit } from "@/features/settings/schema";
 import type { LngLat } from "@/lib/hunt/types";
 
 const R = 6371000;
@@ -31,9 +32,9 @@ export function ringArea(pts: LngLat[]): number {
   return Math.abs(area) / 2;
 }
 
-export function formatDistance(meters: number, imperial: boolean): string {
+export function formatDistance(meters: number, unit: DistanceUnit): string {
   if (!Number.isFinite(meters)) return "—";
-  if (!imperial) {
+  if (unit === "metric") {
     if (meters < 1000) return `${Math.round(meters)} m`;
     const km = meters / 1000;
     return `${km.toFixed(km < 10 ? 2 : 1)} km`;
@@ -43,9 +44,9 @@ export function formatDistance(meters: number, imperial: boolean): string {
   return `${Math.round(meters * 1.0936133)} yd`;
 }
 
-export function formatArea(m2: number, imperial: boolean): string {
+export function formatArea(m2: number, unit: AreaUnit): string {
   if (!Number.isFinite(m2) || m2 <= 0) return "—";
-  if (!imperial) {
+  if (unit === "hectares") {
     const ha = m2 / 10000;
     if (ha < 1) return `${Math.round(m2)} m²`;
     return `${ha.toFixed(ha < 10 ? 2 : 1)} ha`;
@@ -55,9 +56,9 @@ export function formatArea(m2: number, imperial: boolean): string {
   return `${acres.toFixed(acres < 10 ? 2 : 1)} ac`;
 }
 
-export function formatElev(meters: number, imperial: boolean): string {
-  if (!Number.isFinite(meters)) return "—";
-  if (!imperial) return `${Math.round(meters).toLocaleString("en-US")} m`;
+export function formatElev(meters: number | null, unit: ElevationUnit): string {
+  if (meters == null || !Number.isFinite(meters)) return "—";
+  if (unit === "m") return `${Math.round(meters).toLocaleString("en-US")} m`;
   return `${Math.round(meters * 3.28084).toLocaleString("en-US")} ft`;
 }
 
@@ -137,8 +138,8 @@ export function angDiff(a: number, b: number): number {
   return Math.abs((((a - b) % 360) + 540) % 360 - 180);
 }
 
-export function windFits(windFrom: number, good: number[] | undefined): boolean | null {
-  if (!good || good.length === 0) return null;
+export function windFits(windFrom: number | null, good: number[] | undefined): boolean | null {
+  if (windFrom == null || !good || good.length === 0) return null;
   return good.some((dir) => angDiff(windFrom, dir) <= 25);
 }
 
@@ -153,10 +154,10 @@ export const WIND_CHOICES: { deg: number; label: string }[] = [
   { deg: 315, label: "NW" },
 ];
 
-export function formatPressure(hpa: number, imperial: boolean): string {
-  if (!Number.isFinite(hpa)) return "—";
-  if (!imperial) return `${Math.round(hpa)} hPa`;
-  return `${(hpa * 0.029529983071445).toFixed(2)} in`;
+export function formatPressure(hpa: number | null, unit: PressureUnit): string {
+  if (hpa == null || !Number.isFinite(hpa)) return "—";
+  if (unit === "hPa") return `${Math.round(hpa)} hPa`;
+  return `${(hpa * 0.029529983071445).toFixed(2)} inHg`;
 }
 
 export function cToF(c: number): number {
@@ -165,6 +166,52 @@ export function cToF(c: number): number {
 
 export function mpsToMph(mps: number): number {
   return mps * 2.236936;
+}
+
+/** Temperature in the chosen unit, e.g. "72°". Unknown stays "—". */
+export function formatTemp(c: number | null, unit: TemperatureUnit): string {
+  if (c == null || !Number.isFinite(c)) return "—";
+  return `${Math.round(unit === "F" ? cToF(c) : c)}°`;
+}
+
+const SPEED: Record<SpeedUnit, { factor: number; label: string; digits: number }> = {
+  mph: { factor: 2.236936, label: "mph", digits: 0 },
+  kmh: { factor: 3.6, label: "km/h", digits: 0 },
+  mps: { factor: 1, label: "m/s", digits: 1 },
+  knots: { factor: 1.943844, label: "kn", digits: 0 },
+};
+
+/** Speed number alone, for tight layouts. Unknown stays "—". */
+export function speedValue(mps: number | null, unit: SpeedUnit): string {
+  if (mps == null || !Number.isFinite(mps)) return "—";
+  const spec = SPEED[unit];
+  return (mps * spec.factor).toFixed(spec.digits);
+}
+
+export function formatSpeed(mps: number | null, unit: SpeedUnit): string {
+  if (mps == null || !Number.isFinite(mps)) return "—";
+  return `${speedValue(mps, unit)} ${SPEED[unit].label}`;
+}
+
+export function formatPercent(value: number | null): string {
+  return value == null || !Number.isFinite(value) ? "—" : `${Math.round(value)}%`;
+}
+
+/** Wind as "SW 12 mph". Unknown direction or speed is shown as unknown, never as calm or north. */
+export function formatWind(fromDeg: number | null, mps: number | null, unit: SpeedUnit): string {
+  if (fromDeg == null && mps == null) return "Wind unknown";
+  return `${fromDeg == null ? "—" : cardinal(fromDeg)} ${formatSpeed(mps, unit)}`;
+}
+
+/** Clock time in an IANA zone (device zone when null), e.g. "6:42 AM" or "6:42 AM MST". */
+export function formatInstant(at: number | null, timeZone: string | null, withZone = false): string {
+  if (at == null || !Number.isFinite(at)) return "—";
+  return new Date(at).toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    ...(timeZone ? { timeZone } : {}),
+    ...(withZone ? { timeZoneName: "short" as const } : {}),
+  });
 }
 
 export function shiftLocalIso(iso: string | null, deltaMin: number): string | null {
@@ -181,5 +228,12 @@ export function shiftLocalIso(iso: string | null, deltaMin: number): string | nu
   return `2000-01-01T${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
-/** Arizona big game is a half hour either side of sunrise and sunset. */
-export const AZ_SHOOT_LEAD_MIN = 30;
+/**
+ * The user's own planning window around sunrise and sunset, e.g. "6:12 AM–6:48 PM".
+ * This is astronomy plus personal minutes, never a verified legal shooting-hours rule.
+ */
+export function personalWindow(sunrise: string | null, sunset: string | null, beforeMin: number, afterMin: number): string | null {
+  const start = formatClock(shiftLocalIso(sunrise, -beforeMin));
+  const end = formatClock(shiftLocalIso(sunset, afterMin));
+  return start !== "—" && end !== "—" ? `${start}–${end}` : null;
+}

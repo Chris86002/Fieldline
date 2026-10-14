@@ -96,10 +96,12 @@ provide complete offline maps or transfer data between origins.
 
 ## Saved data and offline limits
 
-Waypoints, tracks, and settings stay in this browser's local storage under the
-`fieldline-v1` key. They do not sync between devices. Export a GPX file from
-**Saved** before changing browser or domain, then import that file on the new
-origin. GPX transfers marks and tracks, not settings. Desktop uses a separate
+Waypoints and tracks stay in this browser's local storage under the
+`fieldline-v1` key; preferences are under `fieldline-settings` (see
+[saved-data formats](docs/data-migrations.md)). They do not sync between
+devices. Export a GPX file from **Saved** before changing browser or domain,
+then import that file on the new origin. GPX transfers marks and tracks;
+**Settings → Export settings** transfers preferences. Desktop uses a separate
 persistent profile; browser data does not transfer automatically. Export backups
 before upgrades or uninstalling. There is no cloud sync.
 

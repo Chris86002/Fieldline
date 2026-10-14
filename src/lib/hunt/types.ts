@@ -45,14 +45,27 @@ export type MapView = {
 
 export type LandTone = "public" | "state" | "park" | "refuge" | "tribal" | "restricted" | "private" | "unknown";
 
-export type LandHit = {
+export type LandRecord = {
   agency: string;
   label: string;
   swatch: string | null;
   tone: LandTone;
   state: string | null;
   unit: string | null;
+};
+
+/**
+ * A surface-management answer for one point. `no-record` means the provider
+ * answered but had no polygon there: ownership is unknown, not private.
+ * Service failures are thrown, never turned into a hit.
+ */
+export type LandHit = LandRecord & {
+  status: "record" | "no-record";
   note: string;
+  /** Other overlapping records at the same point, after the primary one. */
+  others: LandRecord[];
+  source: string;
+  checkedAt: number;
 };
 
 export const JUMPS: { name: string; hint: string; lng: number; lat: number; zoom: number }[] = [

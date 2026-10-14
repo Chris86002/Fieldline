@@ -54,9 +54,13 @@ export function getHuntStorageWarning() {
   return storageWarning;
 }
 
-type HuntState = {
-  waypoints: Waypoint[];
-  tracks: Track[];
+/**
+ * Preference fields fieldline-v1 stored before versioned settings. They are
+ * read once to migrate into `fieldline-settings`, then preserved unchanged so
+ * an older Fieldline build still opens this profile with its own preferences.
+ * Nothing in the app reads or writes them anymore.
+ */
+type LegacyPreferences = {
   basemap: Basemap;
   showPublic: boolean;
   publicOpacity: number;
@@ -74,6 +78,11 @@ type HuntState = {
   showSun: boolean;
   showRings: boolean;
   imperial: boolean;
+};
+
+type HuntState = LegacyPreferences & {
+  waypoints: Waypoint[];
+  tracks: Track[];
   huntRegion: HuntRegion;
   lastKind: MarkKind;
   activeHunt: string;
@@ -86,23 +95,6 @@ type HuntState = {
   toggleTrack: (id: string) => void;
   removeTrack: (id: string) => void;
   importAll: (waypoints: Waypoint[], tracks: Track[]) => void;
-  setBasemap: (basemap: Basemap) => void;
-  setShowPublic: (showPublic: boolean) => void;
-  setPublicOpacity: (publicOpacity: number) => void;
-  setShowLabels: (showLabels: boolean) => void;
-  setShowRoads: (showRoads: boolean) => void;
-  setShowTracks: (showTracks: boolean) => void;
-  setShowCreeks: (showCreeks: boolean) => void;
-  setShowPeaks: (showPeaks: boolean) => void;
-  setShowUnitLabels: (showUnitLabels: boolean) => void;
-  setShowBorder: (showBorder: boolean) => void;
-  setTerrain: (terrain: boolean) => void;
-  setShowMarks: (showMarks: boolean) => void;
-  setShowUnits: (showUnits: boolean) => void;
-  setShowShade: (showShade: boolean) => void;
-  setShowSun: (showSun: boolean) => void;
-  setShowRings: (showRings: boolean) => void;
-  setImperial: (imperial: boolean) => void;
   setHuntRegion: (huntRegion: HuntRegion) => void;
   setLastKind: (lastKind: MarkKind) => void;
   setActiveHunt: (activeHunt: string) => void;
@@ -154,23 +146,6 @@ export const useHunt = create<HuntState>()(
           waypoints: [...waypoints, ...s.waypoints],
           tracks: [...tracks, ...s.tracks],
         })),
-      setBasemap: (basemap) => set({ basemap }),
-      setShowPublic: (showPublic) => set({ showPublic }),
-      setPublicOpacity: (publicOpacity) => set({ publicOpacity }),
-      setShowLabels: (showLabels) => set({ showLabels }),
-      setShowRoads: (showRoads) => set({ showRoads }),
-      setShowTracks: (showTracks) => set({ showTracks }),
-      setShowCreeks: (showCreeks) => set({ showCreeks }),
-      setShowPeaks: (showPeaks) => set({ showPeaks }),
-      setShowUnitLabels: (showUnitLabels) => set({ showUnitLabels }),
-      setShowBorder: (showBorder) => set({ showBorder }),
-      setTerrain: (terrain) => set({ terrain }),
-      setShowMarks: (showMarks) => set({ showMarks }),
-      setShowUnits: (showUnits) => set({ showUnits }),
-      setShowShade: (showShade) => set({ showShade }),
-      setShowSun: (showSun) => set({ showSun }),
-      setShowRings: (showRings) => set({ showRings }),
-      setImperial: (imperial) => set({ imperial }),
       setHuntRegion: (huntRegion) => set({ huntRegion }),
       setLastKind: (lastKind) => set({ lastKind }),
       setActiveHunt: (activeHunt) => set({ activeHunt }),
