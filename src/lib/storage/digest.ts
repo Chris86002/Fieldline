@@ -5,7 +5,14 @@
  * implementation is the fallback; both produce identical digests (tested).
  */
 export async function sha256Hex(text: string): Promise<string> {
-  const bytes = new TextEncoder().encode(text);
+  return sha256HexBytes(new TextEncoder().encode(text));
+}
+
+/** SHA-256 hex digest of raw bytes (offline package assets). Never call inside a transaction. */
+export async function sha256HexBytes(
+  input: ArrayBuffer | Uint8Array<ArrayBuffer>,
+): Promise<string> {
+  const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
   const subtle = globalThis.crypto?.subtle;
   if (subtle) {
     const buffer = await subtle.digest("SHA-256", bytes);

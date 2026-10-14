@@ -3,9 +3,11 @@ import { beforeEach, describe, it } from "node:test";
 import {
   assertEvictable,
   MemoryBackend,
+  OFFLINE_STORES,
   PERSONAL_STORES,
   REPLACEABLE_STORES,
   StorageError,
+  STORES,
 } from "./backend.ts";
 import { runMigrations } from "./migrations.ts";
 import { ContentRepository } from "./repository.ts";
@@ -86,9 +88,21 @@ describe("trash", () => {
     await repo.deleteWaypoint(FIXTURE_WAYPOINTS[0].id, 1);
     assert.ok(PERSONAL_STORES.includes("trash"));
     assert.ok(!REPLACEABLE_STORES.includes("trash"));
-    assert.deepEqual(await repo.clearReplaceableData(), []);
+    await backend.write(["assets", "assetData"], async (tx) => {
+      await tx.put("assets", "https://example.test/t#x", { refs: ["p@1"] });
+      await tx.put("assetData", "https://example.test/t#x", new ArrayBuffer(4));
+    });
+    assert.deepEqual(await repo.clearReplaceableData(), [...OFFLINE_STORES]);
+    assert.equal(await backend.read(["assets"], (tx) => tx.count("assets")), 0);
     assert.equal((await repo.listTrash()).length, 1);
     assert.equal((await repo.counts()).waypoints, 1);
+  });
+
+  it("classifies every store exactly once and clears offline package stores only together", async () => {
+    const all = [...PERSONAL_STORES, ...REPLACEABLE_STORES].sort();
+    assert.deepEqual(all, [...STORES].sort());
+    assert.ok(!PERSONAL_STORES.some((store) => REPLACEABLE_STORES.includes(store)));
+    await assert.rejects(repo.clearReplaceableData(["assets"]), /cleared together/);
   });
 
   it("refuses to clear any personal or unlisted store as a cache", async () => {

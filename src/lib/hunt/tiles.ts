@@ -32,49 +32,142 @@ function httpsFrom(protocolUrl: string): string {
   return protocolUrl.startsWith(prefix) ? protocolUrl.slice(prefix.length) : protocolUrl;
 }
 
+/**
+ * Wraps a source URL or template in the `fltile://` protocol: offline
+ * packages first, then the tile cache (only for `OFFLINE_TEMPLATES`), then
+ * the network. Works for raster templates, the OpenFreeMap TileJSON URL
+ * (`cachedTile(OFM)`), the glyph template, and the app's `/api/dem` template.
+ */
 export function cachedTile(template: string): string {
   return `${PROTOCOL}://${template}`;
+}
+
+/** Bytes for a tile from a verified offline package (src/lib/offline/serve.ts). */
+export type PackagedTile = { data: ArrayBuffer; contentType?: string; status?: number };
+export type PackageTileSource = (url: string) => Promise<PackagedTile | null>;
+
+let packageSource: PackageTileSource | null = null;
+const stats = { package: 0, cache: 0, network: 0, failed: 0 };
+
+/**
+ * Lets the `fltile://` protocol read offline packages before the cache and
+ * network. Call once at startup with `createPackageTileSource(store)`; pass
+ * null to detach.
+ */
+export function setPackageTileSource(source: PackageTileSource | null) {
+  packageSource = source;
+}
+
+/** Where `fltile://` responses came from since startup (diagnostics, offline checks). */
+export function tileProtocolStats() {
+  return { ...stats };
+}
+
+/**
+ * HTTPS anywhere, plus plain HTTP only for this app's own `/api/dem` terrain
+ * proxy (the dev and desktop servers run on http://localhost).
+ */
+function allowedUrl(url: string): boolean {
+  if (url.startsWith("https://")) return true;
+  const origin = globalThis.location?.origin;
+  return Boolean(origin && url.startsWith(`${origin}/api/dem/`));
+}
+
+/**
+ * A TileJSON's tile URLs are wrapped in `fltile://` too, so vector tiles of a
+ * packaged source (OpenFreeMap) are served from the package when offline.
+ */
+export function wrapTileJson(json: unknown): unknown {
+  if (!json || typeof json !== "object") return json;
+  const tiles = (json as { tiles?: unknown }).tiles;
+  if (!Array.isArray(tiles)) return json;
+  return {
+    ...json,
+    tiles: tiles.map((tile) =>
+      typeof tile === "string" && tile.startsWith("https://") ? cachedTile(tile) : tile,
+    ),
+  };
+}
+
+/** The `fltile://` handler (exported for tests; MapLibre calls it through `addProtocol`). */
+export async function loadTile(
+  params: { url: string; type?: string },
+  abort: AbortController,
+): Promise<{ data: unknown }> {
+  const url = httpsFrom(params.url);
+  if (!allowedUrl(url)) throw new Error("Blocked tile");
+  const respond = (data: ArrayBuffer) =>
+    params.type === "json"
+      ? { data: wrapTileJson(JSON.parse(new TextDecoder().decode(data))) }
+      : params.type === "string"
+        ? { data: new TextDecoder().decode(data) }
+        : { data };
+
+  if (packageSource) {
+    let hit: PackagedTile | null = null;
+    try {
+      hit = await packageSource(url);
+    } catch {
+      hit = null;
+    }
+    if (hit) {
+      stats.package += 1;
+      // The provider has no tile here (stored as a 404 when the package was made).
+      if (hit.status === 404) throw new Error("404");
+      return respond(hit.data);
+    }
+  }
+
+  let cache: Cache | null = null;
+  try {
+    if (typeof caches !== "undefined" && canStoreTile(url)) cache = await caches.open(CACHE);
+  } catch {
+    cache = null;
+  }
+  if (cache) {
+    try {
+      const hit = await cache.match(url);
+      if (hit) {
+        stats.cache += 1;
+        return respond(await hit.arrayBuffer());
+      }
+    } catch {
+      cache = null;
+    }
+  }
+
+  let response: Response;
+  try {
+    response = await fetch(url, { signal: abort.signal });
+  } catch (error) {
+    stats.failed += 1;
+    throw error;
+  }
+  if (!response.ok) {
+    stats.failed += 1;
+    throw new Error(String(response.status));
+  }
+  const data = await response.arrayBuffer();
+  stats.network += 1;
+  if (cache) {
+    try {
+      await cache.put(
+        url,
+        new Response(data.slice(0), {
+          headers: { "Content-Type": response.headers.get("content-type") ?? "image/jpeg" },
+        }),
+      );
+    } catch {
+      // Tile display should not depend on optional browser cache/quota support.
+    }
+  }
+  return respond(data);
 }
 
 export function installTileProtocol(ml: { addProtocol: typeof import("maplibre-gl").addProtocol }) {
   if (installed) return;
   installed = true;
-  ml.addProtocol(PROTOCOL, async (params, abort) => {
-    const url = httpsFrom(params.url);
-    if (!url.startsWith("https://")) throw new Error("Blocked tile");
-
-    let cache: Cache | null = null;
-    try {
-      if (typeof caches !== "undefined" && canStoreTile(url)) cache = await caches.open(CACHE);
-    } catch {
-      cache = null;
-    }
-    if (cache) {
-      try {
-        const hit = await cache.match(url);
-        if (hit) return { data: await hit.arrayBuffer() };
-      } catch {
-        cache = null;
-      }
-    }
-
-    const response = await fetch(url, { signal: abort.signal });
-    if (!response.ok) throw new Error(String(response.status));
-    const data = await response.arrayBuffer();
-    if (cache) {
-      try {
-        await cache.put(
-          url,
-          new Response(data.slice(0), {
-            headers: { "Content-Type": response.headers.get("content-type") ?? "image/jpeg" },
-          }),
-        );
-      } catch {
-        // Tile display should not depend on optional browser cache/quota support.
-      }
-    }
-    return { data };
-  });
+  ml.addProtocol(PROTOCOL, loadTile as Parameters<typeof ml.addProtocol>[1]);
 }
 
 function lonToX(lng: number, z: number): number {
