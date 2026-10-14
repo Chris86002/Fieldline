@@ -1,6 +1,6 @@
 import { StorageError, type StorageBackend } from "./backend.ts";
 import { sha256Hex } from "./digest.ts";
-import { canonicalJson, trackProblems, waypointProblems } from "./records.ts";
+import { canonicalJson, isMarkKind, trackProblems, waypointProblems } from "./records.ts";
 import { CONTENT_SCHEMA_VERSION, readSchema, SCHEMA_KEY, type SchemaMeta } from "./repository.ts";
 
 /**
@@ -47,10 +47,19 @@ export type MigrationFailure =
 export type MigrationResult =
   | {
       ok: true;
-      status: "migrated" | "already-complete" | "nothing-to-migrate";
+      /**
+       * "legacy-changed-after-migration": the repository is current, but the
+       * marks/tracks in fieldline-v1 differ from what was migrated (an older
+       * build or the not-yet-rewired app kept saving there). Nothing is merged;
+       * surface `message` and let the user decide.
+       */
+      status:
+        "migrated" | "already-complete" | "nothing-to-migrate" | "legacy-changed-after-migration";
       schemaVersion: number;
       counts: MigrationCounts;
       message: string;
+      /** Waypoints whose unknown marker kind was mapped to "pin" by this run. */
+      normalized?: KindNormalization[];
     }
   | {
       ok: false;
@@ -60,6 +69,15 @@ export type MigrationResult =
       code?: StorageError["code"];
     };
 
+/** A waypoint whose kind the UI can't draw, imported as "pin". */
+export type KindNormalization = {
+  id: string;
+  field: "kind";
+  /** The original value, as text (truncated to 64 characters). */
+  from: string;
+  to: "pin";
+};
+
 /** Record of a completed v0→v1 step (meta key "migration:v0-v1"). */
 export type LegacyMigrationMeta = {
   step: "v0-v1";
@@ -67,13 +85,31 @@ export type LegacyMigrationMeta = {
   source: typeof LEGACY_KEY;
   /** SHA-256 of the fieldline-v1 string that was copied, or null when it was absent. */
   sourceDigest: string | null;
+  /**
+   * SHA-256 of the canonical `{ waypoints, tracks }` read from fieldline-v1
+   * (before kind mapping). Compared on later starts; only content counts, so
+   * fieldline-v1's view and preference fields can keep changing.
+   */
+  contentDigest: string;
   counts: MigrationCounts;
+  /** Kind mappings applied (first 1,000) and their total. */
+  normalized: KindNormalization[];
+  normalizedCount: number;
 };
+
+/** Thrown inside a migration transaction when another tab completed it first. */
+class MigrationRace extends Error {}
 
 export const LEGACY_MIGRATION_KEY = "migration:v0-v1";
 
 type StepOutcome =
-  | { ok: true; counts: MigrationCounts; empty: boolean; raced?: false }
+  | {
+      ok: true;
+      counts: MigrationCounts;
+      empty: boolean;
+      normalized: KindNormalization[];
+      raced?: false;
+    }
   /** Another tab completed the step first; nothing was changed by this run. */
   | { ok: true; raced: true }
   | Extract<MigrationResult, { ok: false }>;
@@ -85,7 +121,30 @@ type MigrationStep = {
   run: (ctx: MigrationContext) => Promise<StepOutcome>;
 };
 
-type ParsedLegacy = { waypoints: Record<string, unknown>[]; tracks: Record<string, unknown>[] };
+type ParsedLegacy = {
+  /** Records to store (unknown kinds mapped to "pin"). */
+  waypoints: Record<string, unknown>[];
+  tracks: Record<string, unknown>[];
+  normalized: KindNormalization[];
+  /** Digest input: the content exactly as read. */
+  original: { waypoints: unknown[]; tracks: unknown[] };
+};
+
+/** SHA-256 of the canonical `{ waypoints, tracks }`, as stored in `contentDigest`. */
+export function legacyContentDigest(content: { waypoints: unknown[]; tracks: unknown[] }) {
+  return sha256Hex(canonicalJson({ waypoints: content.waypoints, tracks: content.tracks }));
+}
+
+/** Maps a kind the UI can't draw to "pin", recording the change. */
+function normalizeKind(record: unknown, normalized: KindNormalization[]): unknown {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return record;
+  const waypoint = record as Record<string, unknown>;
+  if (isMarkKind(waypoint.kind)) return record;
+  const from =
+    typeof waypoint.kind === "string" ? waypoint.kind : JSON.stringify(waypoint.kind ?? null);
+  normalized.push({ id: String(waypoint.id), field: "kind", from: from.slice(0, 64), to: "pin" });
+  return { ...waypoint, kind: "pin" };
+}
 
 /** Parses and validates fieldline-v1 without changing anything. */
 export function parseLegacyContent(
@@ -128,15 +187,17 @@ export function parseLegacyContent(
       message: "Saved marks and tracks couldn't be read. They were left untouched.",
     };
   }
+  const normalized: KindNormalization[] = [];
+  const waypoints = saved.waypoints.map((record) => normalizeKind(record, normalized));
   const problems: string[] = [];
-  saved.waypoints.forEach((waypoint, index) =>
+  waypoints.forEach((waypoint, index) =>
     problems.push(...waypointProblems(waypoint, `waypoint #${index + 1}`)),
   );
   saved.tracks.forEach((track, index) =>
     problems.push(...trackProblems(track, `track #${index + 1}`)),
   );
   for (const [label, list] of [
-    ["waypoint", saved.waypoints],
+    ["waypoint", waypoints],
     ["track", saved.tracks],
   ] as const) {
     const seen = new Set<string>();
@@ -158,8 +219,10 @@ export function parseLegacyContent(
   return {
     ok: true,
     content: {
-      waypoints: saved.waypoints as Record<string, unknown>[],
+      waypoints: waypoints as Record<string, unknown>[],
       tracks: saved.tracks as Record<string, unknown>[],
+      normalized,
+      original: { waypoints: saved.waypoints, tracks: saved.tracks },
     },
   };
 }
@@ -201,13 +264,19 @@ async function migrateLegacy(ctx: MigrationContext): Promise<StepOutcome> {
       message: "Browser storage couldn't be read, so saved content wasn't moved.",
     };
   }
-  let content: ParsedLegacy = { waypoints: [], tracks: [] };
+  let content: ParsedLegacy = {
+    waypoints: [],
+    tracks: [],
+    normalized: [],
+    original: { waypoints: [], tracks: [] },
+  };
   if (raw !== null) {
     const parsed = parseLegacyContent(raw);
     if (!parsed.ok) return parsed;
     content = parsed.content;
   }
   const sourceDigest = raw === null ? null : await sha256Hex(raw);
+  const contentDigest = await legacyContentDigest(content.original);
   const expected = {
     waypoints: new Map(
       content.waypoints.map((record) => [record.id as string, canonicalJson(record)]),
@@ -218,7 +287,7 @@ async function migrateLegacy(ctx: MigrationContext): Promise<StepOutcome> {
   try {
     await ctx.backend.write(["meta", "waypoints", "tracks"], async (tx) => {
       const schema = await readSchema(tx);
-      if (schema) throw new StorageError("conflict", "Migration already completed elsewhere.");
+      if (schema) throw new MigrationRace("Migration already completed elsewhere.");
       await tx.clear("waypoints");
       await tx.clear("tracks");
       for (const record of content.waypoints)
@@ -226,8 +295,7 @@ async function migrateLegacy(ctx: MigrationContext): Promise<StepOutcome> {
       for (const record of content.tracks) await tx.put("tracks", record.id as string, record);
     });
   } catch (error) {
-    if (error instanceof StorageError && error.code === "conflict")
-      return { ok: true, raced: true };
+    if (error instanceof MigrationRace) return { ok: true, raced: true };
     return storageFailure(error);
   }
 
@@ -263,26 +331,27 @@ async function migrateLegacy(ctx: MigrationContext): Promise<StepOutcome> {
   const counts = { waypoints: content.waypoints.length, tracks: content.tracks.length };
   try {
     await ctx.backend.write(["meta"], async (tx) => {
-      if (await readSchema(tx))
-        throw new StorageError("conflict", "Migration already completed elsewhere.");
+      if (await readSchema(tx)) throw new MigrationRace("Migration already completed elsewhere.");
       const now = ctx.now();
       const meta: LegacyMigrationMeta = {
         step: "v0-v1",
         completedAt: now,
         source: LEGACY_KEY,
         sourceDigest,
+        contentDigest,
         counts,
+        normalized: content.normalized.slice(0, 1000),
+        normalizedCount: content.normalized.length,
       };
       const schema: SchemaMeta = { version: 1, createdAt: now, lastStep: "v0-v1" };
       await tx.put("meta", LEGACY_MIGRATION_KEY, meta);
       await tx.put("meta", SCHEMA_KEY, schema);
     });
   } catch (error) {
-    if (error instanceof StorageError && error.code === "conflict")
-      return { ok: true, raced: true };
+    if (error instanceof MigrationRace) return { ok: true, raced: true };
     return storageFailure(error);
   }
-  return { ok: true, counts, empty: raw === null };
+  return { ok: true, counts, empty: raw === null, normalized: content.normalized };
 }
 
 /** Steps in order. Add new steps at the end; never edit a shipped one. */
@@ -328,6 +397,16 @@ export async function runMigrations(ctx: MigrationContext): Promise<MigrationRes
     } catch (error) {
       return storageFailure(error);
     }
+    if (await legacyChangedSinceMigration(ctx)) {
+      return {
+        ok: true,
+        status: "legacy-changed-after-migration",
+        schemaVersion: version,
+        counts,
+        message:
+          "Marks or tracks in the old saved copy changed after they were moved to the new storage, probably by an older Fieldline. Those changes are not in the new storage and were not merged.",
+      };
+    }
     return {
       ok: true,
       status: "already-complete",
@@ -337,6 +416,7 @@ export async function runMigrations(ctx: MigrationContext): Promise<MigrationRes
     };
   }
   let counts: MigrationCounts = { waypoints: 0, tracks: 0 };
+  let normalized: KindNormalization[] = [];
   let empty = true;
   for (const step of MIGRATIONS) {
     if (step.from !== version) continue;
@@ -344,6 +424,7 @@ export async function runMigrations(ctx: MigrationContext): Promise<MigrationRes
     if (!outcome.ok) return outcome;
     if (outcome.raced) return runMigrations(ctx);
     counts = outcome.counts;
+    normalized = [...normalized, ...outcome.normalized];
     empty = empty && outcome.empty;
     version = step.to;
   }
@@ -361,6 +442,50 @@ export async function runMigrations(ctx: MigrationContext): Promise<MigrationRes
     counts,
     message: empty
       ? "No saved marks or tracks to move."
-      : `Moved ${counts.waypoints} mark${counts.waypoints === 1 ? "" : "s"} and ${counts.tracks} track${counts.tracks === 1 ? "" : "s"} to the new storage.`,
+      : `Moved ${counts.waypoints} mark${counts.waypoints === 1 ? "" : "s"} and ${counts.tracks} track${counts.tracks === 1 ? "" : "s"} to the new storage.${normalized.length ? ` ${normalized.length} mark${normalized.length === 1 ? " had an unknown type and is" : "s had unknown types and are"} now a pin.` : ""}`,
+    ...(normalized.length ? { normalized } : {}),
   };
+}
+
+/**
+ * Whether fieldline-v1's marks/tracks differ from what v0→v1 copied. An
+ * unreadable or removed copy counts as changed when content was migrated.
+ * If localStorage can't be read, or the step predates the digest, there is
+ * nothing to compare and the answer is false.
+ */
+async function legacyChangedSinceMigration(ctx: MigrationContext): Promise<boolean> {
+  let meta: LegacyMigrationMeta | undefined;
+  try {
+    meta = await ctx.backend.read(["meta"], (tx) =>
+      tx.get<LegacyMigrationMeta>("meta", LEGACY_MIGRATION_KEY),
+    );
+  } catch {
+    return false;
+  }
+  if (!meta || typeof meta.contentDigest !== "string") return false;
+  let raw: string | null;
+  try {
+    raw = ctx.legacy.getItem(LEGACY_KEY);
+  } catch {
+    return false;
+  }
+  let content: { waypoints: unknown[]; tracks: unknown[] } | null = { waypoints: [], tracks: [] };
+  if (raw !== null) {
+    try {
+      const state = (JSON.parse(raw) as { state?: { waypoints?: unknown; tracks?: unknown } })
+        ?.state;
+      content =
+        state && Array.isArray(state.waypoints) && Array.isArray(state.tracks)
+          ? { waypoints: state.waypoints, tracks: state.tracks }
+          : null;
+    } catch {
+      content = null;
+    }
+  }
+  if (!content) return true;
+  try {
+    return (await legacyContentDigest(content)) !== meta.contentDigest;
+  } catch {
+    return true;
+  }
 }

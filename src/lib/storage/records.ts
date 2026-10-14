@@ -1,15 +1,16 @@
-import type { Track, TrackPoint, Waypoint } from "@/lib/hunt/types";
+import type { MarkKind, Track, TrackPoint, Waypoint } from "@/lib/hunt/types";
 
 /**
  * Record shapes and validation for personal content stored by the content
  * repository (IndexedDB) and carried by full backups.
  *
- * One validator serves migration from `fieldline-v1`, repository writes and
- * backup restore, so anything the repository can hold can also be backed up
- * and restored. It is deliberately tolerant of fields older builds never
- * wrote (for example `goodWinds`, added after 1.0.0) and keeps unknown fields
- * verbatim, but it is strict about what storage integrity depends on: safe
- * ids, finite in-range coordinates, typed known fields and size bounds.
+ * One validator serves migration from `fieldline-v1` (after it maps unknown
+ * marker kinds to "pin"), repository writes and backup restore, so anything
+ * the repository can hold can also be backed up and restored. It tolerates
+ * optional fields older builds never wrote (for example `goodWinds`, added
+ * after 1.0.0) and keeps unknown fields verbatim within a nesting limit, but it
+ * is strict about what storage and the UI depend on: safe ids, known marker
+ * kinds, text names, finite in-range coordinates, typed known fields, bounds.
  */
 
 /** Optional raw-fix detail kept on recorded track points (spec §9). */
@@ -51,7 +52,6 @@ export type TrashEntry = {
 export const LIMITS = {
   idLength: 128,
   nameLength: 500,
-  kindLength: 32,
   huntLength: 500,
   notesLength: 20_000,
   goodWinds: 36,
@@ -123,17 +123,69 @@ function optionalNullableNumber(
     problems.push(`${label}: ${key} is not a valid number`);
 }
 
-/** Problems with a waypoint record; empty when it can be stored. */
+/**
+ * Marker kinds the UI can draw (`MarkKind` in src/lib/hunt/types.ts). The map
+ * indexes its marker table by `kind`, so any other value would break
+ * rendering; it is rejected on every write and restore path.
+ */
+export const MARK_KINDS = [
+  "stand",
+  "blind",
+  "camp",
+  "camera",
+  "parking",
+  "gate",
+  "water",
+  "glass",
+  "pin",
+] as const satisfies readonly MarkKind[];
+
+/** Compile-time check that MARK_KINDS lists every MarkKind. */
+const _allKinds: [Exclude<MarkKind, (typeof MARK_KINDS)[number]>] extends [never] ? true : false =
+  true;
+
+export function isMarkKind(value: unknown): value is MarkKind {
+  return typeof value === "string" && (MARK_KINDS as readonly string[]).includes(value);
+}
+
+/** Nesting allowed inside one record, including unknown fields kept verbatim. */
+export const MAX_RECORD_DEPTH = 16;
+
+/**
+ * Whether a JSON-like value nests deeper than `max` levels. Iterative, so a
+ * hostile value can't overflow the stack while being checked.
+ */
+export function nestsDeeperThan(value: unknown, max: number): boolean {
+  const stack: [unknown, number][] = [[value, 1]];
+  while (stack.length) {
+    const [item, depth] = stack.pop() as [unknown, number];
+    if (!item || typeof item !== "object") continue;
+    if (depth > max) return true;
+    for (const child of Array.isArray(item) ? item : Object.values(item)) {
+      if (child && typeof child === "object") stack.push([child, depth + 1]);
+    }
+  }
+  return false;
+}
+
+/**
+ * Problems with a waypoint record; empty when it can be stored. Required:
+ * safe `id`, text `name`, a known `kind`, in-range `lng`/`lat`. Optional but
+ * typed when present: `notes`, `hunt`, `goodWinds`, `createdAt` (records from
+ * the first builds have no `goodWinds`).
+ */
 export function waypointProblems(value: unknown, label = "waypoint"): string[] {
   if (!isPlainObject(value)) return [`${label}: not an object`];
   const problems: string[] = [];
   const id = value.id;
   const where = isSafeId(id) ? `${label} ${id}` : label;
   if (!isSafeId(id)) problems.push(`${label}: missing or unsafe id`);
+  if (nestsDeeperThan(value, MAX_RECORD_DEPTH)) return [`${where}: nested too deeply`];
   if (!okCoord(value.lng, value.lat))
     problems.push(`${where}: coordinates are missing or out of range`);
-  optionalString(value, "name", LIMITS.nameLength, problems, where);
-  optionalString(value, "kind", LIMITS.kindLength, problems, where);
+  if (typeof value.name !== "string") problems.push(`${where}: name is missing`);
+  else optionalString(value, "name", LIMITS.nameLength, problems, where);
+  if (!isMarkKind(value.kind)) problems.push(`${where}: kind is not a known marker type`);
   optionalString(value, "notes", LIMITS.notesLength, problems, where);
   optionalString(value, "hunt", LIMITS.huntLength, problems, where);
   if ("createdAt" in value && value.createdAt !== undefined && !finite(value.createdAt))
@@ -150,10 +202,10 @@ export function waypointProblems(value: unknown, label = "waypoint"): string[] {
   }
   return problems;
 }
-
 /** Problems with one track point. Only coordinates are required. */
 function pointProblem(point: unknown): string | null {
   if (!isPlainObject(point)) return "point is not an object";
+  if (nestsDeeperThan(point, 4)) return "point is nested too deeply";
   if (!okCoord(point.lng, point.lat)) return "point coordinates are missing or out of range";
   if ("t" in point && point.t !== undefined && !finite(point.t))
     return "point time is not a number";
@@ -177,7 +229,11 @@ export function trackProblems(
   const id = value.id;
   const where = isSafeId(id) ? `${label} ${id}` : label;
   if (!isSafeId(id)) problems.push(`${label}: missing or unsafe id`);
-  optionalString(value, "name", LIMITS.nameLength, problems, where);
+  // Points are checked one by one below; the rest of the record must stay shallow.
+  const { points: _points, ...rest } = value;
+  if (nestsDeeperThan(rest, MAX_RECORD_DEPTH)) return [`${where}: nested too deeply`];
+  if (typeof value.name !== "string") problems.push(`${where}: name is missing`);
+  else optionalString(value, "name", LIMITS.nameLength, problems, where);
   if ("createdAt" in value && value.createdAt !== undefined && !finite(value.createdAt))
     problems.push(`${where}: createdAt is not a number`);
   if ("visible" in value && value.visible !== undefined && typeof value.visible !== "boolean")
@@ -239,25 +295,29 @@ export function trashProblems(value: unknown, label = "trash entry"): string[] {
   return problems;
 }
 
+/** Guard for `canonicalJson`; validated records and backups are far shallower. */
+const MAX_CANONICAL_DEPTH = 64;
+
 /**
  * Deterministic JSON: object keys sorted, `undefined` members dropped (as in
  * JSON.stringify). Used for read-back verification, identical-record checks
  * and backup checksums, so key order never makes equal records look different.
  */
-export function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown, depth = 0): string {
+  if (depth > MAX_CANONICAL_DEPTH) throw new RangeError("Value is nested too deeply to store.");
   if (value === null || typeof value !== "object") {
     const text = JSON.stringify(value);
     return text === undefined ? "null" : text;
   }
   if (Array.isArray(value)) {
-    return `[${value.map((item) => (item === undefined || typeof item === "function" ? "null" : canonicalJson(item))).join(",")}]`;
+    return `[${value.map((item) => (item === undefined || typeof item === "function" ? "null" : canonicalJson(item, depth + 1))).join(",")}]`;
   }
   const record = value as Record<string, unknown>;
   const parts: string[] = [];
   for (const key of Object.keys(record).sort()) {
     const item = record[key];
     if (item === undefined || typeof item === "function" || typeof item === "symbol") continue;
-    parts.push(`${JSON.stringify(key)}:${canonicalJson(item)}`);
+    parts.push(`${JSON.stringify(key)}:${canonicalJson(item, depth + 1)}`);
   }
   return `{${parts.join(",")}}`;
 }

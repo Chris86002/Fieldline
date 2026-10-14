@@ -69,16 +69,74 @@ describe("migration v0 → v1 from fieldline-v1", () => {
     assert.equal(local.getItem(LEGACY_KEY), raw);
   });
 
-  it("does not re-import fieldline-v1 after completion, even if it changed", async () => {
+  it("reports, but never re-imports, fieldline-v1 content changed after completion", async () => {
     const local = fakeLocalStorage({ [LEGACY_KEY]: legacyFixtureString() });
     const backend = new MemoryBackend();
     await runMigrations({ backend, legacy: local, now: () => 1 });
-    local.setItem(LEGACY_KEY, JSON.stringify({ state: { waypoints: [], tracks: [] }, version: 0 }));
+
+    // Non-content fields (view, active hunt) change all the time: not a content change.
+    const viewOnly = JSON.parse(legacyFixtureString());
+    viewOnly.state.lastView = { lng: 0, lat: 0, zoom: 3, bearing: 0, pitch: 0 };
+    viewOnly.state.activeHunt = "Other";
+    local.setItem(LEGACY_KEY, JSON.stringify(viewOnly));
     assert.equal(
       (await runMigrations({ backend, legacy: local, now: () => 2 })).status,
       "already-complete",
     );
-    assert.equal((await new ContentRepository(backend).listWaypoints()).length, 3);
+
+    const before = await snapshot(backend);
+    local.setItem(LEGACY_KEY, JSON.stringify({ state: { waypoints: [], tracks: [] }, version: 0 }));
+    const changed = await runMigrations({ backend, legacy: local, now: () => 3 });
+    assert.equal(changed.ok, true);
+    assert.equal(changed.status, "legacy-changed-after-migration");
+    assert.match(changed.message, /not merged/);
+    assert.deepEqual(await snapshot(backend), before, "nothing merged or rewritten");
+
+    local.setItem(LEGACY_KEY, "{");
+    assert.equal(
+      (await runMigrations({ backend, legacy: local, now: () => 4 })).status,
+      "legacy-changed-after-migration",
+    );
+  });
+
+  it("maps an unknown marker kind to pin, records it, and keeps the record", async () => {
+    const odd = { ...FIXTURE_WAYPOINTS[0], kind: "<img src=x onerror=alert(1)>" };
+    const missing: Record<string, unknown> = { ...FIXTURE_WAYPOINTS[1] };
+    delete missing.kind;
+    const raw = JSON.stringify({ state: { waypoints: [odd, missing], tracks: [] }, version: 0 });
+    const local = fakeLocalStorage({ [LEGACY_KEY]: raw });
+    const backend = new MemoryBackend();
+    const result = await runMigrations({ backend, legacy: local, now: () => 1 });
+    assert.equal(result.status, "migrated");
+    assert.deepEqual(result.ok && result.normalized, [
+      { id: odd.id, field: "kind", from: odd.kind, to: "pin" },
+      { id: missing.id, field: "kind", from: "null", to: "pin" },
+    ]);
+    assert.match(result.message, /2 marks had unknown types/);
+    const repo = new ContentRepository(backend);
+    assert.deepEqual(await repo.getWaypoint(odd.id), { ...odd, kind: "pin" });
+    assert.equal((await repo.getWaypoint(String(missing.id)))?.kind, "pin");
+    const meta = await backend.read(["meta"], (tx) =>
+      tx.get<LegacyMigrationMeta>("meta", LEGACY_MIGRATION_KEY),
+    );
+    assert.equal(meta?.normalizedCount, 2);
+    assert.equal(local.getItem(LEGACY_KEY), raw, "the source keeps its original kind");
+    assert.equal(
+      (await runMigrations({ backend, legacy: local, now: () => 2 })).status,
+      "already-complete",
+    );
+  });
+
+  it("does not mistake a storage conflict for another tab finishing first", async () => {
+    const local = fakeLocalStorage({ [LEGACY_KEY]: legacyFixtureString() });
+    const backend = new MemoryBackend();
+    backend.faults.onOp = (op) => {
+      if (op.type === "put") throw new StorageError("conflict", "ConstraintError");
+    };
+    const result = await runMigrations({ backend, legacy: local, now: () => 1 });
+    assert.equal(result.ok, false);
+    assert.equal(result.status, "storage-error");
+    assert.equal(!result.ok && result.code, "conflict");
   });
 
   it("initializes an empty repository when there is no saved content", async () => {

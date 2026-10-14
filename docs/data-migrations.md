@@ -73,18 +73,23 @@ design in [storage.md](storage.md).
   written only when a migration completes. Writes require it to exist and be
   ≤ 1; reads work regardless.
 - **Records.** Waypoints and tracks as in `fieldline-v1`, copied verbatim
-  (unknown and missing legacy fields preserved as they were). Recorded tracks
+  (unknown and missing optional legacy fields preserved as they were), except
+  that a waypoint `kind` the map can't draw becomes `"pin"` (recorded in the
+  migration meta). Every write and restore requires a known `kind`, a text
+  `name` and in-range coordinates. Recorded tracks
   may add `segmentStarts` and per-point `accuracy`, `altitude`,
   `altitudeAccuracy`, `speed`, `heading` (nullable); older code ignores them.
   Trash entries: `{ id: "kind:itemId:deletedAt", kind, itemId, deletedAt, item }`.
 - **Migration v0 → v1.** Validate `fieldline-v1` (envelope version 0, array
   content, valid records, unique ids) → one transaction copies all waypoints
   and tracks → read-back compares counts, ids and every record → a final
-  transaction writes `meta/migration:v0-v1` (counts, SHA-256 of the source)
-  and `meta/schema`. `fieldline-v1` is only read, never written. Corrupt,
-  newer-version or invalid sources stop with a status and nothing written;
-  an interrupted run is unmarked and re-copies on the next start; a
-  completed run is never repeated.
+  transaction writes `meta/migration:v0-v1` (counts, SHA-256 of the source
+  and of its `{ waypoints, tracks }`, kind mappings) and `meta/schema`.
+  `fieldline-v1` is only read, never written. Corrupt, newer-version or
+  invalid sources stop with a status and nothing written; an interrupted run
+  is unmarked and re-copies on the next start; a completed run is never
+  repeated, but if `fieldline-v1` content later differs from what was copied
+  the result is `legacy-changed-after-migration` (reported, not merged).
 - **Backups.** `fieldline-backup` version 1 JSON (settings export, waypoints,
   tracks, trash, SHA-256 integrity). Newer backup versions or content schemas
   are refused.
@@ -94,5 +99,7 @@ design in [storage.md](storage.md).
 | fieldline-v1 profile (marks with winds/notes, a 1.0.0-shape mark without `goodWinds`, 1,500-point track) | content schema 1 | Identical records; `fieldline-v1` byte-identical; second run no-op | `migrations.test.ts`; `scripts/storage-browser-check.mjs` in Chromium (migrate → reload → read back) |
 | Interrupted copy / interrupted completion | retry | Nothing marked; retry copies the current source | `migrations.test.ts` |
 | Corrupt or newer `fieldline-v1`, invalid records | content schema 1 | Refused, nothing written | `migrations.test.ts` |
+| `fieldline-v1` mark with an unknown or missing `kind` | content schema 1 | Imported as `pin`, mapping recorded | `migrations.test.ts` |
+| `fieldline-v1` content edited after migration | this build | `legacy-changed-after-migration`, nothing merged | `migrations.test.ts` |
 | Content schema or IndexedDB version from a newer build | this build | Refused, left untouched | `migrations.test.ts`; browser check (`future-version`) |
 | Backup v1 | clean or populated profile | All-or-nothing; identical records skipped; conflicts abort or keep existing | `backup.test.ts`; browser check restore |

@@ -174,6 +174,17 @@ try {
     } catch {
       rolledBack = !(await repo.getWaypoint("rollback-probe"));
     }
+    // Real IndexedDB auto-commits when a callback awaits something else; the
+    // memory backend emulates this, and both report it as "aborted".
+    let inactiveCode = null;
+    try {
+      await opened.backend.read(["meta"], async (tx) => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        return tx.get("meta", "schema");
+      });
+    } catch (error) {
+      inactiveCode = error.code ?? String(error);
+    }
     const backup = await s.createBackup(repo, { settings: null, appVersion: "check" });
     opened.backend.close();
     return {
@@ -182,6 +193,7 @@ try {
       migration: opened.migration,
       trashedId: trashed.id,
       rolledBack,
+      inactiveCode,
       backup,
     };
   });
@@ -190,6 +202,7 @@ try {
   assert.equal(first.migration.status, "migrated", JSON.stringify(first.migration));
   assert.deepEqual(first.migration.counts, { waypoints: 2, tracks: 1 });
   assert.equal(first.rolledBack, true);
+  assert.equal(first.inactiveCode, "aborted");
 
   // Session 2: reload the page and read everything back.
   await load();
@@ -207,12 +220,19 @@ try {
       trash: (await repo.listTrash()).map((e) => e.itemId),
       active: active && {
         fixCount: active.fixCount,
+        intact: active.intact,
         segments: active.segments.map((seg) => seg.length),
         firstAltitude: active.segments[0][1].altitude,
       },
     };
-    const track = await opened.checkpoints.finalizeSession("dddddddd-0000-4000-8000-000000000001");
-    result.finalized = { points: track.points.length, segmentStarts: track.segmentStarts };
+    const { track, lostFixes } = await opened.checkpoints.finalizeSession(
+      "dddddddd-0000-4000-8000-000000000001",
+    );
+    result.finalized = {
+      points: track.points.length,
+      segmentStarts: track.segmentStarts,
+      lostFixes,
+    };
     result.activeAfter = await opened.checkpoints.getActiveSession();
     opened.backend.close();
     return result;
@@ -226,8 +246,13 @@ try {
   assert.equal(second.firstNotes, "fixture ünïcode");
   assert.deepEqual(second.trackPoints, [2000]);
   assert.deepEqual(second.trash, ["aaaaaaaa-0000-4000-8000-000000000002"]);
-  assert.deepEqual(second.active, { fixCount: 602, segments: [600, 2], firstAltitude: null });
-  assert.deepEqual(second.finalized, { points: 602, segmentStarts: [600] });
+  assert.deepEqual(second.active, {
+    fixCount: 602,
+    intact: true,
+    segments: [600, 2],
+    firstAltitude: null,
+  });
+  assert.deepEqual(second.finalized, { points: 602, segmentStarts: [600], lostFixes: 0 });
   assert.equal(second.activeAfter, null);
 
   // Session 3: restore the backup into a fresh database; refuse a future-version database.

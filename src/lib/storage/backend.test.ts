@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { MemoryBackend, StorageError } from "./backend.ts";
 import { sha256Hex, sha256HexFallback } from "./digest.ts";
-import { toStorageError } from "./indexeddb.ts";
+import { openIndexedDbBackend, toStorageError } from "./indexeddb.ts";
 import { runMigrations } from "./migrations.ts";
 import { canonicalJson, isSafeId } from "./records.ts";
 import { ContentRepository } from "./repository.ts";
@@ -129,6 +129,45 @@ describe("quota errors", () => {
     });
     backend.faults = {};
     assert.equal((await new ContentRepository(backend).listWaypoints()).length, 0);
+  });
+});
+
+describe("transaction lifetime (IndexedDB auto-commit)", () => {
+  it("fails operations after the callback awaits something other than the transaction", async () => {
+    const backend = new MemoryBackend();
+    await assert.rejects(
+      backend.write(["meta"], async (tx) => {
+        await tx.put("meta", "a", 1);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        await tx.put("meta", "b", 2);
+      }),
+      (error: unknown) =>
+        error instanceof StorageError &&
+        error.code === "aborted" &&
+        /no longer active/.test(error.message),
+    );
+    assert.equal(await backend.read(["meta"], (tx) => tx.count("meta")), 0, "nothing committed");
+  });
+
+  it("allows long chains of the transaction's own operations", async () => {
+    const backend = new MemoryBackend();
+    await backend.write(["meta"], async (tx) => {
+      for (let i = 0; i < 2000; i += 1) await tx.put("meta", `k${i}`, i);
+    });
+    assert.equal(await backend.read(["meta"], (tx) => tx.count("meta")), 2000);
+  });
+});
+
+describe("IndexedDB open", () => {
+  it("closes a connection that succeeds after the open was reported blocked", async () => {
+    let closed = false;
+    const request: Record<string, any> = { result: { close: () => (closed = true) } };
+    const factory = { open: () => request } as unknown as IDBFactory;
+    const opening = openIndexedDbBackend({ factory });
+    request.onblocked();
+    await assert.rejects(opening, { code: "unavailable" });
+    request.onsuccess();
+    assert.equal(closed, true);
   });
 });
 

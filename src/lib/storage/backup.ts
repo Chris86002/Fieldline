@@ -10,6 +10,7 @@ import { StorageError } from "./backend.ts";
 import { sha256Hex } from "./digest.ts";
 import {
   canonicalJson,
+  nestsDeeperThan,
   LIMITS,
   sameRecord,
   trackProblems,
@@ -171,6 +172,18 @@ export async function parseBackup(
   text: string,
   limits: BackupLimits = BACKUP_LIMITS,
 ): Promise<ParseBackupResult> {
+  try {
+    return await parseBackupText(text, limits);
+  } catch {
+    // Validation should catch everything first; this keeps the result typed regardless.
+    return fail("damaged", DAMAGED);
+  }
+}
+
+/** Whole-file nesting limit: the format itself is about 8 levels deep. */
+const MAX_BACKUP_DEPTH = 32;
+
+async function parseBackupText(text: string, limits: BackupLimits): Promise<ParseBackupResult> {
   if (text.length > limits.bytes)
     return fail("too-large", "That file is too large to be a Fieldline backup.");
   let raw: unknown;
@@ -179,6 +192,7 @@ export async function parseBackup(
   } catch {
     return fail("damaged", DAMAGED);
   }
+  if (nestsDeeperThan(raw, MAX_BACKUP_DEPTH)) return fail("damaged", DAMAGED);
   if (!isObject(raw) || raw.format !== BACKUP_FORMAT)
     return fail("not-a-backup", "That file isn't a Fieldline backup.");
   const { version, contentSchema, integrity, content, counts, createdAt, app, settings } = raw;

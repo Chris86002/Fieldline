@@ -36,21 +36,27 @@ IndexedDB database `fieldline-content`, IndexedDB version 1. Object stores
 | `meta` | `schema`, `migration:v0-v1` | schema and migration records | bookkeeping |
 
 `REPLACEABLE_STORES` is empty in schema 1. Offline package caches (wave 2)
-will be added there; cache clearing (`clearReplaceableData()`) only ever
-touches that list, so it can never empty the trash or delete content.
+will be added there. Cache clearing (`clearReplaceableData(stores?)`) first
+calls `assertEvictable`, which throws (clearing nothing) if any requested
+store is personal or unlisted, or if any store is classified both personal
+and replaceable; it can never empty the trash or delete content.
 
 Transactions (`backend.read/write(stores, fn)`) are atomic across stores:
 all writes commit or none do. `write` resolves only after commit, with strict
 durability requested in IndexedDB. Inside a callback, await only that
-transaction's operations (IndexedDB auto-commits otherwise); hashing and
-other slow work happens before or after.
+transaction's operations (IndexedDB auto-commits otherwise, and the next
+request fails with `aborted`: "no longer active"); hashing and other slow
+work happens before or after.
 
 Failures are typed `StorageError`s, never reported as success:
 `quota`, `unavailable`, `aborted`, `future-version`, `not-ready`,
 `conflict`, `invalid`, `not-found`.
 
 `MemoryBackend` has the same semantics (serialized transactions, staged
-commits, structured clones) plus test hooks (`faults.onOp`,
+commits, structured clones, and a transaction that goes inactive once its
+callback awaits anything that crosses a macrotask boundary, so such a bug
+fails in `npm test` too; unlike IndexedDB, earlier writes are then rolled
+back rather than committed) plus test hooks (`faults.onOp`,
 `faults.beforeCommit`, `quotaBytes`). It is also the explicit non-durable
 fallback when IndexedDB can't be opened (`openContentStorage` returns
 `durable: false` and a warning).
@@ -78,25 +84,38 @@ it on every start; a current repository is a no-op (`already-complete`).
 1. Read `fieldline-v1` with `getItem` only. It is never written, renamed or
    removed: older builds and rollback depend on it.
 2. Validate: JSON envelope with `version` 0 (or absent) and array `waypoints`
-   / `tracks`; each record passes `records.ts` validation; ids unique. Any
-   failure stops with a status and writes nothing:
+   / `tracks`; a waypoint whose `kind` the map can't draw (unknown or
+   missing) is imported with `kind: "pin"` and listed in the result's
+   `normalized` and in `meta/migration:v0-v1` (`normalized`,
+   `normalizedCount`), never dropped; every record then passes `records.ts`
+   validation; ids unique. Any failure stops with a status and writes nothing:
    `corrupt-source`, `unsupported-source-version`, `invalid-source-records`
    (with up to 50 problems), `source-unavailable`.
 3. One transaction makes the `waypoints` and `tracks` stores an exact copy of
-   the source. Records are copied verbatim — fields older builds never wrote
-   (e.g. `goodWinds`, which the first builds didn't have) are not filled with defaults.
+   the source. Records are copied verbatim apart from the kind mapping —
+   optional fields older builds never wrote (e.g. `goodWinds`, which the first
+   builds didn't have) are not filled with defaults.
 4. Read back in a new transaction: counts, ids and every record (canonical
    JSON) must equal the source, else `verification-failed`.
 5. Only then a final transaction writes `meta/migration:v0-v1` (time, counts,
-   SHA-256 of the source string) and `meta/schema` `{ version: 1 }`.
+   SHA-256 of the source string, `contentDigest` = SHA-256 of the canonical
+   `{ waypoints, tracks }` as read, kind mappings) and `meta/schema`
+   `{ version: 1 }`.
 
 Guarantees: an interruption before step 5 leaves the repository unmarked and
 the next run starts again from the current `fieldline-v1` (which the app may
 have changed meanwhile; leftovers are replaced). A completed migration is
-never re-run, so later `fieldline-v1` changes are not re-imported. A
+never re-run, so later `fieldline-v1` changes are not re-imported; instead,
+each start compares the current `{ waypoints, tracks }` in `fieldline-v1`
+with `contentDigest` and, if they differ (or the copy became unreadable or was
+removed), returns `ok: true, status: "legacy-changed-after-migration"` with a
+message. Nothing is merged: the coordinator should surface it (an older build
+or the not-yet-rewired app saved marks there). Only content counts, so
+`lastView`/`activeHunt` changes don't trigger it. A
 repository from a newer build (`unsupported-database`) is left untouched.
-Two tabs racing are safe: the second sees the schema record and reports
-`already-complete`. No `fieldline-v1` (new profile) → empty repository,
+Two tabs racing are safe: the second sees the schema record (signalled by
+an internal sentinel, not a storage error code, so a real `ConstraintError`
+can't be mistaken for it) and reports `already-complete`. No `fieldline-v1` (new profile) → empty repository,
 `nothing-to-migrate`.
 
 New steps go at the end of `MIGRATIONS`; never edit a shipped step. Each
@@ -126,18 +145,29 @@ await rec.startSession({ id, name, startedAt? });   // one open session at a tim
 await rec.appendFixes(id, fixes);                  // Fix: lng, lat, t, accuracy, altitude|null, altitudeAccuracy|null, speed|null, heading|null
 await rec.markGap(id);                             // signal loss: next fixes start a new segment
 await rec.setPaused(id, true | false);             // pause also breaks the segment
-await rec.getActiveSession();                      // after restart: { session, segments, fixCount, damagedChunks } | null
-await rec.finalizeSession(id, { trackId?, name? }); // → StoredTrack with segmentStarts; session removed atomically
-await rec.discardSession(id);
+await rec.getActiveSession();                      // after restart: { session, segments, fixCount, intact, lostFixes, missingChunks, damagedChunks } | null
+await rec.finalizeSession(id, { trackId?, name?, acceptDamage? }); // → { track, lostFixes, missingChunks, damagedChunks }; session removed atomically
+await rec.discardSession(id);                      // not-found if no such session
 ```
 
-Each `appendFixes` commits its chunk(s) and the session counter together;
-when it resolves, those fixes survive a crash. Bounds: 250 fixes per chunk,
-2,000 per append, 172,800 per session (48 h at 1 Hz). Invalid fixes (NaN,
-out-of-range, `undefined` instead of `null`) are rejected, never stored as
-zeros. Damaged chunks are counted in `damagedChunks`, not silently dropped,
-and block finalizing. A quota failure rejects with `quota`: the recorder
-must tell the user, keep the unsaved fixes in memory and retry.
+Session ids are safe ids without `:` (the chunk-key delimiter), so one
+session's key range can't overlap another's. Each `appendFixes` tops up the
+last chunk of the current segment (up to the cap) and adds new chunks as
+needed, together with the session counters, in one transaction; when it
+resolves, those fixes survive a crash, and a failed append leaves the
+previous chunk contents intact. At 1 Hz that is one chunk per 250 fixes, not
+one per append. Bounds: 250 fixes per chunk, 2,000 per append, 172,800 per
+session (48 h at 1 Hz). Invalid fixes (NaN, out-of-range, `undefined` instead
+of `null`) are rejected, never stored as zeros.
+
+Loss is detected, never silent: the session records `nextSeq` and
+`fixCount`, and recovery checks chunks `0..nextSeq-1` and the fix total.
+`intact: false` comes with `missingChunks` (gone), `damagedChunks` (present
+but unreadable) and `lostFixes`. `finalizeSession` then refuses with
+`invalid` (a message stating what was lost) and changes nothing, unless the
+caller passes `acceptDamage: true` after the user agrees; the result always
+reports the loss. A quota failure rejects with `quota`: the recorder must tell
+the user, keep the unsaved fixes in memory and retry.
 
 ## Full backup format
 
@@ -166,12 +196,17 @@ write, in this order: size (150 MB), JSON, format, version (newer →
 `future-version`), content schema, structure and counts, record limits
 (50,000 waypoints, 10,000 tracks, 20,000 trash entries, 200,000 points per
 track, 5,000,000 points total), checksum (`checksum-mismatch`), every record
-with the shared validator (`invalid-records`: unsafe/path-like ids,
-out-of-range coordinates, wrong types, duplicate ids, trash entries whose key
-doesn't match their item), then settings through `importSettings`
+with the shared validator (`invalid-records`: unsafe/path-like ids, marker
+kinds the map can't draw, missing names, out-of-range coordinates, wrong
+types, unknown fields nested more than 16 levels, duplicate ids, trash
+entries whose key doesn't match their item), then settings through `importSettings`
 (`invalid-settings` for damaged or newer settings; individual bad values are
-reported in `rejectedSettings`). Text is stored as inert data; nothing in a
-backup is executed or rendered as HTML.
+reported in `rejectedSettings`). A file nested more than 32 levels is
+`damaged`, and any unexpected exception during parsing also returns
+`damaged`, so `parseBackup` never throws. The SHA-256 digest detects damage,
+not tampering (anyone can re-sign an edited file), which is why every record
+is validated as if hostile. Text is stored as inert data; nothing in a backup
+is executed or rendered as HTML.
 
 **Restore policy** (`restoreBackup(repo, parsed, { onConflict })`), one
 transaction, all or nothing:
@@ -192,15 +227,20 @@ the transaction).
 
 ## Verification
 
-- `npm test` — `src/lib/storage/*.test.ts` (56 tests): transactions,
-  rollback, quota, migration (identity, byte-identical source, no-op re-run,
-  interruption at both commits, corrupt/future/invalid sources, future
-  database), checkpoints (restart recovery, gaps, bounds, finalize/discard,
-  failure atomicity), trash, backup round-trip and rejection cases.
+- `npm test` — `src/lib/storage/*.test.ts` (70 tests): transactions,
+  rollback, inactive-transaction detection, quota, blocked-open cleanup,
+  migration (identity, byte-identical source, no-op re-run, interruption at
+  both commits, corrupt/future/invalid sources, kind mapping, legacy change
+  detection, conflict-vs-race, future database), checkpoints (restart
+  recovery, gaps, bounds, chunk top-up, missing/damaged chunk detection,
+  acceptDamage, finalize/discard, failure atomicity), trash and cache-clearing
+  guard, backup round-trip and rejection cases (re-signed bad kinds, deep
+  nesting).
 - `node scripts/storage-browser-check.mjs` — bundles the library, serves a
   harness on 127.0.0.1:3201 (`STORAGE_CHECK_PORT`), and in headless Chromium
-  runs migrate → write → reload → read back, a rollback probe, backup restore
-  into a fresh database and refusal of a future-version database.
+  runs migrate → write → reload → read back, a rollback probe, an
+  auto-commit probe (await a timer inside a transaction → `aborted`), backup
+  restore into a fresh database and refusal of a future-version database.
 
 ## Wiring it in (coordinator)
 
@@ -222,7 +262,9 @@ the transaction).
 5. Call `requestPersistentStorage()` once content exists and show the result
    in the storage/offline settings.
 6. CC-06: on start, `storage.checkpoints.getActiveSession()` → offer to
-   resume or finish the recovered recording.
+   resume or finish the recovered recording; if `intact` is false, say how
+   many points were lost before offering `finalizeSession(id, { acceptDamage: true })`.
+   Surface `migration.status === "legacy-changed-after-migration"` too.
 7. Settings → "Backup and restore": `createBackup` with the settings store
    state; restore = `readBackupFile` → `planRestore` → confirm →
    `restoreBackup` → apply `report.settings` via the settings store.

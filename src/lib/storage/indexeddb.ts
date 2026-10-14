@@ -22,6 +22,9 @@ import {
  * crash or power loss where the browser supports it.
  */
 export const IDB_NAME = "fieldline-content";
+
+const INACTIVE_MESSAGE =
+  "The transaction is no longer active. Inside a transaction, await only its own operations.";
 export const IDB_VERSION = 1;
 
 /** Ordered layout upgrades, indexed by the version they upgrade to. */
@@ -103,21 +106,29 @@ export async function openIndexedDbBackend(
     throw toStorageError(error, "Browser storage could not be opened.");
   }
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    // Once the caller has been told "blocked", a late success must not leave
+    // an open, unmanaged connection behind (it would block future upgrades).
+    let abandoned = false;
     openRequest.onupgradeneeded = (event) => {
       const upgradeDb = openRequest.result;
       for (let version = event.oldVersion + 1; version <= IDB_VERSION; version += 1)
         UPGRADES[version]?.(upgradeDb);
     };
-    openRequest.onsuccess = () => resolve(openRequest.result);
+    openRequest.onsuccess = () => {
+      if (abandoned) openRequest.result.close();
+      else resolve(openRequest.result);
+    };
     openRequest.onerror = () =>
       reject(toStorageError(openRequest.error, "Browser storage could not be opened."));
-    openRequest.onblocked = () =>
+    openRequest.onblocked = () => {
+      abandoned = true;
       reject(
         new StorageError(
           "unavailable",
           "Another Fieldline tab is using an older storage layout. Close other Fieldline tabs and reload.",
         ),
       );
+    };
   });
   return new IndexedDbBackend(db);
 }
@@ -182,6 +193,7 @@ export class IndexedDbBackend implements StorageBackend {
     try {
       result = await fn(wrap(tx, stores));
     } catch (error) {
+      const finishedEarly = settled;
       if (!settled) {
         try {
           tx.abort();
@@ -190,10 +202,18 @@ export class IndexedDbBackend implements StorageBackend {
         }
       }
       await done.catch(() => undefined);
+      const isDomError = typeof DOMException !== "undefined" && error instanceof DOMException;
+      // The transaction auto-committed because the callback awaited something
+      // else; Chromium reports the next request as InvalidStateError.
+      if (
+        isDomError &&
+        finishedEarly &&
+        (error.name === "InvalidStateError" || error.name === "TransactionInactiveError")
+      ) {
+        throw new StorageError("aborted", INACTIVE_MESSAGE, { cause: error });
+      }
       // Storage failures become typed errors; the caller's own errors pass through unchanged.
-      throw typeof DOMException !== "undefined" && error instanceof DOMException
-        ? toStorageError(error)
-        : error;
+      throw isDomError ? toStorageError(error) : error;
     }
     await done;
     return result;

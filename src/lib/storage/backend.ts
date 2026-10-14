@@ -27,6 +27,36 @@ export type StoreName = (typeof STORES)[number];
 export const PERSONAL_STORES: readonly StoreName[] = STORES;
 export const REPLACEABLE_STORES: readonly StoreName[] = [];
 
+/**
+ * Throws unless every store is replaceable and none is personal. Cache
+ * clearing calls this first, so a misclassified store can never be emptied
+ * by eviction logic.
+ */
+export function assertEvictable(
+  stores: readonly StoreName[],
+  lists: { personal: readonly StoreName[]; replaceable: readonly StoreName[] } = {
+    personal: PERSONAL_STORES,
+    replaceable: REPLACEABLE_STORES,
+  },
+): void {
+  const misclassified = lists.replaceable.filter((store) => lists.personal.includes(store));
+  if (misclassified.length) {
+    throw new StorageError(
+      "invalid",
+      `Stores marked both personal and replaceable: ${misclassified.join(", ")}. Nothing was cleared.`,
+    );
+  }
+  const unsafe = stores.filter(
+    (store) => lists.personal.includes(store) || !lists.replaceable.includes(store),
+  );
+  if (unsafe.length) {
+    throw new StorageError(
+      "invalid",
+      `Refusing to clear ${unsafe.join(", ")}: personal content is never cleared as a cache.`,
+    );
+  }
+}
+
 export type StorageErrorCode =
   /** The browser refused the write for lack of space. */
   | "quota"
@@ -106,7 +136,8 @@ export type MemoryBackendOptions = {
 /**
  * In-memory backend with the same transaction semantics as IndexedDB:
  * transactions are serialized, writes are staged and applied only on commit,
- * values are structured-cloned in and out. Data lives as long as the object,
+ * values are structured-cloned in and out, and a transaction goes inactive
+ * once its callback awaits anything but its own operations. Data lives as long as the object,
  * so tests simulate an app restart by opening a new repository over the same
  * backend.
  */
@@ -135,7 +166,7 @@ export class MemoryBackend implements StorageBackend {
   read<T>(stores: readonly StoreName[], fn: (tx: ReadTx) => Promise<T>): Promise<T> {
     return this.serialize(async () => {
       this.checkOpen();
-      return fn(this.readTx(this.data, stores));
+      return withActiveState((state) => fn(this.readTx(this.data, stores, state)));
     });
   }
 
@@ -144,8 +175,7 @@ export class MemoryBackend implements StorageBackend {
       this.checkOpen();
       const staged = new Map(this.data);
       for (const store of stores) staged.set(store, new Map(this.data.get(store)));
-      const tx = this.writeTx(staged, stores);
-      const result = await fn(tx);
+      const result = await withActiveState((state) => fn(this.writeTx(staged, stores, state)));
       this.faults.beforeCommit?.();
       if (this.quotaBytes !== undefined && this.sizeBytes(staged) > this.quotaBytes) {
         throw new StorageError("quota", "Storage is full. Nothing from this change was saved.");
@@ -173,7 +203,14 @@ export class MemoryBackend implements StorageBackend {
     data: Map<StoreName, Map<string, unknown>>,
     allowed: readonly StoreName[],
     store: StoreName,
+    state: TxState,
   ) {
+    if (!state.active) {
+      throw new StorageError(
+        "aborted",
+        "The transaction is no longer active. Inside a transaction, await only its own operations.",
+      );
+    }
     if (!allowed.includes(store))
       throw new StorageError("invalid", `Store "${store}" is not part of this transaction.`);
     const records = data.get(store);
@@ -184,40 +221,42 @@ export class MemoryBackend implements StorageBackend {
   private readTx(
     data: Map<StoreName, Map<string, unknown>>,
     allowed: readonly StoreName[],
+    state: TxState,
   ): ReadTx {
     const sortedKeys = (store: StoreName) =>
-      [...this.access(data, allowed, store).keys()].sort(compareKeys);
+      [...this.access(data, allowed, store, state).keys()].sort(compareKeys);
     return {
       get: async <T>(store: StoreName, key: string) => {
-        const records = this.access(data, allowed, store);
+        const records = this.access(data, allowed, store, state);
         return records.has(key) ? (structuredClone(records.get(key)) as T) : undefined;
       },
       getAll: async <T>(store: StoreName) => {
-        const records = this.access(data, allowed, store);
+        const records = this.access(data, allowed, store, state);
         return sortedKeys(store).map((key) => structuredClone(records.get(key)) as T);
       },
       getAllKeys: async (store: StoreName) => sortedKeys(store),
       getRange: async <T>(store: StoreName, prefix: string) => {
-        const records = this.access(data, allowed, store);
+        const records = this.access(data, allowed, store, state);
         return sortedKeys(store)
           .filter((key) => key.startsWith(prefix))
           .map((key) => structuredClone(records.get(key)) as T);
       },
-      count: async (store: StoreName) => this.access(data, allowed, store).size,
+      count: async (store: StoreName) => this.access(data, allowed, store, state).size,
     };
   }
 
   private writeTx(
     data: Map<StoreName, Map<string, unknown>>,
     allowed: readonly StoreName[],
+    state: TxState,
   ): WriteTx {
     const op = (type: MemoryOp["type"], store: StoreName, key?: string) => {
-      const records = this.access(data, allowed, store);
+      const records = this.access(data, allowed, store, state);
       this.faults.onOp?.({ type, store, key });
       return records;
     };
     return {
-      ...this.readTx(data, allowed),
+      ...this.readTx(data, allowed, state),
       put: async (store, key, value) => {
         if (typeof key !== "string" || !key)
           throw new StorageError("invalid", "Records need a key.");
@@ -234,6 +273,28 @@ export class MemoryBackend implements StorageBackend {
         op("clear", store).clear();
       },
     };
+  }
+}
+
+type TxState = { active: boolean };
+
+/**
+ * IndexedDB auto-commits a transaction once control returns to the event loop
+ * with no request pending. Memory operations resolve as microtasks, so a
+ * timer that fires means the callback awaited something else (a timer,
+ * network, `crypto.subtle`); later operations then fail with `aborted`, as
+ * they would in a browser.
+ */
+async function withActiveState<T>(fn: (state: TxState) => Promise<T>): Promise<T> {
+  const state: TxState = { active: true };
+  const timer = setTimeout(() => {
+    state.active = false;
+  }, 0);
+  try {
+    return await fn(state);
+  } finally {
+    clearTimeout(timer);
+    state.active = false;
   }
 }
 

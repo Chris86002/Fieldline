@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 import { MemoryBackend, StorageError } from "./backend.ts";
-import { CHECKPOINT_LIMITS, chunkKey, TrackCheckpointStore } from "./checkpoints.ts";
+import {
+  CHECKPOINT_LIMITS,
+  chunkKey,
+  isSafeSessionId,
+  TrackCheckpointStore,
+} from "./checkpoints.ts";
 import { runMigrations } from "./migrations.ts";
 import { trackProblems } from "./records.ts";
 import { ContentRepository } from "./repository.ts";
@@ -101,7 +106,12 @@ describe("track checkpoints", () => {
     await store.appendFixes(SESSION, fixes(0, 4));
     await store.markGap(SESSION);
     await store.appendFixes(SESSION, fixes(4, 3));
-    const track = await new TrackCheckpointStore(backend).finalizeSession(SESSION);
+    const result = await new TrackCheckpointStore(backend).finalizeSession(SESSION);
+    assert.deepEqual(
+      { lost: result.lostFixes, missing: result.missingChunks, damaged: result.damagedChunks },
+      { lost: 0, missing: 0, damaged: 0 },
+    );
+    const track = result.track;
     assert.equal(track.id, SESSION);
     assert.equal(track.name, "Evening sit");
     assert.equal(track.createdAt, 5000);
@@ -155,6 +165,91 @@ describe("track checkpoints", () => {
     await store.discardSession(SESSION);
     assert.equal(await new TrackCheckpointStore(backend).getActiveSession(), null);
     assert.equal(await backend.read(["chunks"], (tx) => tx.count("chunks")), 0);
+  });
+
+  it("detects a missing chunk, refuses to finalize, and keeps every remaining chunk", async () => {
+    const store = new TrackCheckpointStore(backend);
+    await store.startSession({ id: SESSION, name: "x" });
+    // Three chunks of two fixes each (gaps force new chunks).
+    await store.appendFixes(SESSION, fixes(0, 2));
+    await store.markGap(SESSION);
+    await store.appendFixes(SESSION, fixes(2, 2));
+    await store.markGap(SESSION);
+    await store.appendFixes(SESSION, fixes(4, 2));
+    await backend.write(["chunks"], (tx) => tx.delete("chunks", chunkKey(SESSION, 1)));
+
+    const recovered = await store.getActiveSession();
+    assert.ok(recovered);
+    assert.equal(recovered.intact, false);
+    assert.equal(recovered.fixCount, 4);
+    assert.equal(recovered.missingChunks, 1);
+    assert.equal(recovered.damagedChunks, 0);
+    assert.equal(recovered.lostFixes, 2);
+
+    await assert.rejects(store.finalizeSession(SESSION), (error: unknown) => {
+      assert.ok(error instanceof StorageError);
+      assert.equal(error.code, "invalid");
+      assert.match(error.message, /2 recorded points can.t be recovered/);
+      return true;
+    });
+    assert.equal(await backend.read(["chunks"], (tx) => tx.count("chunks")), 2, "nothing deleted");
+    assert.equal((await new ContentRepository(backend).listTracks()).length, 0);
+
+    const accepted = await store.finalizeSession(SESSION, { acceptDamage: true });
+    assert.equal(accepted.lostFixes, 2);
+    assert.equal(accepted.missingChunks, 1);
+    assert.equal(accepted.track.points.length, 4);
+    assert.deepEqual(accepted.track.segmentStarts, [2]);
+  });
+
+  it("detects lost fixes even when the chunk count looks right", async () => {
+    const store = new TrackCheckpointStore(backend);
+    await store.startSession({ id: SESSION, name: "x" });
+    await store.appendFixes(SESSION, fixes(0, 6));
+    await backend.write(["chunks"], async (tx) => {
+      const chunk = await tx.get<{ fixes: unknown[] }>("chunks", chunkKey(SESSION, 0));
+      await tx.put("chunks", chunkKey(SESSION, 0), { ...chunk, fixes: chunk?.fixes.slice(0, 3) });
+    });
+    const recovered = await store.getActiveSession();
+    assert.equal(recovered?.intact, false);
+    assert.equal(recovered?.lostFixes, 3);
+    await assert.rejects(store.finalizeSession(SESSION), { code: "invalid" });
+  });
+
+  it("tops up the last chunk instead of writing one chunk per append", async () => {
+    const store = new TrackCheckpointStore(backend);
+    await store.startSession({ id: SESSION, name: "x" });
+    for (let i = 0; i < 600; i += 1) await store.appendFixes(SESSION, [fixtureFix(i)]);
+    const sizes = await backend.read(["chunks"], async (tx) =>
+      (await tx.getAll<{ fixes: unknown[] }>("chunks")).map((chunk) => chunk.fixes.length),
+    );
+    assert.deepEqual(sizes, [250, 250, 100]);
+    const recovered = await store.getActiveSession();
+    assert.equal(recovered?.intact, true);
+    assert.deepEqual(recovered?.segments[0][599], fixtureFix(599));
+
+    // A failed top-up leaves the previous contents of the last chunk intact.
+    backend.faults.beforeCommit = () => {
+      throw new StorageError("quota", "full");
+    };
+    await assert.rejects(store.appendFixes(SESSION, [fixtureFix(600)]), { code: "quota" });
+    backend.faults = {};
+    assert.equal((await store.getActiveSession())?.fixCount, 600);
+  });
+
+  it("rejects session ids containing the chunk-key delimiter", async () => {
+    const store = new TrackCheckpointStore(backend);
+    await assert.rejects(store.startSession({ id: "abc:1", name: "x" }), { code: "invalid" });
+    assert.equal(isSafeSessionId("abc"), true);
+    assert.equal(isSafeSessionId("abc:00000001"), false);
+  });
+
+  it("discard checks readiness and that the session exists", async () => {
+    const store = new TrackCheckpointStore(backend);
+    await assert.rejects(store.discardSession(SESSION), { code: "not-found" });
+    await assert.rejects(new TrackCheckpointStore(new MemoryBackend()).discardSession(SESSION), {
+      code: "not-ready",
+    });
   });
 
   it("refuses to record before the repository is migrated", async () => {

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
-import { MemoryBackend, PERSONAL_STORES, REPLACEABLE_STORES, StorageError } from "./backend.ts";
+import {
+  assertEvictable,
+  MemoryBackend,
+  PERSONAL_STORES,
+  REPLACEABLE_STORES,
+  StorageError,
+} from "./backend.ts";
 import { runMigrations } from "./migrations.ts";
 import { ContentRepository } from "./repository.ts";
 import { fakeLocalStorage, FIXTURE_TRACKS, FIXTURE_WAYPOINTS } from "./test-fixtures.ts";
@@ -83,6 +89,35 @@ describe("trash", () => {
     assert.deepEqual(await repo.clearReplaceableData(), []);
     assert.equal((await repo.listTrash()).length, 1);
     assert.equal((await repo.counts()).waypoints, 1);
+  });
+
+  it("refuses to clear any personal or unlisted store as a cache", async () => {
+    await repo.deleteWaypoint(FIXTURE_WAYPOINTS[0].id, 1);
+    for (const store of ["trash", "waypoints", "sessions"] as const) {
+      await assert.rejects(repo.clearReplaceableData([store]), { code: "invalid" });
+    }
+    assert.equal((await repo.listTrash()).length, 1);
+    assert.equal((await repo.counts()).waypoints, 1);
+    // A store classified as both personal and replaceable is a bug: refuse everything.
+    assert.throws(
+      () => assertEvictable([], { personal: ["trash"], replaceable: ["trash"] }),
+      /both personal and replaceable/,
+    );
+    assert.throws(() => assertEvictable(["trash"], { personal: [], replaceable: [] }), {
+      code: "invalid",
+    });
+  });
+
+  it("repository writes reject waypoints the map can't draw", async () => {
+    const bad = { ...FIXTURE_WAYPOINTS[0], id: "new-1", kind: "<img src=x>" };
+    await assert.rejects(repo.putWaypoint(bad as never), { code: "invalid" });
+    await assert.rejects(repo.putMany({ waypoints: [FIXTURE_WAYPOINTS[0], bad as never] }), {
+      code: "invalid",
+    });
+    const noName: Record<string, unknown> = { ...FIXTURE_WAYPOINTS[0], id: "new-2" };
+    delete noName.name;
+    await assert.rejects(repo.putWaypoint(noName as never), { code: "invalid" });
+    assert.equal(await repo.getWaypoint("new-1"), undefined);
   });
 
   it("reports deleting something that's already gone", async () => {

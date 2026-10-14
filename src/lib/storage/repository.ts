@@ -1,5 +1,6 @@
 import type { Waypoint } from "@/lib/hunt/types";
 import {
+  assertEvictable,
   REPLACEABLE_STORES,
   StorageError,
   type ReadTx,
@@ -232,14 +233,17 @@ export class ContentRepository {
   /**
    * Clears replaceable data only (provider caches, once wave 2 adds stores for
    * them). Personal content, the trash and recording sessions are never in
-   * that list, so cache eviction can't delete them. Returns the stores cleared.
+   * that list, and `assertEvictable` refuses any personal or unlisted store
+   * before anything is cleared. Returns the stores cleared.
    */
-  async clearReplaceableData(): Promise<StoreName[]> {
-    const stores = [...REPLACEABLE_STORES];
+  async clearReplaceableData(
+    stores: readonly StoreName[] = REPLACEABLE_STORES,
+  ): Promise<StoreName[]> {
+    assertEvictable(stores);
     if (!stores.length) return [];
     await this.backend.write(stores, async (tx: WriteTx) => {
       for (const store of stores) await tx.clear(store);
     });
-    return stores;
+    return [...stores];
   }
 }

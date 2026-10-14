@@ -243,6 +243,44 @@ describe("backup validation", () => {
     await expectRejected(await resign(file), "damaged");
   });
 
+  it("rejects a re-signed backup with a marker kind the map can't draw", async () => {
+    for (const kind of ["<img src=x onerror=alert(1)>", "", undefined, 3]) {
+      const file = await sample();
+      file.content.waypoints[0].kind = kind;
+      await expectRejected(await resign(file), "invalid-records");
+    }
+    let file = await sample();
+    delete file.content.waypoints[0].name;
+    await expectRejected(await resign(file), "invalid-records");
+    file = await sample();
+    file.content.trash[0].item.kind = "bogus";
+    await expectRejected(await resign(file), "invalid-records");
+    file = await sample();
+    file.content.waypoints[0].goodWinds = ["north"];
+    await expectRejected(await resign(file), "invalid-records");
+  });
+
+  it("returns a typed result for absurdly nested data instead of throwing", async () => {
+    const deep = "[".repeat(200_000) + "]".repeat(200_000);
+    const file = await sample();
+    const text = JSON.stringify(file).replace(
+      `"createdAt":"${file.createdAt}"`,
+      `"createdAt":"${file.createdAt}","extra":${deep}`,
+    );
+    await expectRejected(text, "damaged");
+    // Moderately nested unknown fields inside a record are rejected too, even when re-signed.
+    let nested: unknown = 1;
+    for (let i = 0; i < 40; i += 1) nested = [nested];
+    const signed = await sample();
+    signed.content.waypoints[0].extra = nested;
+    await expectRejected(await resign(signed), "damaged");
+    const shallow = await sample();
+    let inner: unknown = 1;
+    for (let i = 0; i < 20; i += 1) inner = { a: inner };
+    shallow.content.waypoints[0].extra = inner;
+    await expectRejected(await resign(shallow), "invalid-records");
+  });
+
   it("writes nothing when validation fails", async () => {
     const target = await clean();
     const file = await sample();
