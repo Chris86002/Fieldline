@@ -2,12 +2,24 @@ name: Fieldline desktop installers
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "desktop/**"
+      - "scripts/desktop-*"
+      - "src/**"
+      - "public/**"
+      - "package*.json"
+      - "vite.config.ts"
+      - ".github/workflows/desktop.yml"
 
 permissions:
   contents: read
 
 jobs:
   package:
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -32,6 +44,7 @@ jobs:
     timeout-minutes: 30
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: "false"
+      DEBUG: "pw:browser"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -67,3 +80,32 @@ jobs:
           compression-level: 0
           if-no-files-found: error
           retention-days: 14
+
+      - name: Publish verified Windows download
+        if: matrix.platform == 'win' && github.ref == 'refs/heads/main'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ github.sha }}
+          RELEASE_TAG: desktop-${{ github.run_number }}-${{ github.run_attempt }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundles = @(Get-ChildItem -LiteralPath release/share -Filter 'Fieldline-*-win-x64.zip')
+          if ($bundles.Count -ne 1) { throw 'Expected exactly one verified Windows ZIP' }
+          $bundle = $bundles[0]
+          $hash = (Get-FileHash -LiteralPath $bundle.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          $checksum = Join-Path $bundle.DirectoryName 'SHA256SUMS.txt'
+          "$hash  $($bundle.Name)" | Set-Content -LiteralPath $checksum -Encoding utf8
+          $notes = Join-Path $env:RUNNER_TEMP 'fieldline-release-notes.txt'
+          @"
+          Download **$($bundle.Name)** below, extract it, and run **Install-Fieldline.exe**.
+          Windows 10/11, Intel/AMD 64-bit. No Node, npm, or developer tools required.
+          The installer is unsigned, so Windows may show an unknown-publisher warning.
+          Maps, search, and weather require internet. Saved data stays on this computer.
+          This build passed the packaged launch, import/export, security, and restart tests.
+          Source commit: $env:RELEASE_COMMIT
+          GitHub's automatic Source code ZIP is for developers; download the Fieldline ZIP above.
+          "@ | Set-Content -LiteralPath $notes -Encoding utf8
+          gh release create $env:RELEASE_TAG $bundle.FullName $checksum --target $env:RELEASE_COMMIT --title "Fieldline for Windows ($env:RELEASE_TAG)" --notes-file $notes --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, access } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, win32 } from "node:path";
 import { createServer } from "node:net";
 import { _electron as electron } from "playwright";
 import { ORIGIN, HOST, PORT, assertResources } from "../desktop/policy.mjs";
@@ -21,12 +21,24 @@ const profile = await mkdtemp(join(tmpdir(), "fieldline-desktop-smoke-"));
 const waypointName = "Desktop Restart Stand";
 let desktop;
 
+// Remove developer runtimes from PATH without removing Windows' shell.
+// Environment keys are case-insensitive on Windows; remove every PATH spelling.
+const smokeEnv = Object.fromEntries(
+  Object.entries(process.env).filter(([key]) =>
+    !["PATH", "ELECTRON_RUN_AS_NODE", "NODE_OPTIONS"].includes(key.toUpperCase())),
+);
+smokeEnv.PATH = process.platform === "win32"
+  ? win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows", "System32")
+  : "";
+smokeEnv.FIELDLINE_SMOKE_PROFILE = profile;
+
 async function launch() {
   const launched = await electron.launch({
     executablePath: executable,
     chromiumSandbox: true,
-    args: process.platform === "linux" ? ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"] : [],
-    env: { ...process.env, PATH: "", FIELDLINE_SMOKE_PROFILE: profile, ELECTRON_RUN_AS_NODE: "" },
+    // CI VMs on all platforms may lack hardware WebGL. Test-only flags.
+    args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader"],
+    env: smokeEnv,
     timeout: 45_000,
   });
   assert.equal(launched.process().spawnargs.includes("--no-sandbox"), false);
