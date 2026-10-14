@@ -1169,6 +1169,8 @@ export function HuntApp() {
         showPeaks={settings.showPeaks}
         showUnitLabels={settings.showUnitLabels}
         showBorder={settings.showBorder}
+        boundaryStrength={settings.boundaryStrength}
+        labelDensity={settings.labelDensity}
         terrain={settings.terrain}
         terrainExaggeration={settings.terrainExaggeration}
         distanceUnit={unitPrefs.distanceUnit}

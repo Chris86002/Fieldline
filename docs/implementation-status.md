@@ -37,8 +37,8 @@ blocked. Device certification is tracked separately from code completion.
 | CC-01 Phone feasibility | in progress | [phone-strategy.md](phone-strategy.md): options, proposed `LocationSource` / `TrackCheckpointStore` / `PackageStore` interfaces, 13-scenario device protocol, result template, capability matrix. No physical devices available; decision and certification pending (REL-02/03). Prototype not built yet. |
 | CC-02 Correctness and settings | verified (automated + manual browser); see deferred items | Slices below. Independent CC-12 review found 0 blockers, 2 major, 10 minor; both majors and 7 minors fixed with regression tests. |
 | CC-03 Nationwide catalog | verified (first slices); see CC-03 detail | AZ/ID mode removed; catalog contracts, three unit adapters (AZ, ID, MT), protected unit store, 51-entry coverage register, discovery, nationwide unit search, shell integration. Remaining slices listed below. |
-| CC-04 Map design | not started | MAP-01..06. Default public-land opacity change waits for the before/after gallery. |
-| CC-05 Storage and offline | not started | ADR-006 done: tile storage restricted to `OFFLINE_TEMPLATES`; USGS imagery base map added. |
+| CC-04 Map design | wave 1 verified (merged on `feature/cc04-cc05`) | MAP-01 named render groups (9 groups, stable ids, insert/remove order tests) + per-style tokens; MAP-02 cleanup: public-land default 0.62 → 0.25 for new profiles only (gallery trials: 0.15–0.2 lost agency distinction, 0.35+ washed out imagery), lighter casings on imagery, quieter highways, cased trails above local roads, relief ~half strength on imagery; unit labels use collision + priority instead of forced overlap; new settings Boundary strength and Label density. Gallery: `scripts/map-gallery.mjs` (96 before / 96 after shots kept locally in screenshots/gallery, not committed). Known trade-offs in docs/map-design.md (agency colors subtle at 0.25, less depth in gentle terrain, unit numbers can hide each other). Wave 2: MAP-03 signature styles + contours/land cover, MAP-04 comparison, MAP-06 recipes/inspection, text/marker size, clustering. |
+| CC-05 Storage and offline | wave 1 verified as a library (merged); not yet wired into the app | `src/lib/storage/`: IndexedDB + in-memory backends, v0→v1 migration copying fieldline-v1 content without modifying it (verified read-back, idempotent, refuses corrupt/newer), recording checkpoints with gap segments and damage reporting, trash, `fieldline-backup` v1 with integrity check and strict record validation. Independent review: 0 blockers, 2 major (silent loss of a missing checkpoint chunk; backup accepting an unknown mark kind that would crash rendering) + 9 minor — all fixed with regression tests and re-verified (237 tests; Chromium IndexedDB check: migrate → reload → read back, 602-fix recovery, restore, future-version refusal). Next: wire into the app shell (content store, recording, backup UI), then wave 2 offline package manifests/state machine. |
 | CC-06 Navigation | not started | Recording thresholds from settings are in place (CC-02). |
 | CC-07 Maintenance and reports | not started | REL-04 fields listed as "not tracked" in data-sources.md. |
 | CC-08 Weather platform | not started | Point-forecast nullability and provenance done in CC-02. |
@@ -159,8 +159,11 @@ coordinator confirmed the file was byte-identical to HEAD before merging.
 
 ## Next runnable work
 
-1. CC-04 map design (MAP-01 named render groups first) and CC-05 storage /
-   offline packages can now run in parallel with disjoint ownership.
+1. Wire CC-05 storage into the app (coordinator; HuntApp/store.ts): content
+   repository when migration succeeds, recording via checkpoints with
+   segment-aware drawing/GPX export, backup/restore UI, surface
+   `legacy-changed-after-migration`. Then CC-05 wave 2 and CC-04 wave 2 in
+   parallel.
 2. CC-01 PWA recording prototype behind the proposed `LocationSource`
    interface (isolated files).
 3. More CC-03 jurisdiction adapters (each is an independent worker task).
