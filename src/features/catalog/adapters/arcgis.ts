@@ -24,6 +24,7 @@ export const ARCGIS_ALLOWED_HOSTS: readonly string[] = [
   "gisportal-idfg.idaho.gov",
   "fwp-gis.mt.gov",
   "services5.arcgis.com",
+  "services.arcgis.com",
 ];
 export const DEFAULT_TIMEOUT_MS = 20_000;
 export const DEFAULT_MAX_PAGES = 25;
