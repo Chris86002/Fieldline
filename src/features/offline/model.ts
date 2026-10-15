@@ -12,22 +12,23 @@ export const MAX_PACKAGE_ZOOM = 15;
 export const MIN_PACKAGE_ZOOM = 4;
 
 /** Layers to preselect from what the map shows now. */
-export function defaultLayers(o: { basemap: Basemap; showPublic: boolean; terrain: boolean; showShade: boolean }): PackageLayerId[] {
+export function defaultLayers(o: { basemap: Basemap; showPublic: boolean; terrain: boolean; showShade: boolean; contours?: boolean }): PackageLayerId[] {
   const layers: PackageLayerId[] = [];
   if (o.basemap === "topo") layers.push("usgs-topo");
-  // Esri imagery (satellite, hybrid) can't be stored: USGS imagery stands in.
-  else if (o.basemap !== "street") layers.push("usgs-imagery");
+  // Esri imagery (satellite) can't be stored: USGS imagery stands in.
+  else if (o.basemap === "satellite" || o.basemap === "usgs") layers.push("usgs-imagery");
+  // Terrain and Field draw from the vector tiles and the terrain tiles: no raster base.
   if (o.showPublic) layers.push("blm-sma");
   layers.push("ofm-vector");
-  // Sun shade and 3D terrain both draw from the terrain tiles.
-  if (o.terrain || o.showShade) layers.push("dem");
+  // Sun shade, 3D terrain, contours and Terrain's elevation tint all draw from the terrain tiles.
+  if (o.terrain || o.showShade || o.contours || o.basemap === "terrain") layers.push("dem");
   return SELECTABLE_LAYERS.filter((id) => layers.includes(id));
 }
 
 /** Layers the map shows that can't be packaged, so the plan lists them with the reason. */
 export function unpackageableShown(o: { basemap: Basemap; showUnits: boolean }): string[] {
   const shown: string[] = [];
-  if (o.basemap === "satellite" || o.basemap === "hybrid") shown.push("esri-imagery");
+  if (o.basemap === "satellite") shown.push("esri-imagery");
   if (o.showUnits) shown.push("hunt-units");
   return shown;
 }

@@ -49,10 +49,14 @@ is real provider data.
 | 2026-10-14 | CC-03 integrated | same | test 167/167, typecheck, lint, build, desktop:test 15/15 pass; `npm run smoke` passed desktop + mobile (now mocks AZ/ID/MT ArcGIS layers and searches all three via the UI); live headless cross-border check passed |
 
 | 2026-10-14 | CC-04 + CC-05 wave 1 integrated (`feature/cc04-cc05`) | same | test 262/262, typecheck, lint, build, desktop:test 15/15, smoke desktop + mobile pass; `scripts/storage-browser-check.mjs` passes in Chromium; fresh-profile reload keeps the new public-land default (real browser) |
+| 2026-10-14 | CC-04 wave 2 MAP-03 (`cc04/map-wave2`) | same | test 352/352, typecheck, lint, build; smoke desktop + mobile pass; `offline-contours-check` and `offline-ui-check` pass against the production build (desktop:test not run: no desktop changes) |
 
 Other scripts: `node scripts/storage-browser-check.mjs` (real IndexedDB in
-Chromium) and `node scripts/map-gallery.mjs` (fixed-view screenshots with live
-tiles; manual visual comparison).
+Chromium), `node scripts/map-gallery.mjs` (fixed-view screenshots with live
+tiles; manual visual comparison), `node scripts/map-perf.mjs` (load and pan
+cost at a fixed view, live tiles; compare runs on one machine) and
+`node scripts/offline-contours-check.mjs` (contours drawn from a downloaded
+area with tile hosts blocked).
 
 Opt-in live provider test: `FIELDLINE_LIVE=1 node --experimental-strip-types --test src/features/catalog/adapters/mtfwp.live.test.ts`
 (a few real requests to Montana FWP; never run in CI).

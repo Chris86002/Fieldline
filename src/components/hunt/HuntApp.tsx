@@ -92,6 +92,9 @@ import { startOfflinePackages, useOffline } from "@/features/offline/controller"
 import { areaFeatures } from "@/features/offline/model";
 import { OfflineHere } from "@/features/offline/OfflineHere";
 import { OfflinePanel, type OfflineMapState } from "@/features/offline/OfflinePanel";
+import { contourIntervalText } from "@/features/map/contours";
+import { contoursShown } from "@/features/map/style-layers";
+import { mapStyleOf, styleFamily, type MapStyleId } from "@/features/map/tokens";
 import { formatUtm, localDate, localMinutes, sunPosition } from "@/lib/hunt/sun";
 import { noiseWord, rmsDb } from "@/lib/hunt/noise";
 
@@ -164,16 +167,28 @@ type InstallPrompt = Event & {
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
 
-const BASEMAPS: { id: Basemap; label: string }[] = [
-  { id: "hybrid", label: "Hybrid" },
-  { id: "satellite", label: "Satellite" },
-  { id: "usgs", label: "USGS" },
-  { id: "topo", label: "Topo" },
-  { id: "street", label: "Street" },
+/** The three map styles (MAP-03) and the base each one starts on. */
+const MAP_STYLES: { id: MapStyleId; label: string; base: Basemap }[] = [
+  { id: "terrain", label: "Terrain", base: "terrain" },
+  { id: "satellite", label: "Satellite", base: "satellite" },
+  { id: "field", label: "Field", base: "field" },
 ];
 
+/** Base choices inside a style; Field has one. */
+const STYLE_BASES: Record<MapStyleId, { id: Basemap; label: string; hint: string }[]> = {
+  terrain: [
+    { id: "terrain", label: "Fieldline", hint: "Land cover, contours and relief from downloadable map data." },
+    { id: "topo", label: "USGS topo", hint: "The USGS topo scan, with its own contours and names. Downloadable." },
+  ],
+  satellite: [
+    { id: "satellite", label: "Esri", hint: "Esri imagery: live only, never stored on this device." },
+    { id: "usgs", label: "USGS", hint: "USGS imagery: can be downloaded for offline use." },
+  ],
+  field: [],
+};
+
 /** Esri imagery base maps: viewable live, never stored on the device. */
-const LIVE_ONLY_BASEMAPS: Basemap[] = ["hybrid", "satellite"];
+const LIVE_ONLY_BASEMAPS: Basemap[] = ["satellite"];
 
 export function HuntApp() {
   const store = useHunt();
@@ -184,6 +199,10 @@ export function HuntApp() {
   const recovered = useContentSync((state) => state.recovered);
   const trash = useContentSync((state) => state.trash);
   const bind = <K extends SettingKey>(key: K) => (value: AppSettings[K]) => setSetting(key, value);
+  /** Contours for the current style: Satellite has its own switch (MAP-03). */
+  const showContours = contoursShown(settings);
+  const contourKey: SettingKey = styleFamily(settings.basemap) === "imagery" ? "showImageryContours" : "showContours";
+  const mapStyle = mapStyleOf(settings.basemap);
   const mapRef = useRef<MapHandle>(null);
   const initialViewRef = useRef<MapView>(DEFAULT_VIEW);
   const wakeRef = useRef<{ release: () => Promise<void> } | null>(null);
@@ -493,8 +512,8 @@ export function HuntApp() {
     [sheet, showOfflineAreas, offlinePackages, offlinePreview],
   );
   const offlineMap = useMemo<OfflineMapState>(
-    () => ({ basemap: settings.basemap, showPublic: settings.showPublic, showUnits: settings.showUnits, terrain: settings.terrain, showShade: settings.showShade }),
-    [settings.basemap, settings.showPublic, settings.showUnits, settings.terrain, settings.showShade],
+    () => ({ basemap: settings.basemap, showPublic: settings.showPublic, showUnits: settings.showUnits, terrain: settings.terrain, showShade: settings.showShade, contours: showContours }),
+    [settings.basemap, settings.showPublic, settings.showUnits, settings.terrain, settings.showShade, showContours],
   );
   const landHit = landNear?.status === "ready" ? landNear.hit : null;
   const landDown = landNear?.status === "error";
@@ -952,10 +971,10 @@ export function HuntApp() {
     // Esri imagery can't be stored, so imagery views save USGS imagery instead.
     const swapped = LIVE_ONLY_BASEMAPS.includes(settings.basemap);
     if (settings.basemap === "topo") templates.push(TILES.topo);
-    else if (settings.basemap !== "street") templates.push(TILES.imagery);
+    else if (settings.basemap === "satellite" || settings.basemap === "usgs") templates.push(TILES.imagery);
     if (settings.showPublic) templates.push(TILES.sma);
     if (templates.length === 0) {
-      setPackNote("Street roads and labels are streamed live. Switch to USGS imagery or Topo to save a base map.");
+      setPackNote("This browser can't download areas, and the Terrain and Field styles are streamed live here. Switch to USGS imagery or the USGS topo scan to save a base map.");
       return;
     }
     const swapNote = swapped ? " Esri imagery can't be stored, so USGS imagery was saved instead; switch the base map to USGS when you're offline." : "";
@@ -1300,6 +1319,10 @@ export function HuntApp() {
         showBorder={settings.showBorder}
         boundaryStrength={settings.boundaryStrength}
         labelDensity={settings.labelDensity}
+        showContours={showContours}
+        contourDetail={settings.contourDetail}
+        contourStrength={settings.contourStrength}
+        showLandCover={settings.showLandCover}
         terrain={settings.terrain}
         terrainExaggeration={settings.terrainExaggeration}
         distanceUnit={unitPrefs.distanceUnit}
@@ -1751,19 +1774,60 @@ export function HuntApp() {
               {PRESETS[activePreset].label} preset is on. Changing a layer it controls edits the preset; turn presets off in Settings.
             </p>
           ) : null}
-          <div className="grid grid-cols-5 gap-1 rounded-lg bg-bg p-2">
-            {BASEMAPS.map((item) => (
+          <div className="grid grid-cols-3 gap-1 rounded-lg bg-bg p-2" role="radiogroup" aria-label="Map style">
+            {MAP_STYLES.map((item) => (
               <button
                 key={item.id}
                 type="button"
-                data-on={settings.basemap === item.id}
-                onClick={() => setSetting("basemap", item.id)}
+                role="radio"
+                aria-checked={mapStyle === item.id}
+                data-on={mapStyle === item.id}
+                onClick={() => {
+                  if (mapStyle !== item.id) setSetting("basemap", item.base);
+                }}
                 className="h-10 rounded-md text-sm text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
               >
                 {item.label}
               </button>
             ))}
           </div>
+          {STYLE_BASES[mapStyle].length > 0 ? (
+            <div className="mt-1 grid grid-cols-2 gap-1 rounded-lg bg-bg p-2" role="radiogroup" aria-label={mapStyle === "satellite" ? "Imagery" : "Terrain base"}>
+              {STYLE_BASES[mapStyle].map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="radio"
+                  aria-checked={settings.basemap === item.id}
+                  data-on={settings.basemap === item.id}
+                  onClick={() => setSetting("basemap", item.id)}
+                  className="h-10 rounded-md text-sm text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <p className="pb-1 pt-1 text-sm text-subtle">
+            {STYLE_BASES[mapStyle].find((item) => item.id === settings.basemap)?.hint ??
+              "High contrast for a phone outdoors: fewer classes, bigger names, strong trails. Downloadable."}
+          </p>
+          {settings.basemap !== "topo" ? (
+            <Toggle
+              checked={settings[contourKey] as boolean}
+              onChange={(on) => setSetting(contourKey, on)}
+              label="Contours"
+              hint={`${contourIntervalText(view.zoom, unitPrefs.elevationUnit, settings.contourDetail)} Traced from the terrain elevation model; not a survey. Interval and strength in Settings.`}
+            />
+          ) : null}
+          {mapStyle !== "satellite" && settings.basemap !== "topo" ? (
+            <Toggle
+              checked={settings.showLandCover}
+              onChange={bind("showLandCover")}
+              label="Land cover"
+              hint="Forest, brush, grass, wetland, rock and ice where OpenStreetMap maps them. Unmapped ground stays plain; it isn't a vegetation survey."
+            />
+          ) : null}
           <Toggle checked={settings.showPublic} onChange={bind("showPublic")} label="Public land" hint="BLM surface-management agencies. Blank ground has no agency record; that doesn't make it private or public." />
           <Toggle
             checked={settings.showUnits}
@@ -1829,7 +1893,7 @@ export function HuntApp() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. Unit lines are state agency reference geometry, not legal descriptions. Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. Satellite and Hybrid use Esri imagery, which is live only; offline maps use USGS imagery instead. Hunt units, weather, and search need a connection.</p>
+          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. Unit lines are state agency reference geometry, not legal descriptions. Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. Esri satellite imagery is live only; offline, use USGS imagery or the Terrain and Field styles. Hunt units, weather, and search need a connection.</p>
           <button type="button" onClick={() => setSheet("offline")} className="mt-3 flex h-11 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-medium text-accent-fg">
             <Download className="size-4" /> Offline maps
           </button>

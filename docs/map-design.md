@@ -52,8 +52,8 @@ Toggling a layer or moving the opacity slider never rebuilds the style.
 
 ## Tokens
 
-Three families today: **imagery** (Hybrid, Satellite, USGS imagery), **topo**
-(USGS scan), **street**. Each defines land, water, vegetation, park,
+Wave 1 had three families: **imagery** (Hybrid, Satellite, USGS imagery), **topo**
+(USGS scan), **street** (MAP-03 replaced street with terrain and field; see below). Each defines land, water, vegetation, park,
 waterway, freeway/highway/minor roads (line, casing, opacities), trail, unit
 and state lines, label text/halo, unit-label text/halo, selected, warning,
 recorded/live routes, navigation colors and relief strength. `selected` and
@@ -133,7 +133,8 @@ node scripts/map-gallery.mjs
 Views: Four Peaks AZ (desert), Sawtooths ID (forested mountains), Penns Valley
 PA (eastern rural), Flagstaff AZ (town), Brooks Range AK, Mauna Kea HI; two
 zooms each; desktop 1280×800 and narrow 390×844; base maps from
-`FIELDLINE_GALLERY_BASEMAPS` (default hybrid,topo). Other variables:
+`FIELDLINE_GALLERY_BASEMAPS` (wave 1 default hybrid,topo; since MAP-03
+terrain,satellite,field,topo). Other variables:
 `FIELDLINE_GALLERY_VIEWS`, `FIELDLINE_GALLERY_VIEWPORTS`, `FIELDLINE_GALLERY_PREFS`
 (JSON merged into settings, e.g. `{"publicOpacity":0.2}`), `FIELDLINE_GALLERY_DIR`,
 `FIELDLINE_GALLERY_SETTLE_MS`. Each shot seeds one mark and one short track
@@ -169,12 +170,245 @@ Worse or unchanged:
 - A dark rectangular artifact near Sister Peak (Four Peaks z13.5) appears in
   both before and after; not caused by styling.
 
-## Not done in this wave
+## Not done in wave 1
 
-- MAP-03 signature styles (Terrain, Satellite, Field), vector contours,
-  supported land-cover classes, night/high-contrast.
+- MAP-03 signature styles, contours, land cover: done in wave 2 (below).
 - MAP-04 imagery comparison; MAP-06 recipes, clean mode, inspection
   highlights (the `inspection` group and `selected` token are ready for it).
-- Text size and marker size settings, relief strength / contour intensity
-  settings, marker clustering (rest of MAP-05).
+- Text size and marker size settings, relief strength setting, marker
+  clustering (rest of MAP-05).
 - An automated visual comparison; the gallery is manual.
+
+# Wave 2: MAP-03 three complete styles
+
+Packet CC-04 wave 2, slice MAP-03. Base: `feature/cc04-cc05` at `60b40ad`.
+
+## Styles and base maps
+
+Evidence from the code before this change: **Hybrid and Satellite drew
+exactly the same thing** (Esri imagery with every vector overlay; the only
+difference was the name, since before wave 1), and **Street** was a plain
+vector map (land color, water, wood, park) with the same overlays.
+
+| Style | Base (`basemap` value) | Draws | Offline |
+| --- | --- | --- | --- |
+| **Terrain** (default for new profiles) | `terrain` | natural-earth land color, restrained elevation tint (`terrain-tint`, MapLibre `color-relief` on the DEM), OSM land cover, water, sun-direction relief, contours with index labels, blue waterways, dark-red trails, muted public land | yes: OpenFreeMap + terrain (+ BLM SMA) |
+| | `topo` (reference) | the USGS topo scan, as before; no vector roads, names or contours over it (the scan has its own) | yes: USGS topo |
+| **Satellite** | `satellite` | Esri imagery and the wave-1 imagery overlays, unchanged; contours only if "Contours on satellite" is on (pale lines) | live only (ADR-006, plain HTTPS) |
+| | `usgs` | USGS imagery, same overlays | yes: USGS imagery |
+| **Field** | `field` | high contrast: pale land, fewer land-cover distinctions (no parks, no tint), white roads with gray edges, dark-red trails, black names 15 % larger, quiet contours, gentle relief; 2D-friendly (nothing in it needs 3D) | yes: OpenFreeMap + terrain |
+
+The Layers panel shows Terrain / Satellite / Field, then the base inside
+the style (Terrain: Fieldline or USGS topo; Satellite: Esri or USGS), a
+one-line note on the base, and Contours and Land cover switches. Settings
+lists all five as "Map style".
+
+**Saved settings** (`BASEMAP_ALIASES`, docs/data-migrations.md):
+`hybrid` → `satellite` (same picture), `street` → `terrain` (its successor;
+the look changes: land cover, contours, tint). Aliases apply everywhere a
+setting is parsed (saved prefs, Scouting preset edits, imports, the
+`fieldline-v1` migration) and are not reported as invalid. The Scouting
+preset now names `satellite`. The Field preset is unchanged (it does not
+switch to the Field style; a product decision, see open questions).
+
+**Defaults that don't surprise existing users:** saved profiles keep their
+base map; contours on imagery are a separate switch, off by default, so an
+imagery user sees nothing new; Terrain/Field contours and land cover default
+on (they are the style). New profiles start on Terrain (spec §17).
+
+## Tokens
+
+Families are now `terrain`, `imagery` (satellite, usgs), `topo` and `field`
+(`street` is gone). New per-family tokens: `landcover` (scrub, grass,
+wetland, rock, sand, ice, farmland, developed, opacity), `contour` (minor,
+index, opacities, label, halo), `textScale` (Field 1.15) and `tint` (Terrain
+only). Personal and navigation colors stay identical in every family
+(tested).
+
+## Layers added (stable ids)
+
+| Id | Group | Source |
+| --- | --- | --- |
+| `terrain-tint` | base (after the rasters) | `dem` (`color-relief`) |
+| `vx-landcover` | base | `ofm` / `landcover` (`grass` — `scrub`/`heath`/`fell` shown as brush —, `wetland`, `rock`, `sand`, `ice`, `farmland`) |
+| `vx-landuse` | base | `ofm` / `landuse` (residential, commercial, industrial, retail, railway, quarry) |
+| `contours` | relief (above `hillshade`, below public land) | `contours` |
+| `contour-labels` | labels, lowest priority | `contours`, index lines only |
+
+`vx-wood`, `vx-park` and `vx-water` keep their ids; base order is now land,
+rasters, tint, land cover, wood, built-up, parks, water (water over wetland
+and wood). `PRE_MAP01_IDS` in `style-layers.test.ts` lists the additions.
+
+`styleVisibility()` is the single visibility table: the style is built from
+it and MapCanvas applies the same table at runtime (it replaced the
+hand-written show/hide list). `styleLayout()` re-applies label sizes on a
+style switch (Field's larger names). Nothing rebuilds the style.
+
+## Contours
+
+- **Generator:** `maplibre-contour` 0.1.1 (BSD-3-Clause, onthegomap, no
+  dependencies, 10.2 kB gzip as the lazy `contour-source` chunk; pinned
+  exactly; 0.1.1 is from 2026-09-17, 0.1.0 from 2024-12). Read: its source
+  for `DemSource`, `LocalDemManager`, `HeightTile`; the only network call is
+  the default `fetch`, which Fieldline replaces.
+- **Fetching:** the library's worker mode fetches with plain `fetch` and
+  would bypass offline packages, so Fieldline runs the library's
+  `LocalDemManager` on the main thread with a `getTile` that calls the
+  `fltile://` handler (`loadTile`): package, then network. Contour tiles are
+  512-px vector tiles at the map zoom, each traced from DEM tile z/x/y plus
+  its eight neighbors (`DEM_ZOOM_OFFSET` 0), up to tile z15 (z14 DEM split).
+  Packages hold terrain from min(5, min − 1) to max + 1, so these are always
+  packaged. A neighbor that fails (edge of an area offline) leaves only that
+  tile edge blank; the tile itself fails only if its own DEM tile fails.
+- **Tried and dropped:** a vector source with `tileSize: 256` (to match the
+  hillshade's deeper zoom) makes MapLibre 6.13 silently never finish loading
+  the style (reproduced in isolation); a 2×2 mosaic of the deeper DEM tiles
+  gave stair-stepped lines on which labels could not sit.
+- **Smoothing:** each DEM tile is copied and smoothed (two passes of a
+  [1 2 1] kernel, `smoothElevation`, tested) before tracing. Without it
+  index labels barely placed (Four Peaks z13.5: 0–2 labels); with it and
+  `text-max-angle` 60°: Four Peaks z13.5 8 labels, Sawtooths z12.5 6, Penns
+  Valley z14 1 (gentle ground, few index lines). Relief, 3D terrain and
+  elevation readouts keep raw DEM values.
+- **Intervals** (`contours.ts`, map zoom → minor/index): feet 10 → 500/2500,
+  11 → 200/1000, 12 → 100/500, 13 → 40/200, 14+ → 20/100; meters 200/1000,
+  100/500, 50/250, 20/100, 10/50. "Contour interval" Wider/Standard/Closer
+  shifts the table one zoom. The unit is in the tile URL (multiplier 3.28084
+  for feet), so lines fall on whole feet or meters; changing unit or interval
+  swaps the source tiles (`setTiles`), not the style.
+- **Labels:** index lines only, number without unit as on printed topo maps
+  (a unit suffix placed fewer labels: Sawtooths 3 vs 4 before smoothing);
+  the Layers line states the unit ("40 ft lines, index every 200 ft at this
+  zoom"). Lowest label priority.
+- **Settings:** `showContours` (Terrain/Field, on), `showImageryContours`
+  (Satellite, off), `contourDetail`, `contourStrength` (0.3–1.6, multiplies
+  the style's contour opacity). The Layers switch binds to the key of the
+  current style.
+- **Offline:** verified with `scripts/offline-contours-check.mjs` (see
+  Checks). Contour tiles are made on the device and never stored.
+
+## Land cover
+
+Only OpenMapTiles classes already in OpenFreeMap tiles (no new provider), so
+offline packages cover it. Drawn on Terrain and Field only, never over
+imagery. Coverage is OpenStreetMap's and uneven: in the gallery Penns Valley
+PA has wood, farmland and wetland polygons; the Sawtooths have a glacier, a
+wetland and a park polygon in view; Four Peaks has three bare-rock polygons
+and no vegetation at all. Unmapped ground keeps the land color (no inferred
+classes), and the Layers hint says "where OpenStreetMap maps them". The OSM
+data date (OpenFreeMap build in the TileJSON) is not shown yet.
+
+## Performance
+
+`scripts/map-perf.mjs`, Sawtooths ID map zoom 12.5, 1280×800, headless
+Chromium with SwiftShader (software WebGL: absolute frame times are much
+worse than a real GPU), median of 3 fresh loads, live tiles, same machine and
+session. Before = baseline build (`68747c5`), after = this branch.
+
+| Entry | DEM req. | tile req. | last tile (ms) | load long tasks (ms, max) | pan frames > 50 ms | pan frame p95 (ms) | pan long tasks (ms, max) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| before hybrid | 36 | 118 | 1583 | 0 | 15 | 50 | 0 |
+| before street | 36 | 82 | 1646 | 0 | 15 | 50 | 0 |
+| before topo | 0 | 80 | 2426 | 0 | 0 | 16.8 | 0 |
+| after satellite | 36 | 118 | 1968 | 0 | 23 | 50.1 | 0 |
+| after terrain | 56 | 102 | 1920 | 59 (59) | 50 | 83.4 | 103 (53) |
+| after terrain, contours + land cover off | 36 | 82 | 1818 | 0 | 24 | 50.1 | 55 (55) |
+| after field | 56 | 102 | 1982 | 175 (72) | 34 | 66.7 | 161 (56) |
+| after topo | 0 | 80 | 2337 | 0 | 0 | 16.8 | 0 |
+| after satellite + contours | 56 | 138 | 2049 | 113 (63) | 40 | 66.7 | 152 (73) |
+
+Measured before the final Terrain relief and sidewalk opacity tweaks (paint
+values only; no layers or requests changed). Reading: contours cost 20 extra DEM requests at this view (the hillshade's
+tiles are one zoom deeper, so they don't overlap) and main-thread long tasks
+of 50–75 ms while tiles are traced, which shows up as more slow frames while
+panning into new ground (6 s window: ~50 vs ~24 frames over 50 ms on
+Terrain). Satellite with contours off and the topo scan are unchanged within
+noise. Terrain without contours and land cover is close to the old Street.
+Mitigations if this matters on phones: move tracing to a worker that asks
+the main thread for DEM bytes (keeps `fltile://`), or trace at a coarser
+DEM zoom on small screens. Not done here.
+
+## Gallery (MAP-03)
+
+Same six views, two zooms, desktop and narrow (`scripts/map-gallery.mjs`,
+which now takes `terrain,satellite,field,topo` by default and per-entry
+settings such as `satellite:showImageryContours=true`). Before:
+`screenshots/gallery/before-map03/` (baseline build, hybrid/topo/street, 72
+shots). After: `after-map03/` (terrain/satellite/field/topo, 96 shots, plus
+24 desktop shots of satellite with contours and terrain without land cover)
+and `after-map03-final/` (terrain and field after the relief and sidewalk
+tweaks below, 48 shots). Screenshots are gitignored. Every shot's only page
+error is the expected hydration #418 from the fixed clock.
+
+Better:
+- Terrain reads as a landscape without imagery: contours with index labels
+  (Sawtooths z13.5: 7000–8600 ft labels along the lines; Four Peaks; Penns
+  Valley ridges 1100–1200 ft), blue lakes and creeks, the elevation tint
+  separates the Penns Valley floor from the ridges, wood polygons in PA.
+  Old Street at the same views was a flat green-gray with heavy shadows and
+  no water fill at the Sawtooth lakes.
+- Field is the most legible on a phone: pale land, black names 15 % larger,
+  white roads with gray edges, dark-red trails, contours quiet but readable
+  (Four Peaks narrow, Sawtooths).
+- Satellite and the USGS topo scan look as before (contours off on imagery
+  by default; the topo scan gets no vector duplicates).
+- Contours over imagery (opt-in) are readable as pale lines; in steep
+  terrain (Sawtooths z13.5) they are dense enough to compete with the
+  imagery, so they stay off by default and have a strength slider.
+
+Worse or unresolved:
+- Terrain relief at Street's strength (1.0, shadow 0.75) made the PA ridges
+  and shaded Sawtooth and Brooks Range slopes nearly black and hid contours
+  in shadow; lowered to 0.85 / 0.55 for the final set (still the strongest
+  relief of the styles; the imagery family keeps 0.55 / 0.5).
+- Sidewalks in Flagstaff z15 (OpenMapTiles `path` subclasses) drew as a dense
+  dark-red dotted grid on the light styles; halved again (0.3 of the trail
+  opacity) on Terrain and Field.
+- Land cover is thin where OSM is thin: Four Peaks shows only bare rock, the
+  Sawtooths one glacier and one wetland; most of the West looks like the
+  plain land color plus tint. Honest, but less "atlas" than the spec's
+  picture until a nationwide land-cover source is chosen (needs a source
+  decision; NLCD would be a new provider).
+- Brooks Range (AK): BLM public-land tint at 0.25 is a strong yellow block
+  over the pale Terrain land; on imagery it was subtler. Public-land
+  strength per style is a possible follow-up.
+- Contour labels are sparse in very rugged or very gentle ground (curving or
+  few index lines), by design of collision and angle limits.
+- The phone attribution line wraps to three rows on Terrain because of the
+  number of sources (now de-duplicated: contours share the terrain credit).
+
+## Checks run (MAP-03)
+
+- `npm test` (352 pass; new: `contours.test.ts`, style-layer tests for the
+  styles, land cover, visibility table, label sizes and contour layers,
+  settings aliases/defaults/persistence, offline default layers),
+  `npm run typecheck`, `npm run lint`, `npm run build`.
+- `npm run smoke` against the production build: passed (desktop and mobile).
+- `node scripts/offline-contours-check.mjs`: passed. Terrain is the default
+  with Contours and Land cover on; the plan preselects public land,
+  OpenFreeMap and terrain (no raster base, nothing live-only); after the
+  download every tile host and `/api/dem` is blocked and the page reloaded:
+  no packaged tile reached the network, and turning contours off changed
+  5.3 % of the map's pixels. The only terrain requests that went out were the
+  16 neighbor tiles around the packaged 3×3 block (contour tile edges).
+- `node scripts/offline-ui-check.mjs` (updated for the style picker):
+  passed.
+- Real-browser probes (headless Chromium, production build): contour
+  features present with whole-foot `ele` values (6700, 6800 … with index
+  lines at multiples of 500 ft at z12.5) and the unit-dependent tile URL;
+  land-cover classes per view as listed above.
+
+## Known gaps and open questions
+
+- Night mode and high contrast beyond the Field style (spec: night preserves
+  categories) are not done.
+- Contour tracing is on the main thread (see Performance).
+- Land-cover provenance date is not shown; land cover is only as good as
+  OSM mapping in the area.
+- Field preset does not switch to the Field style; Field style does not turn
+  off 3D or relief by itself (the preset does). Product owner may want the
+  Field preset to select the Field style.
+- New profiles start on Terrain (spec). If the owner prefers imagery first,
+  change `DEFAULT_SETTINGS.basemap`; saved profiles are unaffected either way.
+- Contour lines from a 10–30 m DEM are approximate; fine intervals in flat
+  ground show model noise (the help text says so).

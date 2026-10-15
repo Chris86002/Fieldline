@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { Basemap, HuntRegion, MapView, MarkKind, Track, Waypoint } from "@/lib/hunt/types";
+import type { LegacyBasemap, HuntRegion, MapView, MarkKind, Track, Waypoint } from "@/lib/hunt/types";
 import { isValidPersistedHuntState } from "./persistence.ts";
 
 let canWriteStorage = false;
@@ -82,7 +82,7 @@ export function isLegacyContentFrozen() {
  * Nothing in the app reads or writes them anymore.
  */
 type LegacyPreferences = {
-  basemap: Basemap;
+  basemap: LegacyBasemap;
   showPublic: boolean;
   publicOpacity: number;
   showLabels: boolean;
