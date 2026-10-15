@@ -26,6 +26,7 @@ export const ARCGIS_ALLOWED_HOSTS: readonly string[] = [
   "services5.arcgis.com",
   "services.arcgis.com",
   "services2.arcgis.com",
+  "services6.arcgis.com",
 ];
 export const DEFAULT_TIMEOUT_MS = 20_000;
 export const DEFAULT_MAX_PAGES = 25;
