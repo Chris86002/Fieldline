@@ -74,7 +74,7 @@ describe("layer statuses", () => {
     assert.equal(layerStatus("us-mt", "hunt-units").status, "available");
     assert.match(layerStatus("us-mt", "hunt-units").note, /deer, elk and mountain lion .* only; .*other species .* not included/);
     for (const j of JURISDICTIONS) {
-      if (j.id === "us-az" || j.id === "us-co" || j.id === "us-id" || j.id === "us-mt" || j.id === "us-ut") continue;
+      if (["us-az", "us-co", "us-id", "us-mt", "us-nm", "us-ut", "us-wy"].includes(j.id)) continue;
       assert.equal(layerStatus(j.id, "hunt-units").status, "unavailable", j.id);
       assert.deepEqual(layerStatus(j.id, "hunt-units").providerIds, [], j.id);
     }

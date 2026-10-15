@@ -2,7 +2,8 @@
 
 Fieldline is a hunting map for trip planning and field use across all 50
 states and DC. It includes state hunt-unit references where available (Arizona,
-Idaho, and Montana so far; see [coverage](docs/coverage.md)), public-land
+Colorado, Idaho, Montana, New Mexico, Utah and Wyoming so far, some for one
+species only; see [coverage](docs/coverage.md)), public-land
 overlays, map layers, place/unit search,
 weather and shooting-light context, saved waypoints, GPS tracks, measuring,
 GPX/KML/GeoJSON/CSV import, GPX export, and home-screen installation.

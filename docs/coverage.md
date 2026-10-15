@@ -15,7 +15,7 @@ Checked 2026-10-13. Territories are not listed yet.
 ## The layers
 
 - **Land management** (`blm-sma`): the BLM Surface Management Agency map. It shows which agency manages the surface. It is not parcel ownership and not permission to hunt or enter.
-- **Hunt units**: Arizona (`azgfd-gmu`, Arizona Game and Fish), Idaho (`idfg-gmu`, Idaho Fish and Game), Montana (`mtfwp-deer-elk-lion`, Montana Fish, Wildlife & Parks), Colorado (`cpw-gmu`, Colorado Parks and Wildlife) and Utah (`udwr-deer-general`, Utah Division of Wildlife Resources) only. Montana covers the deer, elk and mountain lion hunting districts only; Montana's districts for other species (antelope, moose, sheep, goat, bear, birds) are not included. Colorado covers the big-game GMUs only; its bighorn sheep and mountain goat units are not included. Utah covers the general-season buck deer units only; Utah's elk, limited-entry, once-in-a-lifetime, pronghorn and antlerless boundaries are not included, and limited-entry-only areas (e.g. Paunsaugunt, Henry Mtns) show no unit. Unit lines are for reference, not the legal description; check current regulations and district descriptions. Everywhere else, use the state wildlife agency's maps.
+- **Hunt units**: Arizona (`azgfd-gmu`, Arizona Game and Fish), Idaho (`idfg-gmu`, Idaho Fish and Game), Montana (`mtfwp-deer-elk-lion`, Montana Fish, Wildlife & Parks), Colorado (`cpw-gmu`, Colorado Parks and Wildlife), Utah (`udwr-deer-general`, Utah Division of Wildlife Resources), New Mexico (`nmdgf-gmu`, New Mexico Department of Wildlife) and Wyoming (`wgfd-elk-areas`, Wyoming Game and Fish Department) only. Montana covers the deer, elk and mountain lion hunting districts only; Montana's districts for other species (antelope, moose, sheep, goat, bear, birds) are not included. Colorado covers the big-game GMUs only; its bighorn sheep and mountain goat units are not included. Utah covers the general-season buck deer units only; Utah's elk, limited-entry, once-in-a-lifetime, pronghorn and antlerless boundaries are not included, and limited-entry-only areas (e.g. Paunsaugunt, Henry Mtns) show no unit. New Mexico covers the big-game GMUs, including lettered sub-units (e.g. 16D); its elk management zones and other special hunt areas are not included. Wyoming covers the elk hunt areas only (drawn for 1:100,000-scale maps); its deer, pronghorn, moose, bighorn sheep, mountain goat, bison and other hunt areas are not included. Unit lines are for reference, not the legal description; check current regulations and district descriptions. Everywhere else, use the state wildlife agency's maps.
 - **Parcels**: no parcel or owner source anywhere yet.
 - **Access**: no access, closure or road-status source anywhere yet. Check with the land manager.
 - **Legal hours**: Fieldline doesn't hold verified legal shooting-hour rules anywhere. Sunrise and sunset are astronomy only; check the agency for legal hours.
@@ -59,7 +59,7 @@ Each link returned HTTP 200 after redirects on 2026-10-13 and is the agency's ow
 | Nevada (NV) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Nevada Department of Wildlife](https://www.ndow.org/) |
 | New Hampshire (NH) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [New Hampshire Fish and Game Department](https://www.wildlife.nh.gov/) |
 | New Jersey (NJ) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [New Jersey Division of Fish and Wildlife](https://dep.nj.gov/njfw/) |
-| New Mexico (NM) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [New Mexico Department of Wildlife](https://wildlife.dgf.nm.gov/) |
+| New Mexico (NM) | available (blm-sma) | available (nmdgf-gmu) | unavailable | unavailable | unavailable | [New Mexico Department of Wildlife](https://wildlife.dgf.nm.gov/) |
 | New York (NY) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [New York State Department of Environmental Conservation](https://dec.ny.gov/) |
 | North Carolina (NC) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [North Carolina Wildlife Resources Commission](https://www.ncwildlife.gov/) |
 | North Dakota (ND) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [North Dakota Game and Fish Department](https://gf.nd.gov/) |
@@ -78,7 +78,7 @@ Each link returned HTTP 200 after redirects on 2026-10-13 and is the agency's ow
 | Washington (WA) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Washington Department of Fish and Wildlife](https://wdfw.wa.gov/) |
 | West Virginia (WV) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [West Virginia Division of Natural Resources](https://wvdnr.gov/) |
 | Wisconsin (WI) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Wisconsin Department of Natural Resources](https://dnr.wisconsin.gov/) |
-| Wyoming (WY) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Wyoming Game and Fish Department](https://wgfd.wyo.gov/) |
+| Wyoming (WY) | available (blm-sma) | available (wgfd-elk-areas; elk hunt areas only) | unavailable | unavailable | unavailable | [Wyoming Game and Fish Department](https://wgfd.wyo.gov/) |
 
 ## Discovery boxes
 
