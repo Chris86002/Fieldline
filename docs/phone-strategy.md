@@ -1,11 +1,14 @@
 # Phone strategy (REL-02) and field test protocol (REL-03)
 
-**Status: decision open; no device evidence yet.** This document frames the
-decision, lists what must be measured, and gives the test protocol and result
-template. Nothing here is a claim that any phone behavior works. Platform
-statements marked *verify* come from general platform knowledge and must be
-checked against current Apple/Google/browser documentation before the
-decision is made.
+**Status: decision open; field-test tool built (CC-01), no device evidence
+yet.** This document frames the decision, lists what must be measured, and
+gives the test protocol and result template. Nothing here is a claim that any
+phone behavior works. Platform statements marked *verify* come from general
+platform knowledge and must be checked against current Apple/Google/browser
+documentation before the decision is made.
+
+**Run the tests with:** the [owner checklist](field-test-checklist.md) and the
+[field-test tool](#field-test-tool-cc-01).
 
 ## What the field experience needs
 
@@ -47,6 +50,82 @@ either choice can plug in:
   active session after restart, finalize or discard it.
 - `PackageStore`: write/read package assets with byte budgets and integrity
   checks (CC-05).
+
+## Field-test tool (CC-01)
+
+A recording prototype that measures, on a real phone, what browser GPS
+recording delivers. It does not change the app's own recording (rewiring
+`HuntApp` onto `LocationSource` is CC-06).
+
+- **`LocationSource`** (`src/features/location/types.ts`) and its browser
+  implementation (`browser.ts`): `watchPosition` fixes with timestamp,
+  horizontal accuracy, nullable altitude / vertical accuracy / speed /
+  heading (marked as GPS course), receive time; permission and typed errors
+  (ADR-009: only a denial ends it); lifecycle signals the browser gives
+  (visibilitychange, pagehide/pageshow, freeze/resume where supported,
+  online/offline, wake lock acquired/released/error). Pure helpers in
+  `analysis.ts` (gaps from fix times, interval and accuracy statistics,
+  hidden/frozen/offline periods). A native shell would add a second
+  implementation of the same interface.
+- **Field-test screen** (`src/features/field-test/`): at `/field-test` in the
+  app (also linked at the bottom of Settings) and as a standalone static page
+  (`npm run field-test:build` → `dist/field-test/`). The owner picks the
+  scenario number (1–13 below), optionally keeps the screen on, and starts.
+  Every delivered fix is kept (no accuracy or distance filter) and written
+  through the real `TrackCheckpointStore`, so kills and reloads test the app's
+  recovery, but into a **separate IndexedDB database, `fieldline-field-test`**:
+  test runs never mix with saved tracks or appear as the app's interrupted
+  recording. Live counters: fixes saved/received, last-fix age, accuracy,
+  largest gap, hidden/shown count, wake-lock state, permission, network.
+  A heartbeat logs when page code stopped running ("timers-paused") and saves
+  a last-alive record every 15 s and on hide, so a kill shows up on reopening
+  as an interruption with the fixes saved before it.
+- **Report** (on stop, or after an interrupted run is reopened): gaps over
+  15 s with time and distance and how much of each fell while the page was
+  hidden / not running / offline / frozen; fix-interval and accuracy
+  statistics; hidden, frozen, offline and paused periods with the fixes
+  received in each; interruptions; error counts; battery start/end where the
+  Battery Status API exists (not in Safari or any iPhone browser: the owner
+  notes battery % by hand); device and browser from the user agent (plus model
+  from Client Hints on Chromium); build version and commit; the full event
+  log. Exports: JSON report (coordinates only when the owner ticks the box),
+  GPX (split at gaps), through download or the share sheet where
+  `navigator.share` accepts files; a "Copy result template" button fills the
+  template below.
+- **Verified so far:** unit tests, and `npm run field-test:check` (headless
+  Chromium with emulated geolocation, a hidden period, a reload mid-run,
+  continue, report, downloads, offline reopen) for both the app route and the
+  static page. Desktop Chromium is not a phone: these checks prove the tool,
+  not phone behavior.
+
+### Getting the tool onto the phones
+
+Geolocation needs a secure context, so `http://<LAN IP>:8080` does not work on
+a phone. Findings (2026-10-14):
+
+- The repository is public on GitHub (`Chris86002/Fieldline`); GitHub Pages is
+  not enabled and nothing is hosted. The release workflow builds desktop
+  installers only. The app's server functions (weather, search) and
+  `/api/dem` need a Node server, so a static host can't serve the whole app.
+- The field test needs only the browser (location, IndexedDB, service
+  worker), so it also builds as a static page.
+- **Recommended: GitHub Pages** via `.github/workflows/field-test-pages.yml`
+  (manual run). Free, stable HTTPS address
+  (`https://chris86002.github.io/Fieldline/`), no computer left running, no
+  install, and the same origin every visit so runs persist and the page
+  reopens offline. Owner steps (needs their GitHub sign-in): enable Pages with
+  source "GitHub Actions", then run the workflow from `main` (the
+  `github-pages` environment normally only deploys the default branch,
+  *verify*). The page is public but holds no data.
+- Alternatives, each needing a download or account (owner's call): a quick
+  tunnel such as Cloudflare's `cloudflared tunnel --url` (no account per
+  Cloudflare's docs, *verify*; serves the whole app; computer must stay on;
+  new address and so new storage each time); Chrome USB port forwarding
+  (Pixel only; `localhost` counts as secure); a self-signed LAN certificate
+  (certificate tool needed; iPhone must install the profile and enable full
+  trust under Certificate Trust Settings; Android must install a user CA;
+  home Wi-Fi only). Hosted platforms (Netlify, Vercel, Cloudflare Pages) need
+  accounts.
 
 ## Target devices (owner, 2026-10-14)
 
@@ -93,7 +172,8 @@ promises from these runs.
 ## Result template
 
 Copy into [field-test-results.md](field-test-results.md) (created with the
-first run) for each run:
+first run) for each run. The field-test tool's **Copy result template** fills
+the measured lines; tester, battery saver and the result stay manual:
 
 ```text
 Run ID:
@@ -119,6 +199,9 @@ Result: pass / fail / limited
 
 | Platform | Foreground recording | Locked-screen recording | Kill/restart recovery | Offline maps | Status |
 | --- | --- | --- | --- | --- | --- |
-| Desktop (Electron, Windows) | Depends on OS location | n/a | Not implemented (CC-06) | Partial tile cache only | Unverified |
-| Google Pixel, Chrome / PWA | Expected | Not expected | Not implemented | Partial | Pending device tests |
-| iPhone 13+, Safari / home-screen app | Expected | Not expected | Not implemented | Partial | Pending device tests |
+| Desktop (Electron, Windows) | Depends on OS location | n/a | Checkpoints implemented; verified in desktop Chromium only | Offline map packages | Unverified in Electron |
+| Google Pixel, Chrome / PWA | Expected | Not expected | Checkpoints implemented; unverified on device | Offline map packages; eviction unverified | Field-test tool ready; device results pending |
+| iPhone 13+, Safari / home-screen app | Expected | Not expected | Checkpoints implemented; unverified on device | Offline map packages; eviction unverified | Field-test tool ready; device results pending |
+
+"Expected" and "Not expected" are platform assumptions, not measurements;
+each cell changes only with a field-test report.

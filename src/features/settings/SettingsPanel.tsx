@@ -225,6 +225,15 @@ export function SettingsPanel({ currentView, onNotice }: { currentView: MapView;
         </section>
       ) : null}
       {!needle ? <BackupSection onNotice={onNotice} /> : null}
+      {!needle ? (
+        <p className="mt-4 text-sm text-muted">
+          Testing on a phone?{" "}
+          <a href="/field-test" className="underline">
+            Phone field test
+          </a>{" "}
+          measures GPS recording on this device, separately from your saved tracks.
+        </p>
+      ) : null}
     </div>
   );
 }
