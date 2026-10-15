@@ -3,8 +3,9 @@ import type { UnitAdapter } from "../types.ts";
 import { azgfdUnitAdapter } from "./azgfd.ts";
 import { idfgUnitAdapter } from "./idfg.ts";
 import { mtfwpUnitAdapter } from "./mtfwp.ts";
+import { udwrUnitAdapter } from "./udwr.ts";
 
-export const UNIT_ADAPTERS: UnitAdapter[] = [azgfdUnitAdapter, idfgUnitAdapter, mtfwpUnitAdapter];
+export const UNIT_ADAPTERS: UnitAdapter[] = [azgfdUnitAdapter, idfgUnitAdapter, mtfwpUnitAdapter, udwrUnitAdapter];
 
 export function unitAdapterById(providerId: string): UnitAdapter | null {
   return UNIT_ADAPTERS.find((adapter) => adapter.info.id === providerId) ?? null;
