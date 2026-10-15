@@ -1,6 +1,6 @@
 import {
   glyphUrls,
-  mapZoomOffset,
+  mapZoomTileRange,
   PACKAGE_LAYERS,
   PACKAGE_LIMITS,
   PROVIDER_LIMITS,
@@ -37,8 +37,9 @@ export type PlanRequest = {
   /**
    * What `minZoom`/`maxZoom` mean. "tile" (default): tile zooms, the same for
    * every layer. "map": MapLibre map zooms; each layer gets the tile zooms
-   * the map requests for them (`mapZoomOffset`: 256-pixel raster and terrain
-   * tiles are one zoom deeper than the map, 512-pixel vector tiles are not).
+   * the map requests for them (`mapZoomTileRange`: 256-pixel rasters one
+   * zoom deeper than the map, 512-pixel vector tiles the same, terrain both
+   * ways plus the ancestors 3D terrain asks for).
    */
   zoomBasis?: "tile" | "map";
 };
@@ -232,9 +233,9 @@ export function planPackage(request: PlanRequest): PackagePlan {
         });
         continue;
       }
-      const offset = request.zoomBasis === "map" ? mapZoomOffset(layerId) : 0;
-      const lo = Math.min(minZoom + offset, def.maxZoom);
-      const hi = Math.min(maxZoom + offset, def.maxZoom);
+      const span = request.zoomBasis === "map" ? mapZoomTileRange(layerId, minZoom, maxZoom) : { lo: minZoom, hi: maxZoom };
+      const lo = Math.min(span.lo, def.maxZoom);
+      const hi = Math.min(span.hi, def.maxZoom);
       const ranges: TileRange[] = [];
       for (let z = lo; z <= hi; z += 1) ranges.push(...tileRanges(bounds, z));
       const tileCount = ranges.reduce((sum, range) => sum + rangeCount(range), 0);

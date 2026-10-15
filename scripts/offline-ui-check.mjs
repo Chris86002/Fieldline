@@ -6,7 +6,8 @@
  *   npm run build && npm start          # serves http://127.0.0.1:3000
  *   node scripts/offline-ui-check.mjs   # env FIELDLINE_URL, FIELDLINE_SCREENSHOTS_DIR
  *
- * Plans a small Flagstaff area at map zoom 12 (USGS base map), downloads it
+ * Plans a small Flagstaff area at map zoom 12 (USGS base map, 3D terrain and
+ * sun shade on), downloads it
  * with a pause and resume, then blocks every tile host and reloads: every
  * map tile must come from the package (only OpenFreeMap's TileJSON, asked
  * online first by design, may reach the network). Zooms two levels past the
@@ -50,9 +51,13 @@ try {
   await page.locator(".maplibregl-canvas").waitFor({ state: "attached", timeout: 30000 });
   await page.waitForTimeout(2500);
 
-  // USGS base map, so nothing on screen is live-only.
+  // USGS base map, so nothing on screen is live-only; 3D terrain on, which
+  // asks for terrain tiles differently from hillshade (docs/storage.md).
   await visible("Layers").click();
   await page.getByRole("button", { name: "USGS", exact: true }).click();
+  const terrain = page.getByRole("switch", { name: "3D terrain" });
+  if ((await terrain.getAttribute("aria-checked")) !== "true") await terrain.click();
+  await page.waitForTimeout(1500);
   await page.getByRole("button", { name: "Offline maps" }).click();
   const dialog = page.getByRole("dialog", { name: "Offline maps" });
   await dialog.getByRole("heading", { name: "Download an area" }).waitFor();
@@ -73,16 +78,50 @@ try {
   assert.equal(await dialog.locator("li").first().getByText("Ready offline", { exact: true }).count(), 1);
   await page.screenshot({ path: join(shots, "offline-2-ready.png") });
 
-  // Every tile host unreachable; reload at the same view.
-  const blocked = {};
+  // The package's tile ranges per layer, from its record in IndexedDB.
+  const ranges = await page.evaluate(
+    () =>
+      new Promise((done, fail) => {
+        const open = indexedDB.open("fieldline-content");
+        open.onerror = () => fail(open.error);
+        open.onsuccess = () => {
+          const request = open.result.transaction("packages").objectStore("packages").getAll();
+          request.onsuccess = () => {
+            const out = {};
+            for (const record of request.result) for (const layer of record.active.layers) (out[layer.layerId] ??= []).push(...layer.ranges);
+            open.result.close();
+            done(out);
+          };
+        };
+      }),
+  );
+  const inPackage = (layerId, z, x, y) => (ranges[layerId] ?? []).some((r) => r.z === z && x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1);
+
+  // Every tile host unreachable; reload at the same view. Any tile the package
+  // holds must come from it. With 3D terrain on the map is tilted, and a tilted
+  // view also draws other zooms toward the horizon and edges outside the
+  // flat-view rectangle; those are expected misses, listed, not failures.
+  const missed = [];
+  const outside = [];
+  let tileJson = 0;
   await context.route(
     (url) => TILE_HOSTS.includes(url.hostname) || url.pathname.startsWith("/api/dem/"),
     (route) => {
       const url = new URL(route.request().url());
       // Land lookups (identify) are online-only by design; only tiles count here.
-      if (!url.pathname.includes("/identify")) {
-        const key = url.pathname.startsWith("/api/dem/") ? "terrain" : url.pathname === "/planet" ? "ofm-tilejson" : url.hostname;
-        blocked[key] = (blocked[key] ?? 0) + 1;
+      if (url.pathname === "/planet") tileJson += 1;
+      else if (!url.pathname.includes("/identify")) {
+        const nums = (url.pathname.match(/(\d+)\/(\d+)\/(\d+)(\.\w+)?$/) ?? []).slice(1, 4).map(Number);
+        const [layerId, z, x, y] = url.pathname.startsWith("/api/dem/")
+          ? ["dem", nums[0], nums[1], nums[2]]
+          : url.hostname === "tiles.openfreemap.org"
+            ? ["ofm-vector", nums[0], nums[1], nums[2]]
+            : url.hostname === "gis.blm.gov"
+              ? ["blm-sma", nums[0], nums[2], nums[1]]
+              : url.pathname.includes("USGSImageryOnly")
+                ? ["usgs-imagery", nums[0], nums[2], nums[1]]
+                : ["other", ...nums];
+        (inPackage(layerId, z, x, y) ? missed : outside).push(`${layerId} ${z}/${x}/${y}`);
       }
       return route.abort("internetdisconnected");
     },
@@ -91,7 +130,9 @@ try {
   await page.locator(".maplibregl-canvas").waitFor({ state: "attached", timeout: 30000 });
   await page.waitForTimeout(6000);
   await page.screenshot({ path: join(shots, "offline-3-tile-hosts-blocked.png") });
-  assert.deepEqual(blocked, { "ofm-tilejson": 1 }, `tiles reached the network: ${JSON.stringify(blocked)}`);
+  assert.deepEqual(missed, [], `packaged tiles reached the network: ${missed.join(", ")}`);
+  assert.ok(tileJson <= 1, "OpenFreeMap's TileJSON is asked online once, then served from the package");
+  console.log(`Tiles outside the package the tilted view asked for (expected): ${outside.length ? outside.join(", ") : "none"}`);
 
   // Two levels past the package: enlarged from it (see the screenshot).
   const canvas = page.locator(".maplibregl-canvas");

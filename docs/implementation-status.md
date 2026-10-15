@@ -172,16 +172,32 @@ outlines on the map. Found while verifying: MapLibre requests 256-pixel
 raster/terrain tiles one zoom deeper than the map zoom, so packages are now
 planned in map zooms (`zoomBasis: "map"`), and offline tiles past a
 package's top zoom are enlarged from a packaged ancestor instead of going
-blank. Desktop sends OpenFreeMap an identifying User-Agent. Evidence: 14
-controller/model tests + style-layer and desktop policy tests (326 + 16
-desktop); `scripts/offline-ui-check.mjs` against the production build in
-Chromium: download with pause and resume, reload with every tile host
-blocked → only OpenFreeMap's TileJSON reached the network (asked online
-first by design), zoom past the package rendered, "Offline here", outline,
-delete; `offline-browser-check.mjs` and `storage-browser-check.mjs` pass.
-Gaps: the area is always the map view (no drawing); the desktop User-Agent
-is unit-tested but not run in a packaged build (the Electron binary isn't
-installed here); no cross-tab refresh of the list; enlarged tiles are soft.
+blank. Desktop sends OpenFreeMap an identifying User-Agent.
+Independent CC-12 review of the screens: 0 blockers, 1 major, 8 minor, all
+fixed. The major: with 3D terrain on, MapLibre asks for terrain tiles at the
+map zoom (512-px, plus parent and a zoom-5 ancestor), not one deeper, so 3D
+terrain went flat offline at the downloaded zoom; terrain is now planned for
+both consumers. Minors: list re-read on open/foreground; packages still
+served if the startup read fails; "Update not finished" instead of a stuck
+"Updating"; a new download holds the slot while its area is created; no
+enlarging over HTTP errors or cancelled requests; coverage text keeps zoom
+gaps and names out-of-date areas; row labels follow the running operation
+and Pause hides while files are checked; 44 px targets, quieter live
+progress, focus into the delete confirmation. Also: default zooms start two
+levels out (cheap; covers zooming out and tilted 3D distance); the legacy
+one-zoom save had the same raster zoom off-by-one.
+Evidence: 19 controller/model tests + style-layer and desktop policy tests
+(331 + 16 desktop; the slot race test fails on the old controller);
+`scripts/offline-ui-check.mjs` against the production build in Chromium with
+USGS imagery and 3D terrain on: download with pause and resume, reload with
+every tile host blocked → no tile the package holds reached the network
+(checked against its stored tile ranges); zoom past the package
+(screenshot-checked only), "Offline here", outline, delete;
+`offline-browser-check.mjs` and `storage-browser-check.mjs` pass.
+Gaps: the area is always the map view (no drawing); a tilted 3D view's far
+distance and edges need the package's lower zooms; the desktop User-Agent is
+unit-tested but not run in a packaged build (the Electron binary isn't
+installed here); checking files shows no progress; enlarged tiles are soft.
 
 **Storage wiring (coordinator, 2026-10-14) — verified.** `content-sync.ts`
 (ADR-008): repository is the store of record after a verified migration;

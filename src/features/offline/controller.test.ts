@@ -17,7 +17,8 @@ import {
   updateArea,
   useOffline,
 } from "./controller.ts";
-import { areaFeatures, coverageText, defaultLayers, defaultZooms, packageActions, stateLabel, unpackageableShown } from "./model.ts";
+import { areaFeatures, coverageText, defaultLayers, defaultZooms, packageActions, stateLabel, unpackageableShown, zoomSpansText } from "./model.ts";
+import type { PackageLayerId } from "../../lib/offline/sources.ts";
 
 afterEach(() => {
   resetOfflineForTests();
@@ -56,8 +57,11 @@ describe("offline packages in the app", () => {
 
     const here = await coverageAt({ lng: -111.5, lat: 34.5 });
     assert.equal(here?.covered, true);
-    // Shown in map zooms: the fixture's tile zooms 12–13 are map zooms 11–12 for topo, 12–13 for vector tiles.
-    assert.match(coverageText(here, true) ?? "", /^Offline here: topo zooms 11–12, public land zooms 11–12, roads and labels zooms 12–13, terrain zooms 11–12 \(“Mogollon Rim”\)\.$/);
+    // The area's map zooms (the fixture is planned 12–13), per complete layer.
+    assert.equal(
+      coverageText(here, true),
+      "Offline here: topo zooms 12–13, public land zooms 12–13, roads and labels zooms 12–13, terrain zooms 12–13 (“Mogollon Rim”).",
+    );
     const away = await coverageAt({ lng: -100, lat: 40 });
     assert.equal(coverageText(away, true), "Not downloaded for offline use.");
     assert.equal(coverageText(away, false), null);
@@ -108,6 +112,34 @@ describe("offline packages in the app", () => {
     state = useOffline.getState();
     assert.equal(state.packages[0].state, "ready");
     assert.equal(stateLabel(state.packages[0]).text, "Ready offline");
+  });
+
+  it("a new download holds the slot while its area is created, so nothing is left unstarted", async () => {
+    await started(fakeProvider({ delayMs: 5 }));
+    const a = (await downloadArea(smallPlan(), "A"))!;
+    // Same tick: the download starts creating B, then a check of A is asked for.
+    const download = downloadArea(smallPlan({ minZoom: 13 }), "B");
+    await checkPackage(a);
+    const b = await download;
+    assert.ok(b);
+    const states = Object.fromEntries(useOffline.getState().packages.map((p) => [p.name, p.state]));
+    assert.deepEqual(states, { A: "ready", B: "ready" });
+  });
+
+  it("labels rows by what's running here, and an update that never started", async () => {
+    const { backend } = await started();
+    const id = (await downloadArea(smallPlan(), "Unit 6A"))!;
+    const ready = useOffline.getState().packages[0];
+    assert.equal(stateLabel(ready, "update").text, "Updating");
+    assert.equal(stateLabel(ready, "verify").text, "Checking");
+    // startUpdate succeeds, then the download is refused before it starts (here: no room left).
+    await startOfflinePackages(backend, { download: { ...downloadOptions(fakeProvider()), estimate: async () => ({ usage: 0, quota: 1 }) } });
+    await updateArea(id);
+    const stuck = useOffline.getState().packages[0];
+    assert.equal(stuck.state, "updating");
+    assert.equal(stateLabel(stuck).text, "Update not finished");
+    assert.equal(packageActions(stuck, false).resume, true);
+    assert.equal(packageActions(stuck, false).discardUpdate, true);
   });
 
   it("runs one operation at a time", async () => {
@@ -163,8 +195,10 @@ describe("map zooms and enlarging offline", () => {
   it("plans each layer at the tile zooms the map requests for it", () => {
     const plan = planPackage({ ...SMALL_AREA, minZoom: 11, maxZoom: 12, zoomBasis: "map", layers: ["usgs-topo", "ofm-vector", "dem"] });
     const zooms = Object.fromEntries(plan.layers.map((l) => [l.layerId, [l.minZoom, l.maxZoom]]));
-    // 256-pixel rasters and terrain are one zoom deeper than the map; 512-pixel vector tiles aren't.
-    assert.deepEqual(zooms, { "usgs-topo": [12, 13], "ofm-vector": [11, 12], dem: [12, 13], glyphs: [0, 0] });
+    // 256-pixel rasters are one zoom deeper than the map; 512-pixel vector tiles aren't. Terrain
+    // covers both hillshade (256-px, one deeper) and 3D terrain (512-px at the map zoom, plus the
+    // parent and a zoom-5 ancestor MapLibre also asks for).
+    assert.deepEqual(zooms, { "usgs-topo": [12, 13], "ofm-vector": [11, 12], dem: [5, 13], glyphs: [0, 0] });
     assert.equal(plan.minZoom, 11);
     assert.equal(plan.maxZoom, 12);
     // The default stays tile zooms for every layer.
@@ -172,7 +206,60 @@ describe("map zooms and enlarging offline", () => {
     assert.deepEqual([tile.layers[0].minZoom, tile.layers[0].maxZoom], [11, 12]);
     // Clamped to each layer's deepest tiles.
     const deep = planPackage({ ...SMALL_AREA, minZoom: 14, maxZoom: 15, zoomBasis: "map", layers: ["dem", "usgs-topo"] });
-    assert.deepEqual(deep.layers.map((l) => [l.layerId, l.minZoom, l.maxZoom]).slice(0, 2), [["usgs-topo", 15, 16], ["dem", 14, 14]]);
+    assert.deepEqual(deep.layers.map((l) => [l.layerId, l.minZoom, l.maxZoom]).slice(0, 2), [["usgs-topo", 15, 16], ["dem", 5, 14]]);
+    // Low map zooms: terrain starts one above the map's zoom (3D terrain's parent tiles).
+    const low = planPackage({ ...SMALL_AREA, minZoom: 4, maxZoom: 5, zoomBasis: "map", layers: ["dem"] });
+    assert.deepEqual([low.layers[0].minZoom, low.layers[0].maxZoom], [3, 6]);
+  });
+
+  it("serves 3D terrain offline at the map zoom it was downloaded at", async () => {
+    await started();
+    const plan = planPackage({ ...SMALL_AREA, minZoom: 12, maxZoom: 12, zoomBasis: "map", layers: ["dem"] });
+    await downloadArea(plan, "Terrain");
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      throw new TypeError("offline");
+    }) as typeof fetch;
+    Object.defineProperty(globalThis, "location", { configurable: true, value: { origin: "http://localhost:8080" } });
+    try {
+      // With 3D terrain on, MapLibre asks for z12 at map zoom 12, its z11 parent and a z5 ancestor; hillshade alone asks for z13.
+      for (const z of [5, 11, 12, 13]) {
+        const range = plan.layers[0].ranges.find((r) => r.z === z)!;
+        const tile = await loadTile({ url: `fltile://http://localhost:8080/api/dem/${z}/${range.x0}/${range.y0}` }, new AbortController());
+        assert.ok(tile.data instanceof ArrayBuffer, `terrain z${z}`);
+      }
+    } finally {
+      globalThis.fetch = realFetch;
+      Reflect.deleteProperty(globalThis, "location");
+    }
+  });
+
+  it("never enlarges over an HTTP error or a cancelled request (online)", async () => {
+    await started();
+    const plan = planPackage({ ...SMALL_AREA, minZoom: 12, maxZoom: 12, zoomBasis: "map", layers: ["usgs-topo"] });
+    await downloadArea(plan, "Online");
+    const range = plan.layers[0].ranges[0];
+    let enlarged = 0;
+    _setTileEnlarger(async () => {
+      enlarged += 1;
+      return new Uint8Array([9]).buffer;
+    });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("busy", { status: 503 })) as typeof fetch;
+    const url = `fltile://${USGS_TOPO}14/${range.y0 * 2}/${range.x0 * 2}`;
+    try {
+      await assert.rejects(loadTile({ url }, new AbortController()), /503/);
+      const cancelled = new AbortController();
+      globalThis.fetch = (async () => {
+        cancelled.abort();
+        throw new DOMException("Aborted", "AbortError");
+      }) as typeof fetch;
+      await assert.rejects(loadTile({ url }, cancelled));
+      assert.equal(enlarged, 0);
+    } finally {
+      globalThis.fetch = realFetch;
+      _setTileEnlarger(null);
+    }
   });
 
   it("finds a raster tile's ancestor and the square of it to enlarge", () => {
@@ -236,10 +323,35 @@ describe("offline screen helpers", () => {
   });
 
   it("picks a zoom range around the view", () => {
-    assert.deepEqual(defaultZooms(11.6), { minZoom: 11, maxZoom: 13 });
-    assert.deepEqual(defaultZooms(2), { minZoom: 4, maxZoom: 6 });
-    assert.deepEqual(defaultZooms(15.2), { minZoom: 14, maxZoom: 15 });
-    assert.deepEqual(defaultZooms(Number.NaN), { minZoom: 10, maxZoom: 12 });
+    assert.deepEqual(defaultZooms(11.6), { minZoom: 9, maxZoom: 13 });
+    assert.deepEqual(defaultZooms(2), { minZoom: 4, maxZoom: 4 });
+    assert.deepEqual(defaultZooms(15.2), { minZoom: 13, maxZoom: 15 });
+    assert.deepEqual(defaultZooms(Number.NaN), { minZoom: 8, maxZoom: 12 });
+    // The levels further out are cheap: 9–13 costs only a few percent more than 11–13.
+    const near = planPackage({ ...SMALL_AREA, minZoom: 11, maxZoom: 13, zoomBasis: "map", layers: ["usgs-imagery"] });
+    const wide = planPackage({ ...SMALL_AREA, minZoom: 9, maxZoom: 13, zoomBasis: "map", layers: ["usgs-imagery"] });
+    assert.ok(wide.totals.assets < near.totals.assets * 1.1, `${wide.totals.assets} vs ${near.totals.assets}`);
+  });
+
+  it("says which zooms are covered without bridging gaps, and flags out-of-date areas", () => {
+    assert.equal(zoomSpansText([{ min: 12, max: 12, open: false }]), "zoom 12");
+    assert.equal(zoomSpansText([{ min: 12, max: 12, open: false }, { min: 6, max: 6, open: false }]), "zooms 6 and 12");
+    assert.equal(zoomSpansText([{ min: 10, max: 12, open: false }, { min: 13, max: 14, open: false }]), "zooms 10–14");
+    assert.equal(zoomSpansText([{ min: 12, max: 15, open: true }, { min: 13, max: 13, open: false }, { min: 6, max: 7, open: false }]), "zooms 6–7 and 12+");
+    const layer = (layerId: PackageLayerId, maxZoom: number) => ({ layerId, label: "", minZoom: 0, maxZoom, assetCount: 1, stored: 1, missing: 0, corrupt: 0, absent: 0, complete: true });
+    const pkg = (name: string, min: number, max: number, expiresAt: number) => ({
+      packageId: name,
+      name,
+      state: "ready" as const,
+      servable: true,
+      contains: true,
+      zoomRange: { min, max },
+      layers: [layer("usgs-topo", max + 1)],
+      verifiedAt: 1,
+      expiresAt,
+    });
+    const coverage = { covered: true, packages: [pkg("Low", 6, 6, 2_000), pkg("High", 12, 12, 500)], incomplete: [], layers: {} };
+    assert.equal(coverageText(coverage, true, 1_000), "Offline here: topo zooms 6 and 12 (“Low”, “High”). Out of date: “High”; update before the trip.");
   });
 
   it("draws area outlines, across the antimeridian in one piece", () => {

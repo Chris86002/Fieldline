@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Basemap } from "@/lib/hunt/types";
 import { planPackage, type PackageBounds } from "@/lib/offline/plan";
 import { SELECTABLE_LAYERS, type PackageLayerId } from "@/lib/offline/sources";
@@ -9,6 +9,7 @@ import {
   discardUpdate,
   downloadArea,
   pauseDownload,
+  refreshPackages,
   repairArea,
   resumePackage,
   updateArea,
@@ -28,6 +29,7 @@ import {
   packageActions,
   stateLabel,
   unpackageableShown,
+  type OfflineTaskName,
   type StateTone,
 } from "./model.ts";
 
@@ -99,6 +101,17 @@ export function OfflinePanel({
     return () => onPreview(null);
   }, [area, onPreview]);
 
+  // Re-read on open and on return to the app: expiry moves with time, and
+  // another window may have finished or deleted an area.
+  useEffect(() => {
+    void refreshPackages();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refreshPackages();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, []);
+
   const plan = useMemo(
     () =>
       area && layers.length
@@ -116,7 +129,20 @@ export function OfflinePanel({
 
   const canDownload = Boolean(plan?.ok && name.trim() && !busy);
   const progress = busy?.progress;
-  const busyName = busy ? (packages.find((p) => p.packageId === busy.packageId)?.name ?? "area") : null;
+  const busyName = busy ? (packages.find((p) => p.packageId === busy.packageId)?.name ?? name.trim()) : null;
+  // Checking every file can't be paused (a check, the last step of a download, or repair's first check).
+  const checking = busy
+    ? busy.task === "verify" || (progress ? progress.total > 0 && progress.done + progress.failed >= progress.total : busy.task === "repair")
+    : false;
+  // Screen readers hear progress in 10% steps, not every update.
+  const spoken =
+    busy && progress && progress.total > 0
+      ? `${checking ? "Checking files" : `${Math.floor((progress.done / progress.total) * 10) * 10}% downloaded`}`
+      : busy
+        ? checking
+          ? "Checking files"
+          : "Starting"
+        : "";
 
   return (
     <div className="text-sm">
@@ -124,11 +150,14 @@ export function OfflinePanel({
         Download an area to use with no signal: base map, public land, roads and labels, and terrain. Weather, search, land lookups and hunt units still need a connection.
       </p>
 
+      <p className="sr-only" aria-live="polite">
+        {spoken}
+      </p>
       {busy ? (
-        <section aria-live="polite" className="mt-3 rounded-md border border-line bg-bg px-3 py-2">
+        <section className="mt-3 rounded-md border border-line bg-bg px-3 py-2">
           <p>
-            {busy.task === "verify" ? "Checking" : busy.task === "repair" ? "Repairing" : busy.task === "update" ? "Updating" : "Downloading"} “{busyName}”
-            {progress ? ` · ${formatCount(progress.done)} of ${formatCount(progress.total)} files · ${formatBytes(progress.bytes)}` : "…"}
+            {checking ? "Checking every file of" : busy.task === "repair" ? "Repairing" : busy.task === "update" ? "Updating" : "Downloading"} “{busyName}”
+            {progress && !checking ? ` · ${formatCount(progress.done)} of ${formatCount(progress.total)} files · ${formatBytes(progress.bytes)}` : "…"}
           </p>
           {progress && progress.total > 0 ? (
             <progress className="mt-2 h-2 w-full accent-accent" max={progress.total} value={progress.done} aria-label="Download progress" />
@@ -136,11 +165,13 @@ export function OfflinePanel({
           {progress?.waitUntil ? (
             <p className="mt-1 text-muted">A provider asked Fieldline to slow down; some files wait until {new Date(progress.waitUntil).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })}.</p>
           ) : null}
-          {busy.task !== "verify" ? (
-            <button type="button" className="mt-2 h-10 w-full rounded-md border border-line" onClick={pauseDownload}>
+          {checking ? (
+            <p className="mt-1 text-muted">Each file is re-read and compared with its checksum. This can take a minute for a large area and can't be paused.</p>
+          ) : (
+            <button type="button" className="mt-2 h-11 w-full rounded-md border border-line" onClick={pauseDownload}>
               Pause
             </button>
-          ) : null}
+          )}
         </section>
       ) : null}
 
@@ -159,7 +190,7 @@ export function OfflinePanel({
         </p>
         <button
           type="button"
-          className="mt-2 h-10 w-full rounded-md border border-line"
+          className="mt-2 h-11 w-full rounded-md border border-line"
           onClick={() => {
             const next = getArea();
             setArea(next);
@@ -177,7 +208,7 @@ export function OfflinePanel({
           value={name}
           maxLength={120}
           onChange={(event) => setName(event.target.value)}
-          className="mt-1 h-10 w-full rounded-md border border-line bg-bg px-3 text-fg"
+          className="mt-1 h-11 w-full rounded-md border border-line bg-bg px-3 text-fg"
         />
 
         <fieldset className="mt-3">
@@ -185,7 +216,7 @@ export function OfflinePanel({
           {SELECTABLE_LAYERS.map((id) => {
             const planned = plan?.layers.find((layer) => layer.layerId === id);
             return (
-              <label key={id} className="flex min-h-10 items-center gap-3">
+              <label key={id} className="flex min-h-11 items-center gap-3">
                 <input
                   type="checkbox"
                   className="size-4 accent-accent"
@@ -209,7 +240,7 @@ export function OfflinePanel({
           <label className="text-muted">
             From zoom
             <select
-              className="mt-1 h-10 w-full rounded-md border border-line bg-bg px-2 text-fg"
+              className="mt-1 h-11 w-full rounded-md border border-line bg-bg px-2 text-fg"
               value={zooms.minZoom}
               onChange={(event) => {
                 const minZoom = Number(event.target.value);
@@ -226,7 +257,7 @@ export function OfflinePanel({
           <label className="text-muted">
             To zoom
             <select
-              className="mt-1 h-10 w-full rounded-md border border-line bg-bg px-2 text-fg"
+              className="mt-1 h-11 w-full rounded-md border border-line bg-bg px-2 text-fg"
               value={zooms.maxZoom}
               onChange={(event) => {
                 const maxZoom = Number(event.target.value);
@@ -241,7 +272,7 @@ export function OfflinePanel({
             </select>
           </label>
         </div>
-        <p className="mt-1 text-xs text-subtle">The map is at zoom {Math.floor(viewZoom)}. Each level closer is about four times the files. Past their most detailed level (terrain 13, roads and labels 14, imagery 15), layers are enlarged from it.</p>
+        <p className="mt-1 text-xs text-subtle">The map is at zoom {Math.floor(viewZoom)}. Each level closer is about four times the files; levels further out cost little and cover zooming out and the distance in a tilted 3D view. Zoomed in past what you downloaded, the map shows softer, enlarged tiles.</p>
 
         {plan ? (
           <div className="mt-3 rounded-md bg-bg px-3 py-2">
@@ -290,6 +321,7 @@ export function OfflinePanel({
               status={status}
               bytes={bytes[status.packageId] ?? 0}
               busy={Boolean(busy)}
+              running={busy?.packageId === status.packageId ? busy.task : null}
               confirming={confirmDelete === status.packageId}
               onConfirm={(on) => setConfirmDelete(on ? status.packageId : null)}
               onShow={() => onShow(status.manifest.bounds)}
@@ -310,6 +342,7 @@ function PackageRow({
   status,
   bytes,
   busy,
+  running,
   confirming,
   onConfirm,
   onShow,
@@ -317,16 +350,22 @@ function PackageRow({
   status: PackageStatus;
   bytes: number;
   busy: boolean;
+  /** The operation running on this package in this tab, if any. */
+  running: OfflineTaskName | null;
   confirming: boolean;
   onConfirm: (on: boolean) => void;
   onShow: () => void;
 }) {
-  const label = stateLabel(status);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (confirming) cancelRef.current?.focus();
+  }, [confirming]);
+  const label = stateLabel(status, running);
   const can = packageActions(status, busy);
   const m = status.update ?? status.manifest;
   const expiry = status.servable ? expiryText(status) : null;
   const error = m.lastError?.message;
-  const button = "h-9 rounded-md border border-line px-3 disabled:opacity-40";
+  const button = "h-11 rounded-md border border-line px-3 disabled:opacity-40";
   return (
     <li className="rounded-md border border-line px-3 py-2">
       <div className="flex items-start gap-2">
@@ -342,7 +381,7 @@ function PackageRow({
       {status.waitUntil && status.waitUntil > Date.now() ? (
         <p className="text-xs text-muted">Resume after {new Date(status.waitUntil).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}; a provider asked Fieldline to wait.</p>
       ) : null}
-      {status.interrupted ? <p className="text-xs text-muted">The download stopped (the app closed, or another window is downloading). Resume to continue.</p> : null}
+      {status.interrupted && !running ? <p className="text-xs text-muted">The download stopped (the app closed, or another window is downloading). Resume to continue.</p> : null}
       {error && label.tone !== "ok" ? <p className="text-xs text-fg">{error}</p> : null}
       {m.integrityStatus.absentCount ? <p className="text-xs text-subtle">{formatCount(m.integrityStatus.absentCount)} tiles had no data at the source.</p> : null}
       <div className="mt-2 flex flex-wrap gap-1.5">
@@ -384,7 +423,7 @@ function PackageRow({
           <div className="mt-2 flex gap-2">
             <button
               type="button"
-              className="h-9 flex-1 rounded-md bg-accent font-medium text-accent-fg"
+              className="h-11 flex-1 rounded-md bg-accent font-medium text-accent-fg"
               onClick={() => {
                 onConfirm(false);
                 void deleteArea(status.packageId);
@@ -392,7 +431,7 @@ function PackageRow({
             >
               Delete
             </button>
-            <button type="button" className="h-9 flex-1 rounded-md border border-line" onClick={() => onConfirm(false)}>
+            <button ref={cancelRef} type="button" className="h-11 flex-1 rounded-md border border-line" onClick={() => onConfirm(false)}>
               Cancel
             </button>
           </div>

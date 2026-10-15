@@ -143,6 +143,28 @@ export function mapZoomOffset(layerId: PackageLayerId): number {
   return kind === "raster" || kind === "terrain" ? 1 : 0;
 }
 
+/** The shallowest ancestor MapLibre's 3D terrain also asks for (`_addTerrainIdealTiles`: min(z, 5)). */
+const TERRAIN_ANCESTOR_ZOOM = 5;
+
+/**
+ * Tile zooms a layer needs so the map works offline at map zooms
+ * `minZoom`..`maxZoom` (before clamping to the layer's deepest tiles).
+ *
+ * - Raster (256 px, rounded): one deeper than the map, `min+1`..`max+1`.
+ * - Vector (512 px, floored): the map zooms.
+ * - Terrain serves two consumers that ask differently. Hillshade alone
+ *   treats it as a 256-px raster (`min+1`..`max+1`); with 3D terrain on,
+ *   MapLibre switches the source to 512-px tiles at floor(map zoom), plus each
+ *   tile's parent and a zoom-5 ancestor. So terrain covers
+ *   `min(5, min-1)`..`max+1` (the shallow levels are a handful of tiles).
+ */
+export function mapZoomTileRange(layerId: PackageLayerId, minZoom: number, maxZoom: number): { lo: number; hi: number } {
+  const kind = PACKAGE_LAYERS[layerId].kind;
+  if (kind === "terrain") return { lo: Math.max(0, Math.min(TERRAIN_ANCESTOR_ZOOM, minZoom - 1)), hi: maxZoom + 1 };
+  const offset = mapZoomOffset(layerId);
+  return { lo: minZoom + offset, hi: maxZoom + offset };
+}
+
 /** Layers a user can choose; label fonts are added to every package automatically. */
 export const SELECTABLE_LAYERS: readonly PackageLayerId[] = [
   "usgs-imagery",

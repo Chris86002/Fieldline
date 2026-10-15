@@ -14,9 +14,9 @@ import { createPackageTileSource } from "../../lib/offline/serve.ts";
 import { verifyPackage } from "../../lib/offline/verify.ts";
 import type { StorageBackend } from "../../lib/storage/backend.ts";
 import type { PersistenceResult } from "../../lib/storage/indexeddb.ts";
-import { formatCount } from "./model.ts";
+import { formatCount, type OfflineTaskName } from "./model.ts";
 
-export type OfflineTask = "download" | "update" | "verify" | "repair";
+export type OfflineTask = OfflineTaskName;
 
 export type OfflineNotice = { packageId: string | null; text: string; tone: "info" | "error" };
 
@@ -94,7 +94,9 @@ export async function startOfflinePackages(
     setPackageTileSource(packages.some((p) => p.servable) ? tileSource : null);
     useOffline.setState({ packages });
   } catch {
-    // refreshPackages below reports it.
+    // Can't tell whether anything is downloaded: keep reading packages (a
+    // failed read is a miss) rather than lose them all session.
+    setPackageTileSource(tileSource);
   }
   // The map can start once the list is in; sizes follow.
   void refreshPackages();
@@ -104,7 +106,13 @@ export async function startOfflinePackages(
 export async function refreshPackages(): Promise<void> {
   if (!store) return;
   try {
-    const packages = await store.listPackages();
+    let packages: PackageStatus[];
+    try {
+      packages = await store.listPackages();
+    } catch (error) {
+      setPackageTileSource(tileSource);
+      throw error;
+    }
     // Map tiles look in packages only while one can serve them: no database read per tile otherwise.
     setPackageTileSource(packages.some((p) => p.servable) ? tileSource : null);
     useOffline.setState({ packages });
@@ -155,16 +163,24 @@ function resultText(result: DownloadResult, task: OfflineTask): { text: string; 
 
 /**
  * Runs one operation with progress. Only one runs at a time in this tab
- * (another tab downloading makes the library reject with `conflict`).
+ * (another tab downloading makes the library reject with `conflict`). The
+ * slot is taken synchronously, before any await, so two clicks can't both
+ * start; `target` may create the package inside the slot. Resolves to the
+ * package id, or null when nothing ran.
  */
-async function run(packageId: string, task: OfflineTask, work: (options: DownloadOptions) => Promise<{ text: string; tone: OfflineNotice["tone"] }>): Promise<void> {
-  if (!store) return;
+async function run(
+  target: string | (() => Promise<string>),
+  task: OfflineTask,
+  work: (options: DownloadOptions, packageId: string) => Promise<{ text: string; tone: OfflineNotice["tone"] }>,
+): Promise<string | null> {
+  if (!store) return null;
   if (useOffline.getState().busy) {
-    notify(packageId, "Another download is running. Pause it first.", "error");
-    return;
+    notify(typeof target === "string" ? target : null, "Another download is running. Pause it first.", "error");
+    return null;
   }
   const controller = new AbortController();
   abort = controller;
+  let packageId = typeof target === "string" ? target : "";
   useOffline.setState({ busy: { packageId, task, progress: null }, notice: null });
   let last = 0;
   const options: DownloadOptions = {
@@ -179,39 +195,36 @@ async function run(packageId: string, task: OfflineTask, work: (options: Downloa
     },
   };
   try {
-    const outcome = await work(options);
+    if (typeof target !== "string") {
+      packageId = await target();
+      useOffline.setState((state) => (state.busy ? { busy: { ...state.busy, packageId } } : {}));
+      await refreshPackages();
+    }
+    const outcome = await work(options, packageId);
     notify(packageId, outcome.text, outcome.tone);
   } catch (error) {
-    notify(packageId, errorText(error), "error");
+    notify(packageId || null, errorText(error), "error");
   } finally {
     if (abort === controller) abort = null;
     useOffline.setState({ busy: null });
     await refreshPackages();
   }
+  return packageId || null;
 }
 
-/** Creates a package from an `ok` plan and downloads it. Resolves to its id, or null if it couldn't start. */
+/** Creates a package from an `ok` plan and downloads it. Resolves to its id, or null if it couldn't be created. */
 export async function downloadArea(plan: PackagePlan, name: string): Promise<string | null> {
-  if (!store) return null;
-  if (useOffline.getState().busy) {
-    notify(null, "Another download is running. Pause it first.", "error");
-    return null;
-  }
-  let packageId: string;
-  try {
-    packageId = (await store.createPackage(plan, { name })).packageId;
-  } catch (error) {
-    notify(null, errorText(error), "error");
-    return null;
-  }
-  await refreshPackages();
   const s = store;
-  await run(packageId, "download", async (options) => {
-    const result = await downloadPackage(s, packageId, options);
-    useOffline.setState({ persistence: result.persistence });
-    return resultText(result, "download");
-  });
-  return packageId;
+  if (!s) return null;
+  return run(
+    async () => (await s.createPackage(plan, { name })).packageId,
+    "download",
+    async (options, packageId) => {
+      const result = await downloadPackage(s, packageId, options);
+      useOffline.setState({ persistence: result.persistence });
+      return resultText(result, "download");
+    },
+  );
 }
 
 /** Continues a first download or an update; if its check found damage, fetches only the bad files. */

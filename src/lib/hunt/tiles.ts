@@ -171,11 +171,15 @@ export async function loadTile(
       const substitute = await fromPackage(true);
       if (substitute) return substitute;
     }
-    // Zoomed past a downloaded area's deepest level: enlarge its tile.
-    const enlarged = await fromAncestor(url);
-    if (enlarged) {
-      stats.package += 1;
-      return respond(enlarged);
+    // Zoomed past a downloaded area's deepest level with no network: enlarge
+    // its tile. Only for "no network" (offline, or fetch itself failed), never
+    // for an HTTP error from a reachable provider or a request the map cancelled.
+    if (!abort.signal.aborted && (offline || error instanceof TypeError)) {
+      const enlarged = await fromAncestor(url);
+      if (enlarged) {
+        stats.package += 1;
+        return respond(enlarged);
+      }
     }
     throw error;
   }
@@ -227,7 +231,11 @@ export type TileEnlarger = (
 ) => Promise<ArrayBuffer>;
 
 const canvasEnlarger: TileEnlarger = async (image, crop) => {
-  const bitmap = await createImageBitmap(new Blob([image.data], { type: image.contentType }));
+  // As MapLibre decodes terrain: no color-space conversion or premultiplying, which would shift encoded elevations.
+  const bitmap = await createImageBitmap(new Blob([image.data], { type: image.contentType }), {
+    colorSpaceConversion: "none",
+    premultiplyAlpha: "none",
+  });
   const scale = bitmap.width / 256;
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
   const context = canvas.getContext("2d");

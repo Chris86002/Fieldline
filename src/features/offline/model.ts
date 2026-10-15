@@ -4,7 +4,7 @@
  */
 import type { PackageBounds } from "../../lib/offline/plan.ts";
 import type { CoverageResult, PackageStatus } from "../../lib/offline/package-store.ts";
-import { mapZoomOffset, PACKAGE_LAYERS, SELECTABLE_LAYERS, type PackageLayerId } from "../../lib/offline/sources.ts";
+import { PACKAGE_LAYERS, SELECTABLE_LAYERS, type PackageLayerId } from "../../lib/offline/sources.ts";
 import type { Basemap } from "../../lib/hunt/types.ts";
 
 /** Highest map zoom offered (imagery's deepest tiles); the planner clamps each layer to its own maximum. */
@@ -32,11 +32,16 @@ export function unpackageableShown(o: { basemap: Basemap; showUnits: boolean }):
   return shown;
 }
 
-/** Map zooms: from the current one to two levels of detail closer (each level is about four times the files). */
+/**
+ * Map zooms: two levels out to two levels of detail closer than the view.
+ * Each level closer is about four times the files, so the levels further out
+ * cost only a few percent; they cover zooming out and the far distance of a
+ * tilted 3D view, which the map draws at lower zooms.
+ */
 export function defaultZooms(viewZoom: number): { minZoom: number; maxZoom: number } {
   const z = Number.isFinite(viewZoom) ? Math.floor(viewZoom) : 10;
-  const minZoom = Math.max(MIN_PACKAGE_ZOOM, Math.min(14, z));
-  return { minZoom, maxZoom: Math.min(MAX_PACKAGE_ZOOM, minZoom + 2) };
+  const top = Math.max(MIN_PACKAGE_ZOOM, Math.min(MAX_PACKAGE_ZOOM, z + 2));
+  return { minZoom: Math.max(MIN_PACKAGE_ZOOM, Math.min(top, z - 2)), maxZoom: top };
 }
 
 export function formatBytes(bytes: number): string {
@@ -66,8 +71,24 @@ export function areaSize(bounds: PackageBounds, metric: boolean): string {
 
 export type StateTone = "ok" | "busy" | "warn" | "error" | "idle";
 
-/** A short state label and tone for a package row. */
-export function stateLabel(status: PackageStatus): { text: string; tone: StateTone } {
+const RUNNING_LABEL: Record<OfflineTaskName, string> = {
+  download: "Downloading",
+  update: "Updating",
+  verify: "Checking",
+  repair: "Repairing",
+};
+
+export type OfflineTaskName = "download" | "update" | "verify" | "repair";
+
+/**
+ * A short state label and tone for a package row. `running` is the operation
+ * this tab is running on it, if any: the stored state only changes at the
+ * end, and a stored "downloading"/"updating"/"verifying" with nothing running
+ * here means it stopped (closed app, another window, an update that never
+ * started).
+ */
+export function stateLabel(status: PackageStatus, running: OfflineTaskName | null = null): { text: string; tone: StateTone } {
+  if (running) return { text: RUNNING_LABEL[running], tone: "busy" };
   if (status.manifest.integrityStatus.status === "damaged" && status.update === null) {
     return { text: status.activeVersion === null ? "Didn't finish" : "Needs repair", tone: "error" };
   }
@@ -77,11 +98,10 @@ export function stateLabel(status: PackageStatus): { text: string; tone: StateTo
     case "stale":
       return { text: "Out of date", tone: "warn" };
     case "updating":
-      return { text: "Updating", tone: "busy" };
+      return { text: "Update not finished", tone: "warn" };
     case "downloading":
-      return { text: status.interrupted ? "Stopped" : "Downloading", tone: status.interrupted ? "warn" : "busy" };
     case "verifying":
-      return { text: "Checking", tone: "busy" };
+      return { text: "Stopped", tone: "warn" };
     case "paused":
       return { text: status.interrupted ? "Stopped" : "Paused", tone: "warn" };
     case "failed":
@@ -174,32 +194,57 @@ export function areaFeatures(packages: readonly PackageStatus[], preview: Packag
   return { type: "FeatureCollection", features };
 }
 
+type ZoomSpan = { min: number; max: number; open: boolean };
+
 /**
- * Map zooms a layer works at, from its tile zooms (packages are planned in
- * map zooms). At the layer's deepest level the map enlarges it from there on,
- * so that end is open ("12+").
+ * Merges map-zoom spans that overlap or touch, keeping real gaps ("6 and
+ * 12–14"). An open span ("12+": the layer reached its deepest tiles, so the
+ * map enlarges past it) swallows everything above it.
  */
-function zoomRanges(id: PackageLayerId, ranges: { minZoom: number; maxZoom: number }[]): string {
-  const offset = mapZoomOffset(id);
-  const min = Math.min(...ranges.map((r) => r.minZoom)) - offset;
-  const top = Math.max(...ranges.map((r) => r.maxZoom));
-  if (top >= PACKAGE_LAYERS[id].maxZoom) return `zoom ${min}+`;
-  const max = top - offset;
-  return min === max ? `zoom ${min}` : `zooms ${min}–${max}`;
+export function zoomSpansText(spans: ZoomSpan[]): string {
+  const sorted = [...spans].sort((a, b) => a.min - b.min);
+  const merged: ZoomSpan[] = [];
+  for (const span of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && (last.open || span.min <= last.max + 1)) {
+      if (!last.open) {
+        last.max = Math.max(last.max, span.max);
+        last.open = span.open;
+      }
+    } else {
+      merged.push({ ...span });
+    }
+  }
+  const parts = merged.map((s) => (s.open ? `${s.min}+` : s.min === s.max ? `${s.min}` : `${s.min}–${s.max}`));
+  const single = merged.length === 1 && !merged[0].open && merged[0].min === merged[0].max;
+  return `${single ? "zoom" : "zooms"} ${parts.join(" and ")}`;
 }
 
 /**
- * The "offline here" line for a point (FIELD-01), from verified manifests.
- * Null when there are no packages at all, so the line stays out of the way.
+ * The "offline here" line for a point (FIELD-01), from verified manifests:
+ * per layer, the map zooms of the covering areas where that layer is
+ * complete. Null when there are no packages at all, so the line stays out of
+ * the way.
  */
-export function coverageText(coverage: CoverageResult | null, anyPackages: boolean): string | null {
+export function coverageText(coverage: CoverageResult | null, anyPackages: boolean, now = Date.now()): string | null {
   if (!coverage || !anyPackages) return null;
   if (coverage.covered) {
-    const names = coverage.packages.filter((p) => p.contains).map((p) => `“${p.name}”`);
-    const parts = (Object.entries(coverage.layers) as [PackageLayerId, { minZoom: number; maxZoom: number }[]][])
-      .filter(([, ranges]) => ranges.length > 0)
-      .map(([id, ranges]) => `${shortLayer(id)} ${zoomRanges(id, ranges)}`);
-    return `Offline here: ${parts.join(", ")} (${names.join(", ")}).`;
+    const covering = coverage.packages.filter((p) => p.contains);
+    const spans = new Map<PackageLayerId, ZoomSpan[]>();
+    for (const pkg of covering) {
+      for (const layer of pkg.layers) {
+        if (!layer.complete || layer.layerId === "glyphs") continue;
+        const open = layer.maxZoom >= PACKAGE_LAYERS[layer.layerId].maxZoom;
+        const list = spans.get(layer.layerId) ?? [];
+        list.push({ min: pkg.zoomRange.min, max: pkg.zoomRange.max, open });
+        spans.set(layer.layerId, list);
+      }
+    }
+    const parts = SELECTABLE_LAYERS.filter((id) => spans.has(id)).map((id) => `${shortLayer(id)} ${zoomSpansText(spans.get(id)!)}`);
+    const names = covering.map((p) => `“${p.name}”`);
+    const stale = covering.filter((p) => p.expiresAt !== null && p.expiresAt <= now).map((p) => `“${p.name}”`);
+    const staleNote = stale.length ? ` Out of date: ${stale.join(", ")}; update before the trip.` : "";
+    return `Offline here: ${parts.join(", ")} (${names.join(", ")}).${staleNote}`;
   }
   if (coverage.incomplete.length > 0) {
     return `Not ready offline here: “${coverage.incomplete[0].name}” hasn't finished downloading or needs a repair.`;

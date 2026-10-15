@@ -964,6 +964,8 @@ export function HuntApp() {
     try {
       const result = await packTiles({
         ...bounds,
+        // These are 256-pixel raster tiles: the map draws them one zoom deeper than its own zoom.
+        zoom: bounds.zoom + 1,
         templates,
         onProgress: (done, total) => {
           if (done === total || done % 4 === 0) setPackNote(`Saving map tiles ${done} of ${total}…`);

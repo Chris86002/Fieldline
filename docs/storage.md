@@ -487,21 +487,35 @@ versioned), so it is handled differently:
 
 ### Map zooms vs tile zooms
 
-MapLibre's zoom is based on 512-pixel tiles. The map's 256-pixel sources
-(USGS imagery and topo, BLM SMA, terrain) request tiles one zoom deeper than
-the map zoom (map zoom 12 → z13 tiles; raster sources also round), while
-OpenFreeMap's 512-pixel vector tiles match it. The screen asks for map zooms
-and plans with `planPackage({ …, zoomBasis: "map" })`, which applies
-`mapZoomOffset(layerId)` per layer; manifests keep the map zooms in
-`zoomRange` and each layer's tile zooms in `layers[]`. Coverage text converts
-back to map zooms ("12+" where a layer reaches its deepest tiles, since the
-map enlarges past a source's maximum).
+MapLibre's zoom is based on 512-pixel tiles. The screen asks for map zooms
+and plans with `planPackage({ …, zoomBasis: "map" })`, which gives each layer
+the tile zooms the map requests (`mapZoomTileRange`, MapLibre 6.13):
 
-Past a package's top zoom, offline: `fltile://` enlarges the missing raster
-or terrain tile from the nearest packaged ancestor up to 4 levels up
-(`ancestorTile`, canvas crop and scale; nearest-neighbor for terrain, whose
-colors encode elevation). This runs only after the network failed, so it
-never replaces a real tile online.
+- 256-pixel rasters (USGS imagery and topo, BLM SMA; rounded): one zoom
+  deeper than the map (map zoom 12 → z13).
+- OpenFreeMap's 512-pixel vector tiles (floored): the map zoom.
+- Terrain has two consumers. Hillshade alone treats it as a 256-pixel raster
+  (one deeper). With 3D terrain on, MapLibre's terrain manager switches the
+  source to 512-pixel tiles at floor(map zoom) without rounding, and also asks
+  for each tile's parent and a zoom-5 ancestor (`_addTerrainIdealTiles`). So
+  terrain is planned from min(5, min − 1) to max + 1; the shallow levels are a
+  handful of tiles.
+
+Manifests keep the map zooms in `zoomRange` and each layer's tile zooms in
+`layers[]`. The "Offline here" line lists, per layer, the map zoom ranges of
+the covering areas where that layer is complete, merging only overlapping or
+adjacent ranges ("zooms 6 and 12"); "12+" where a layer reaches its deepest
+tiles (the map enlarges past a source's maximum); out-of-date covering areas
+are named. The default range is two zooms out to two zooms in from the view:
+the levels further out cost a few percent and cover zooming out and the far
+distance of a tilted 3D view, which the map draws at lower zooms.
+
+Past a package's top zoom with no network: `fltile://` enlarges the missing
+raster or terrain tile from the nearest packaged ancestor up to 4 levels up
+(`ancestorTile`, canvas crop and scale, decoded without color conversion;
+nearest-neighbor for terrain, whose colors encode elevation). It runs only
+when offline or when the request itself failed (a network `TypeError`), never
+on an HTTP error from a reachable provider or a request the map cancelled.
 
 ### Verification
 
@@ -521,13 +535,20 @@ never replaces a real tile online.
 - `src/features/offline/controller.test.ts`: the app controller (unavailable
   storage, download to ready with sizes and coverage, serving only while a
   package is usable, pause/resume, one operation at a time, check/update/
-  delete, provider failure and resume), map-zoom planning, ancestor tile
-  math and enlarging offline, default layers/zooms, outlines across the
-  antimeridian.
+  delete, provider failure and resume, a new download holding the slot
+  while its area is created, row labels while running and for an update
+  that never started), map-zoom planning including both terrain consumers,
+  3D-terrain tiles served offline at the downloaded zoom, no enlarging over
+  HTTP errors or cancelled requests, ancestor tile math and enlarging
+  offline, coverage text with zoom gaps and out-of-date areas, default
+  layers/zooms, outlines across the antimeridian.
 - `node scripts/offline-ui-check.mjs` against `npm start` (live, about 80
-  requests): the real screens — plan, download with pause and resume, reload
-  with every tile host blocked (only OpenFreeMap's TileJSON may reach the
-  network), zoom past the package, "Offline here", outline, delete.
+  requests): the real screens with USGS imagery and 3D terrain on — plan,
+  download with pause and resume, reload with every tile host blocked: no
+  tile the package holds (per its stored tile ranges) may reach the network
+  (OpenFreeMap's TileJSON is asked online once by design; tiles the tilted
+  view asks for outside the package are listed), zoom past the package
+  (screenshot only, no assertion), "Offline here", outline, delete.
 - `node scripts/offline-browser-check.mjs` (live, about 50 polite requests;
   not in `npm test`): first a real IndexedDB upgrade (a populated version-1
   database built with `UPGRADES[1]` is opened by this build: every content
@@ -546,11 +567,20 @@ never replaces a real tile online.
   can't be set from a browser page (desktop sets it; unit-tested, not yet
   run in a packaged desktop build); staleness is time-based (no upstream
   version check); a package downloading in another tab shows as "Stopped"
-  here until that tab finishes, and there's no cross-tab change
-  notification (reopen the sheet to refresh).
-- Enlarged tiles past a package's top zoom are blurrier than real ones;
-  OpenFreeMap vector tiles aren't enlarged this way (MapLibre overzooms
-  them only past 14).
+  here until that tab finishes. There's no cross-tab change notification:
+  the list is re-read when the Offline maps sheet opens and when the app
+  returns to the foreground, which is also when a package finished
+  elsewhere starts being served in this tab.
+- A tilted 3D view (3D terrain always tilts) draws its far distance at lower
+  zooms and can reach a little past the flat view's rectangle: those tiles
+  are blank offline unless the package's lower zooms cover them
+  (`offline-ui-check` lists them; with zoom 12 only: lower-zoom OpenFreeMap
+  and terrain tiles at the west edge).
+- Enlarged tiles past a package's top zoom are blurrier than real ones.
+  Vector tiles aren't enlarged by Fieldline; MapLibre keeps parent tiles on
+  screen when children fail, which covers some of that.
+- Checking every file (a check, the end of a download, repair's first check)
+  shows no progress and can't be paused.
 - No undo/redo stack yet (trash only).
 - Backup restore of a single huge file runs in one transaction on the main
   thread; very large profiles may need chunked restore later.
