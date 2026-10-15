@@ -119,6 +119,17 @@ describe("searchUnits", () => {
     assert.deepEqual(labels(""), []);
     assert.deepEqual(labels("unit"), []);
     assert.deepEqual(labels("arizona"), []);
+    assert.deepEqual(labels("hunt area"), []);
+  });
+
+  it("accepts Wyoming-style 'hunt area' wording around a code", () => {
+    const WY7 = { ...fixtureUnit("us-wy", "wgfd-elk-areas", "7", { lng: -105.6, lat: 42.3 }), label: "Elk hunt area 7" };
+    for (const q of ["hunt area 7", "Area 7", "wy area 7", "Wyoming hunt area 7", "hunt area 7 WY", "areas 7"]) {
+      assert.deepEqual(searchUnits([WY7, AZ22], q).map((r) => r.label), ["Elk hunt area 7 · Wyoming"], q);
+    }
+    assert.equal(searchUnits([WY7], "wy area 7")[0].jurisdictionMatch, true);
+    // Other states' codes are unchanged by the extra words.
+    assert.deepEqual(labels("area 22 az"), ["Unit 22 · Arizona", "Unit 22 · Idaho"]);
   });
 });
 

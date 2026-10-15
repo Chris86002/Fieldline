@@ -69,6 +69,10 @@ const HUNT_UNIT_PROVIDERS: Partial<Record<JurisdictionId, { providerId: string; 
     providerId: "udwr-deer-general",
     note: "Utah Division of Wildlife Resources general-season buck deer hunt units only; elk, limited-entry, once-in-a-lifetime, pronghorn and antlerless boundaries are not included, and limited-entry-only areas show no unit. Reference boundaries; check the Utah Big Game Guidebook boundary descriptions.",
   },
+  "us-wy": {
+    providerId: "wgfd-elk-areas",
+    note: "Wyoming Game and Fish Department elk hunt areas only; deer, pronghorn, moose, bighorn sheep, mountain goat, bison and other species' hunt areas are not included. Reference boundaries at 1:100,000 scale; check the current Wyoming elk regulations' hunt area descriptions.",
+  },
 };
 
 const LAND_MANAGEMENT: LayerCoverage = {

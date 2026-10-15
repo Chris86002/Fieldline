@@ -64,6 +64,13 @@ const MOCK_LAYERS = {
     props: (code) => ({ boundary_name: code, hunt_type: "General Season", species: "Deer", season: "Fall 2026" }),
     code: (index) => `Mock ${index + 1}`,
   },
+  "services6.arcgis.com": {
+    center: [-107.5, 43.0],
+    oid: "OBJECTID",
+    fields: ["OBJECTID", "HUNTAREA", "HUNTNAME", "HERDUNIT", "HERDNAME", "Region", "SqMiles"],
+    props: (code) => ({ HUNTAREA: Number(code), HUNTNAME: "Mock area", HERDUNIT: 999, HERDNAME: "Mock herd", Region: "Mock", SqMiles: 400 }),
+    code: (index) => String(index + 1),
+  },
 };
 
 function mockFeatures(layer) {
@@ -175,7 +182,7 @@ async function exerciseMapControls(page) {
   await page.getByRole("button", { name: "Layers", exact: true }).click();
   await page.getByRole("dialog", { name: "Layers" }).waitFor({ state: "visible" });
   await page
-    .getByText("State agency unit lines where Fieldline has them (Arizona, Idaho, Montana, Colorado, and Utah). Reference lines, not legal boundaries.", {
+    .getByText("State agency unit lines where Fieldline has them (Arizona, Idaho, Montana, Colorado, Utah, and Wyoming). Reference lines, not legal boundaries.", {
       exact: true,
     })
     .waitFor({ state: "visible" });
@@ -197,6 +204,7 @@ async function exerciseMapControls(page) {
     ["mt 101", "Hunting District 101 · Montana"],
     ["co 501", "GMU 501 · Colorado"],
     ["ut mock 1", "Deer unit Mock 1 · Utah"],
+    ["wy hunt area 7", "Elk hunt area 7 · Wyoming"],
   ]) {
     await search.fill(query);
     await page.getByText(label, { exact: true }).waitFor({ state: "visible", timeout: 15_000 });
