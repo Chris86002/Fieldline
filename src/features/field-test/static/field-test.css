@@ -1,0 +1,4 @@
+/* Standalone field-test page: the app's theme, scanning only the field-test sources. */
+@import "../../../styles.css";
+@source "../../../features/field-test";
+@source "../../../features/location";

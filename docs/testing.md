@@ -15,6 +15,9 @@ npm run desktop:test
 # Browser smoke: needs `npx playwright install chromium` once, and
 # `npm run start` running in another terminal.
 npm run smoke
+# Phone field-test tool (CC-01), headless Chromium with emulated GPS:
+npm run field-test:check            # /field-test on the running build (FIELDLINE_URL)
+npm run field-test:build && npm run field-test:check -- --static   # standalone page
 ```
 
 `npm test` discovers every `*.test.ts` under `src/` (it used to cover only
@@ -51,6 +54,7 @@ is real provider data.
 | 2026-10-14 | CC-04 + CC-05 wave 1 integrated (`feature/cc04-cc05`) | same | test 262/262, typecheck, lint, build, desktop:test 15/15, smoke desktop + mobile pass; `scripts/storage-browser-check.mjs` passes in Chromium; fresh-profile reload keeps the new public-land default (real browser) |
 | 2026-10-14 | CC-04 wave 2 MAP-03 (`cc04/map-wave2`) | same | test 352/352, typecheck, lint, build; smoke desktop + mobile pass; `offline-contours-check` and `offline-ui-check` pass against the production build (desktop:test not run: no desktop changes) |
 | 2026-10-14 | MAP-03 CC-12 review fixes, merged with `feature/cc04-cc05` b2b0c32 | same | test 408/408, typecheck, lint, build; smoke desktop + mobile pass; `offline-contours-check` (now also past the package: 25 terrain requests for 25 tiles) and `offline-ui-check` pass against the production build |
+| 2026-10-14 | CC-01 field-test prototype (`cc01/recording-prototype`) | same | test 429/429, typecheck, lint, build; smoke desktop + mobile pass; `field-test:check` passes for the app route and the static page (headless Chromium: page hidden by a synthetic visibilitychange because headless keeps pages visible; no freeze events delivered). No phone tested. |
 
 Other scripts: `node scripts/storage-browser-check.mjs` (real IndexedDB in
 Chromium), `node scripts/map-gallery.mjs` (fixed-view screenshots with live

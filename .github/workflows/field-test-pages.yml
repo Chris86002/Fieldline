@@ -1,0 +1,49 @@
+name: Field test page
+
+# Publishes the standalone phone field-test page (CC-01) to GitHub Pages, so
+# phones can open it over HTTPS (location needs a secure address). Run it by
+# hand: Actions → "Field test page" → Run workflow. One-time setup by the
+# repository owner: Settings → Pages → Build and deployment → Source:
+# "GitHub Actions". See docs/field-test-checklist.md.
+#
+# Only the field-test page is published (dist/field-test); it has no server
+# functions and stores everything on the phone. The map app is not deployed.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: field-test-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run field-test:build
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist/field-test
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

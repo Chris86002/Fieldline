@@ -176,6 +176,14 @@ caller passes `acceptDamage: true` after the user agrees; the result always
 reports the loss. A quota failure rejects with `quota`: the recorder must tell
 the user, keep the unsaved fixes in memory and retry.
 
+The phone field-test tool (CC-01, `src/features/field-test/run-store.ts`) uses
+the same checkpoint store over its **own database, `fieldline-field-test`**
+(same layout and schema record, nothing migrated into it), so test runs never
+reach `fieldline-content` or show up as the app's interrupted recording. Its
+run setup, event log and reports are `ft-run:`, `ft-event:` and `ft-report:`
+records in that database's `meta` store; finished runs become tracks there.
+Deleting a test run touches only that database.
+
 ## Full backup format
 
 `createBackup(repo, { settings, appVersion })` → JSON text:
