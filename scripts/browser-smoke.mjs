@@ -64,6 +64,13 @@ const MOCK_LAYERS = {
     props: (code) => ({ boundary_name: code, hunt_type: "General Season", species: "Deer", season: "Fall 2026" }),
     code: (index) => `Mock ${index + 1}`,
   },
+  "services2.arcgis.com": {
+    center: [-108.2, 33.3],
+    oid: "OBJECTID",
+    fields: ["OBJECTID", "GMU", "SQMI", "BearZone", "Cougar_Zone", "Maps"],
+    props: (code) => ({ GMU: code, SQMI: 400, BearZone: "10", Cougar_Zone: "J", Maps: "US Forest Service Maps: Mock National Forest." }),
+    code: (index) => `${index + 1}${index % 3 === 1 ? "A" : ""}`,
+  },
 };
 
 function mockFeatures(layer) {
@@ -175,7 +182,7 @@ async function exerciseMapControls(page) {
   await page.getByRole("button", { name: "Layers", exact: true }).click();
   await page.getByRole("dialog", { name: "Layers" }).waitFor({ state: "visible" });
   await page
-    .getByText("State agency unit lines where Fieldline has them (Arizona, Idaho, Montana, Colorado, and Utah). Reference lines, not legal boundaries.", {
+    .getByText("State agency unit lines where Fieldline has them (Arizona, Idaho, Montana, Colorado, Utah, and New Mexico). Reference lines, not legal boundaries.", {
       exact: true,
     })
     .waitFor({ state: "visible" });
@@ -197,6 +204,7 @@ async function exerciseMapControls(page) {
     ["mt 101", "Hunting District 101 · Montana"],
     ["co 501", "GMU 501 · Colorado"],
     ["ut mock 1", "Deer unit Mock 1 · Utah"],
+    ["nm 2a", "GMU 2A · New Mexico"],
   ]) {
     await search.fill(query);
     await page.getByText(label, { exact: true }).waitFor({ state: "visible", timeout: 15_000 });
