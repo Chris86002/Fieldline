@@ -124,9 +124,9 @@ describe("searchUnits", () => {
 
 describe("query parsing", () => {
   it("separates the code from a jurisdiction name", () => {
-    assert.deepEqual(parseUnitQuery("New Mexico unit 34"), { code: "34", jurisdictionId: "us-nm" });
-    assert.deepEqual(parseUnitQuery("34 new mexico"), { code: "34", jurisdictionId: "us-nm" });
-    assert.deepEqual(parseUnitQuery("GMU 6A"), { code: "6a", jurisdictionId: null });
+    assert.deepEqual(parseUnitQuery("New Mexico unit 34"), { code: "34", jurisdictionId: "us-nm", wholeCode: "newmexico34" });
+    assert.deepEqual(parseUnitQuery("34 new mexico"), { code: "34", jurisdictionId: "us-nm", wholeCode: "34newmexico" });
+    assert.deepEqual(parseUnitQuery("GMU 6A"), { code: "6a", jurisdictionId: null, wholeCode: "6a" });
   });
 
   it("normalizes codes without merging different ones", () => {
@@ -134,5 +134,46 @@ describe("query parsing", () => {
     assert.equal(normalizeUnitCode("6-A"), "6a");
     assert.equal(normalizeUnitCode("0"), "0");
     assert.notEqual(normalizeUnitCode("2"), normalizeUnitCode("22"));
+    // Punctuation in named units, as the query parser treats it.
+    assert.equal(normalizeUnitCode("Beaver, East"), "beavereast");
+    assert.equal(normalizeUnitCode("San Juan, Abajo Mtns"), parseUnitQuery("san juan, abajo mtns").code);
+  });
+});
+
+describe("named units (Utah-style names)", () => {
+  // Test fixtures: names as Utah DWR writes them; geometry is a token square.
+  const named = (code: string, lng: number, lat: number) => ({ ...fixtureUnit("us-ut", "udwr-deer-general", code, { lng, lat }), label: `Deer unit ${code}` });
+  const UT = [
+    named("Beaver, East", -112.4, 38.3),
+    named("Wasatch Mtns, West", -111.6, 40.4),
+    named("La Sal Mtns", -109.3, 38.5),
+    named("Mt Dutton", -112.2, 38.0),
+    named("Cache", -111.7, 41.7),
+  ];
+  const MT_DUTTON = fixtureUnit("us-mt", "mtfwp-deer-elk-lion", "Dutton", { lng: -111.7, lat: 47.8 });
+
+  it("finds names with commas, typed with or without them", () => {
+    for (const query of ["Beaver, East", "beaver east", "ut beaver, east", "Wasatch Mtns, West"]) {
+      const hits = searchUnits(UT, query);
+      assert.equal(hits.length, 1, query);
+    }
+    assert.equal(searchUnits(UT, "beaver east")[0].label, "Deer unit Beaver, East · Utah");
+  });
+
+  it("reads a leading state code as part of the name when the state reading finds nothing", () => {
+    assert.equal(searchUnits(UT, "La Sal Mtns")[0]?.unit.code, "La Sal Mtns");
+    assert.equal(searchUnits(UT, "mt dutton")[0]?.unit.code, "Mt Dutton");
+    assert.equal(searchUnits(UT, "ut la sal mtns")[0]?.unit.code, "La Sal Mtns");
+  });
+
+  it("ranks the state reading first and still offers the whole-name match", () => {
+    // "mt dutton" with a Montana unit named "Dutton": Montana's Dutton first (state match), Utah's Mt Dutton next.
+    const hits = searchUnits([...UT, MT_DUTTON], "mt dutton");
+    assert.deepEqual(hits.map((h) => [h.unit.id, h.jurisdictionMatch]), [
+      [MT_DUTTON.id, true],
+      ["us-ut:udwr-deer-general:Mt Dutton", false],
+    ]);
+    // Codes elsewhere are unchanged: "az 22" is still Arizona's 22 first.
+    assert.equal(searchUnits(UNITS, "az 22")[0].unit.id, AZ22.id);
   });
 });

@@ -15,7 +15,7 @@ Checked 2026-10-13. Territories are not listed yet.
 ## The layers
 
 - **Land management** (`blm-sma`): the BLM Surface Management Agency map. It shows which agency manages the surface. It is not parcel ownership and not permission to hunt or enter.
-- **Hunt units**: Arizona (`azgfd-gmu`, Arizona Game and Fish), Idaho (`idfg-gmu`, Idaho Fish and Game) and Montana (`mtfwp-deer-elk-lion`, Montana Fish, Wildlife & Parks) only. Montana covers the deer, elk and mountain lion hunting districts only; Montana's districts for other species (antelope, moose, sheep, goat, bear, birds) are not included. Unit lines are for reference, not the legal description; check current regulations and district descriptions. Everywhere else, use the state wildlife agency's maps.
+- **Hunt units**: Arizona (`azgfd-gmu`, Arizona Game and Fish), Idaho (`idfg-gmu`, Idaho Fish and Game), Montana (`mtfwp-deer-elk-lion`, Montana Fish, Wildlife & Parks), Colorado (`cpw-gmu`, Colorado Parks and Wildlife) and Utah (`udwr-deer-general`, Utah Division of Wildlife Resources) only. Montana covers the deer, elk and mountain lion hunting districts only; Montana's districts for other species (antelope, moose, sheep, goat, bear, birds) are not included. Colorado covers the big-game GMUs only; its bighorn sheep and mountain goat units are not included. Utah covers the general-season buck deer units only; Utah's elk, limited-entry, once-in-a-lifetime, pronghorn and antlerless boundaries are not included, and limited-entry-only areas (e.g. Paunsaugunt, Henry Mtns) show no unit. Unit lines are for reference, not the legal description; check current regulations and district descriptions. Everywhere else, use the state wildlife agency's maps.
 - **Parcels**: no parcel or owner source anywhere yet.
 - **Access**: no access, closure or road-status source anywhere yet. Check with the land manager.
 - **Legal hours**: Fieldline doesn't hold verified legal shooting-hour rules anywhere. Sunrise and sunset are astronomy only; check the agency for legal hours.
@@ -33,7 +33,7 @@ Each link returned HTTP 200 after redirects on 2026-10-13 and is the agency's ow
 | Arizona (AZ) | available (blm-sma) | available (azgfd-gmu) | unavailable | unavailable | unavailable | [Arizona Game and Fish Department](https://www.azgfd.com/) |
 | Arkansas (AR) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Arkansas Game and Fish Commission](https://www.agfc.com/) |
 | California (CA) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [California Department of Fish and Wildlife](https://wildlife.ca.gov/) |
-| Colorado (CO) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Colorado Parks and Wildlife](https://cpw.state.co.us/) |
+| Colorado (CO) | available (blm-sma) | available (cpw-gmu; big-game GMUs only) | unavailable | unavailable | unavailable | [Colorado Parks and Wildlife](https://cpw.state.co.us/) |
 | Connecticut (CT) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Connecticut Department of Energy and Environmental Protection](https://portal.ct.gov/deep) |
 | Delaware (DE) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Delaware Division of Fish and Wildlife](https://dnrec.delaware.gov/fish-wildlife/) |
 | District of Columbia (DC) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [District of Columbia Department of Energy and Environment](https://doee.dc.gov/) |
@@ -72,7 +72,7 @@ Each link returned HTTP 200 after redirects on 2026-10-13 and is the agency's ow
 | South Dakota (SD) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [South Dakota Game, Fish and Parks](https://gfp.sd.gov/) |
 | Tennessee (TN) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Tennessee Wildlife Resources Agency](https://www.tn.gov/twra) |
 | Texas (TX) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Texas Parks and Wildlife Department](https://tpwd.texas.gov/) |
-| Utah (UT) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Utah Division of Wildlife Resources](https://wildlife.utah.gov/) |
+| Utah (UT) | available (blm-sma) | available (udwr-deer-general; general-season buck deer units only) | unavailable | unavailable | unavailable | [Utah Division of Wildlife Resources](https://wildlife.utah.gov/) |
 | Vermont (VT) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Vermont Fish and Wildlife Department](https://vtfishandwildlife.com/) |
 | Virginia (VA) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Virginia Department of Wildlife Resources](https://dwr.virginia.gov/) |
 | Washington (WA) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Washington Department of Fish and Wildlife](https://wdfw.wa.gov/) |
