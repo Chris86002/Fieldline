@@ -15,7 +15,8 @@ This register lists every external data provider that Fieldline calls today, plu
 ## How the app stores provider data today
 
 - `src/lib/hunt/tiles.ts:23-66`: map sources wrapped in `cachedTile()` go through the `fltile://` protocol. Every tile the user views is written to Cache Storage `fieldline-tiles-v1`, with no expiry. Wrapped sources: Esri World Imagery, USGS Topo and BLM SMA (`MapCanvas.tsx:504-506`).
-- `tiles.ts:116-174` (`packTiles`) and `HuntApp.tsx:694-714` ("save area"): pre-fetch up to 220 tiles at one zoom level (z8–15) for the current view. Templates: `TILES.topo`, `TILES.satellite` (Esri) and `TILES.sma`.
+- Offline map packages (since CC-05 wave 2; `src/lib/offline/`, screens in `src/features/offline/`): Layers → Offline maps downloads a rectangle into IndexedDB from USGS imagery/topo, BLM SMA, OpenFreeMap (TileJSON, vector tiles, fonts) and AWS terrain only (`packageRuleFor` refuses every other host, Esri included), within each provider's limits (OpenFreeMap ≤ 3,000 files / 50 MB per download, ≤ 4 parallel). Packages expire by layer (BLM 90 days, OpenFreeMap 60, USGS 365). The desktop app sends OpenFreeMap an identifying User-Agent. Details: docs/storage.md "Offline packages".
+- `tiles.ts` (`packTiles`): the older one-zoom save of up to 220 tiles into Cache Storage, now offered only when durable storage isn't available; templates are `OFFLINE_TEMPLATES` only (USGS imagery, USGS topo, BLM SMA).
 - `src/features/catalog/unit-store.ts` (since CC-03): each hunt-unit provider's processed units are stored in Cache Storage `fieldline-units-v3` with a manifest (retrieval time, source version, counts) and a 30-day refresh policy; updates are promoted only after validation. The older `fieldline-units-v2` / `fieldline-units-id-v1` caches are deleted on startup.
 - `src/routes/api/dem/$z/$x/$y.ts:20-26`: proxies AWS Terrain Tiles and sets `Cache-Control: public, max-age=604800` (7 days).
 - `src/lib/hunt/search-core.ts:18-22`: place-search results are kept in memory for 60 s, with at most 100 entries.
@@ -30,7 +31,8 @@ This register lists every external data provider that Fieldline calls today, plu
 ### 1. OpenFreeMap — vector tiles and glyphs ("planet" style source)
 - **Used by:** `src/components/hunt/MapCanvas.tsx:92-93` (constants `OFM`, `GLYPHS`), `:502` (glyphs), `:507` (vector source `ofm`).
 - **Endpoint host:** `tiles.openfreemap.org` (`/planet`, `/fonts/{fontstack}/{range}.pbf`).
-- **Status:** in use. The Street basemap and the road, track, creek, peak and town overlays depend on it.
+- **Status:** in use. The Terrain and Field styles (land, water and land cover, MAP-03) and the road, track, creek, peak and town overlays on every style depend on it.
+- **Land cover (MAP-03):** drawn only from OpenMapTiles layers already in these tiles: `landcover` (classes `wood`, `grass` with `scrub`/`heath`/`fell` subclasses shown as brush, `wetland`, `rock`, `sand`, `ice`, `farmland`), `landuse` (residential, commercial, industrial, retail, railway, quarry) and `park`. This is OpenStreetMap mapping, not a land-cover survey: coverage is uneven (gallery: Penns Valley PA has wood polygons; the Sawtooths and Four Peaks have almost none), and unmapped ground shows the plain land color. Provenance shown to users: the Layers hint ("where OpenStreetMap maps them"); the data date is the OFM build named in the TileJSON (e.g. `20261011_080001_pt`), not yet shown in the UI. No new request: the same tiles, so offline packages cover it.
 - **View:** Free public instance with no registration. Commercial use is allowed ("Yes" on the FAQ).
 - **Cache/offline:** Offline downloads are allowed within limits: at most 3,000 tiles or 50 MB per download, at most 4 parallel requests, and a unique User-Agent. Larger downloads need contact with the operator. The terms do not address general caching.
 - **Bulk download:** Scraping is prohibited "except for offline downloads". Weekly full-planet downloads (MBTiles / Btrfs) are offered for self-hosting.
@@ -41,7 +43,7 @@ This register lists every external data provider that Fieldline calls today, plu
 - **Attribution:** Required. MapLibre shows it automatically. The app shows "© OpenStreetMap, OpenFreeMap".
 - **Coverage:** Planet (OSM-derived). AK/HI are included in planet scope. Rendering quality there was not checked.
 - **Freshness:** Weekly planet builds.
-- **Current app behavior vs terms:** OFM tiles are not wrapped in `fltile://` and are not pre-fetched. "Save area" refuses the Street basemap (`HuntApp.tsx:701-703`). No conflict.
+- **Current app behavior vs terms:** OFM's TileJSON, vector tiles and fonts go through `fltile://` (served from offline packages first; never written to Cache Storage). Offline packages download them within the stated limits: ≤ 3,000 files and ≤ 50 MB per package (planned and enforced on real bytes), ≤ 4 parallel requests tab-wide, one downloading tab at a time. The desktop app sets a unique User-Agent on OFM requests; browsers can't, so web downloads go without one (open; ask the operator if web downloads become common).
 - **Maintainer:** unassigned.
 - **Fallback/exit:** Self-host the weekly planet download, or use PMTiles.
 - **Sources checked:** https://openfreemap.org/ , https://openfreemap.org/tos/
@@ -172,6 +174,37 @@ This register lists every external data provider that Fieldline calls today, plu
 - **Fallback/exit:** The last validated copy; FWP's district PDFs and regulations at fwp.mt.gov.
 - **Sources checked:** https://fwp-gis.mt.gov/arcgis/rest/services/admbnd/huntingDistricts/MapServer?f=pjson , https://fwp-gis.mt.gov/arcgis/rest/services/admbnd/huntingDistricts/MapServer/11?f=pjson
 
+### 7b. Colorado Parks and Wildlife — CPWAdminData FeatureServer, layer 6 "CPW GMU Boundary (Big Game)"
+- **Used by:** `src/features/catalog/adapters/cpw.ts` (added in CC-03 through the adapter kit, with no app-shell change), same validated pipeline as entry 6. Labels read "GMU <n>".
+- **Endpoint host:** `services5.arcgis.com/ttNGmDvKQA7oeDQ3/arcgis/rest/services/CPWAdminData/FeatureServer/6`. This is ArcGIS Online hosting (shared host; the org id `ttNGmDvKQA7oeDQ3` is CPW's); item `168fccb0583f42f1afe57de6c9ce846d`, owner `rsaccoCPW`, access public, accessInformation "Colorado Parks and Wildlife".
+- **Status:** in use (since 2026-10-14).
+- **Layer:** Big-game GMU polygons digitized by the CPW GIS group from 1:24,000 DRGs (layer description). Fields used: FID (object id), GMUID (integer unit code), DEERDAU / ELKDAU / ANTDAU / MOOSEDAU / BEARDAU / LIONDAU (herd-unit codes, shown as "Herd units (DAU)"; codes ending "-99" are left out because the source doesn't define them), SqMilesGIS. COUNTY is free text with misspellings and is not shown. maxRecordCount 2000; pagination supported; JSON, geoJSON, PBF; native spatial reference 3857. editingInfo.dataLastEditDate 2026-08-27, so a refresh with an unchanged date and count skips the download. Live check 2026-10-14: 186 features → 186 GMUs (see the adapter's live test for numbers).
+- **License / terms:** The item licenseInfo says the data are "product and property of the Colorado Parks and Wildlife" and are provided "AS IS" without warranty, at the user's sole risk, with an indemnity clause. The service description says it was published "for public distribution". No license grant for storage or redistribution is stated: download and redistribution are **unknown**. copyrightText: "Colorado Parks and Wildlife GIS Group" (layer), "Colorado Parks and Wildlife" (service).
+- **Auth:** None (public service).
+- **Rate policy:** `maxRecordCount` 2000. No published rate limit.
+- **Attribution:** "Colorado Parks and Wildlife".
+- **Coverage:** Colorado only (data extent −109.06, 36.99 to −102.04, 41.00). Big-game GMUs only; bighorn sheep (layer 7) and mountain goat (layer 8) units in the same service are not included.
+- **Maintainer:** unassigned.
+- **Fallback/exit:** The last validated copy; CPW's big-game brochure and GMU maps at cpw.state.co.us.
+- **Sources checked:** https://services5.arcgis.com/ttNGmDvKQA7oeDQ3/ArcGIS/rest/services/CPWAdminData/FeatureServer?f=json , https://services5.arcgis.com/ttNGmDvKQA7oeDQ3/ArcGIS/rest/services/CPWAdminData/FeatureServer/6?f=json , https://www.arcgis.com/sharing/rest/content/items/168fccb0583f42f1afe57de6c9ce846d?f=json
+
+### 7c. Utah Division of Wildlife Resources — "2026 Mule Deer General Season" hosted feature layer
+- **Used by:** `src/features/catalog/adapters/udwr.ts` (added in CC-03 through the adapter kit, with no app-shell change), same validated pipeline as entry 6. Labels read "Deer unit <name>"; the unit name (e.g. "Cache", "Pine Valley") is the code because the layer has no unit number.
+- **Endpoint host:** `services.arcgis.com/ZzrwjTRez6FJiOq4/arcgis/rest/services/2026MuleDeerGeneralSeason2/FeatureServer/0`. ArcGIS Online hosting (shared Esri host; the allowlist entry admits the whole host, as `services8.arcgis.com` does for AZGFD). Item `e08bbe6e3a2d4144914bc59a15ac7d15`, owner `dwrdata` (the DWR's ArcGIS Online account), public, content status "public_authoritative", created and last modified 2026-04-02.
+- **Status:** in use (since 2026-10-14).
+- **Layer:** item snippet "2026 Mule Deer General Season hunt boundaries"; the description says they come from the Utah Big Game Guidebook. Polygons in EPSG:3857; fields boundary_name, description (guidebook boundary text), hunt_type, species, season, SHAPE__Area/Length. maxRecordCount 2000, pagination supported, JSON/geoJSON/PBF. editingInfo.dataLastEditDate 2026-04-02T00:24:01Z, used as the source version, so a 30-day refresh with no edit and the same count downloads no features. Live check 2026-10-14: 31 features → 31 units, every label point inside its unit, all "General Season · Fall 2026", species "Deer"; Logan → Cache, St. George → Pine Valley, Paunsaugunt → no general-season unit (limited-entry only).
+- **Why this set:** the general-season buck deer hunt is Utah's broadest big-game hunt, and its 31 units cover most of the state, so it answers "which unit am I in" for the most hunters. Not included (separate DWR layers, each a later slice): limited-entry deer, general any-bull and spike-only elk, limited-entry elk, pronghorn, once-in-a-lifetime species, antlerless hunts, bear, cougar, turkey. Areas hunted only under limited-entry deer permits (e.g. Paunsaugunt, Henry Mtns) are gaps in this layer.
+- **Yearly service:** DWR publishes a new service per season (`Utah_Big_Game_Hunt_Boundaries_2025` → `2026MuleDeerGeneralSeason2`). The adapter URL must be moved to the next season's layer when it appears; until then results keep showing "Fall 2026". If the 2026 service is removed, the adapter reports the outage and serves the last validated copy as stale.
+- **License / terms:** the item licenseInfo is a "Disclaimer & User Agreement": "For reference only", data provided "as is", no warranty, and no DNR/DWR liability. It neither grants nor restricts use; layer copyrightText and accessInformation are empty. Download and redistribution: **unknown**. The utah.gov site disclaimer (footer "Terms of Use" on wildlife.utah.gov) allows copying information on its web pages for "personal or informational use" if "not modified in any respect"; whether that covers this ArcGIS service, and simplified offline copies, is unverified. Commercial terms: not stated.
+- **Attribution:** "Utah Division of Wildlife Resources".
+- **Auth:** None (public layer).
+- **Rate policy:** `maxRecordCount` 2000. No published rate limit.
+- **Coverage:** Utah only (layer extent -114.05, 37.00, -109.04, 42.00).
+- **Other DWR sources seen, not used:** `dwrmapserv.utah.gov/dwrarcgis/rest/services/hunt/Boundaries_and_Tables_for_HuntP/FeatureServer/0` (all 687 hunt boundaries of every species in one layer, EPSG:26912, maxRecordCount 1000, copyright "Gary Ogborn", no species or hunt-type field; per its description hunts link to boundaries through separate tables keyed on hunt_number, so it is not filterable to one unit set in a single query); "Utah DWR WMUs - Mule Deer" (management units, not hunt boundaries).
+- **Maintainer:** unassigned.
+- **Fallback/exit:** The last validated copy; the Utah Hunt Planner and the Big Game Guidebook at wildlife.utah.gov.
+- **Sources checked:** https://services.arcgis.com/ZzrwjTRez6FJiOq4/ArcGIS/rest/services/2026MuleDeerGeneralSeason2/FeatureServer?f=json , https://services.arcgis.com/ZzrwjTRez6FJiOq4/ArcGIS/rest/services/2026MuleDeerGeneralSeason2/FeatureServer/0?f=json , https://www.arcgis.com/sharing/rest/content/items/e08bbe6e3a2d4144914bc59a15ac7d15?f=json , https://www.arcgis.com/sharing/rest/search?q=owner%3Adwrdata (feature services) , https://dwrmapserv.utah.gov/dwrarcgis/rest/services/hunt?f=json , https://wildlife.utah.gov/maps , https://www.utah.gov/support/disclaimer.html
+
 ### 8. Open-Meteo — Forecast API and Elevation API
 - **Used by:**
   - Forecast: `src/lib/hunt/weather.ts:346` (primary weather; fallback to NWS at `weather.ts:577-586`).
@@ -263,7 +296,9 @@ This register lists every external data provider that Fieldline calls today, plu
 ### 13. AWS Open Data — Terrain Tiles (Mapzen/Tilezen "joerd", Terrarium PNG)
 - **Used by:** `src/routes/api/dem/$z/$x/$y.ts:20` (server proxy, z ≤ 14, `Cache-Control` 7 days), `MapCanvas.tsx:491, 508` (raster-dem, terrarium encoding).
 - **Endpoint host:** `s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png` (bucket `elevation-tiles-prod`, us-east-1; EU replica `elevation-tiles-prod-eu`).
-- **Status:** in use (3D terrain).
+- **Offline:** packaged (layer `dem`), so relief, tint, 3D terrain and contours work in downloaded areas (contours verified by `scripts/offline-contours-check.mjs`).
+- **Status:** in use (3D terrain, sun shade, Terrain's elevation tint, and contours since MAP-03).
+- **Contours (MAP-03):** traced in the browser by `maplibre-contour` 0.1.1 (BSD-3-Clause, onthegomap, no dependencies, pinned; `src/features/map/contour-source.ts`) from the same proxied DEM tiles, read through `fltile://` (offline packages first). A 512-px contour tile at z/x/y uses DEM tile z/x/y and its eight neighbors, after a light smoothing of a copy (display only). No new host and no new request type. It does add DEM requests: the hillshade asks for tiles one zoom deeper, so contours (at the map zoom, plus a ring of neighbors) are extra tiles — measured 56 instead of 36 `/api/dem` requests for a fresh load of the Sawtooths at map zoom 12.5 on a 1280×800 window (`scripts/map-perf.mjs`). Those tiles are the ones 3D terrain and offline packages use at that zoom, and the proxy's 7-day `Cache-Control` lets the browser reuse them. Attribution: the contour source carries the same "Terrain © AWS Terrain Tiles" credit, so it shows even with relief off and is not repeated (a separate "Contours derived from…" line wrapped the phone attribution to three rows in the gallery); the Layers hint says contours are traced from the terrain model. Lines are a rendering of a ~10 m (US 3DEP) to ~30 m+ model, not a survey; the Layers hint says so.
 - **View/cache/redistribution:** Open-data bucket; no AWS account is needed. Each source dataset has its own licence: 3DEP and SRTM are public domain; GMTED has no restrictions; ETOPO1 is not copyrighted in the US; ArcticDEM and others are per their own terms.
 - **Bulk download:** Permitted by open-bucket design. No AWS-stated limit found.
 - **Auth:** None.
@@ -379,7 +414,7 @@ This register lists every external data provider that Fieldline calls today, plu
 6. **Photon** has undefined limits and no custom User-Agent. Commercial and attribution terms are not stated.
 7. **NWS User-Agent** lacks the recommended contact information. NWS says UA identification "will be replaced with an API key in the future".
 8. **AWS Terrain Tiles:** the attribution does not match joerd's required per-source credits. The data is frozen (v1.1, 2017) with "regular updates are not planned". Hawaii resolution is unverified.
-9. **AZGFD hunt units:** no licence is stated, and the data was last edited in 2020. Redistributing it in offline packages needs confirmation from AZGFD.
+9. **AZGFD hunt units:** no licence is stated, and the data was last edited in 2020. Redistributing it in offline packages needs confirmation from AZGFD. **CPW GMUs** are the same: "property of" CPW with an as-is disclaimer, no licence grant; confirm with CPW before offline packaging. The `services5.arcgis.com` allowlist entry admits any ArcGIS Online org on that shared host, as `services8.arcgis.com` does for AZGFD.
 10. **BLM SMA redistribution** is unverified for the exact service used. Another BLM SMA service reportedly carries "INTERNAL USE ONLY" wording in its use limits.
 11. **Coverage gaps for the nationwide goal:**
     - NAIP is CONUS-only.

@@ -3,8 +3,9 @@
  *
  * Priority: MapLibre places symbols from the top layer down, so the order of
  * the `labels` render group is the priority order. Unit numbers come first,
- * then cities and towns, terrain names (peaks, creeks), small places, and road
- * names last. Navigation labels (sun lines) sit in a higher group and win.
+ * then cities and towns, terrain names (peaks, creeks), small places, road
+ * names, and contour elevations last. Navigation labels (sun lines) sit in a
+ * higher group and win.
  *
  * Density changes when each kind of label appears and how much room it needs.
  * It never hides unit numbers or the user's own content.
@@ -13,6 +14,8 @@ export type LabelDensity = "fewer" | "standard" | "more";
 
 /** Label layers, bottom (lowest priority) to top (highest priority). */
 export const LABEL_LAYER_IDS = [
+  // Contour elevations: supporting detail, first to give way.
+  "contour-labels",
   "vx-road-minor",
   "vx-road-major",
   "vx-shield",
@@ -36,6 +39,7 @@ export type LabelRule = {
 };
 
 const STANDARD: Record<LabelLayerId, LabelRule> = {
+  "contour-labels": { minzoom: 12, padding: 2, spacing: 360 },
   "vx-road-minor": { minzoom: 14, padding: 2, spacing: 280 },
   "vx-road-major": { minzoom: 11, padding: 2, spacing: 320 },
   "vx-shield": { minzoom: 8, padding: 2, spacing: 360 },

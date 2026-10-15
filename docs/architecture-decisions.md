@@ -108,6 +108,38 @@ referrer/usage limits to avoid abuse.
 **Revisit when** an Esri account is obtained, or USGS imagery quality proves
 good enough to replace the live layer.
 
+## ADR-008 Personal content in IndexedDB; fieldline-v1 content frozen — accepted (2026-10-14)
+
+**Decision.** On start, after the hunt store and settings hydrate, the app
+opens the `fieldline-content` IndexedDB repository and runs the v0→v1
+migration (`src/lib/storage`). When migration succeeds and storage is durable,
+`src/lib/hunt/content-sync.ts` loads marks and tracks from the repository and
+mirrors every later change to it in order; deletions move to a trash
+("Recently deleted"); recordings are checkpointed per fix and recovered after
+a crash or reload. The waypoints and tracks inside `fieldline-v1` are frozen at
+their pre-migration value (other fields keep saving), so older builds open a
+consistent snapshot and the repository is never silently out of step.
+
+**Fallback.** If migration is refused (corrupt or newer source, newer
+database) or storage isn't durable, `fieldline-v1` stays the store of record
+exactly as before and the reason is shown; trash and full backups are
+unavailable in that mode.
+
+**Consequences.** Older builds won't see marks or tracks created after the
+upgrade (export GPX or a full backup before downgrading). Content saved by an
+older build after the upgrade is not merged; the app says so
+(`legacy-changed-after-migration`). The app shows the map only after storage
+has opened, so no edit can race the migration.
+
+## ADR-009 Transient GPS loss doesn't end a recording — accepted (2026-10-14)
+
+Previously any geolocation error stopped the watch and ended the recording.
+Now only a denied permission does; "position unavailable" and timeouts keep
+the watch, keep recording, and record a gap so the track isn't drawn or
+measured as a straight line across the outage (spec §9). Found while testing
+recording in headless Chromium, which reports position-unavailable on
+emulated location changes.
+
 ## ADR-007 Weather source plan — proposed (2026-10-14)
 
 **Context.** Open-Meteo's free API is non-commercial only (10k calls/day).

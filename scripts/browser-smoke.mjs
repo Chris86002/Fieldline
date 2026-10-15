@@ -50,6 +50,20 @@ const MOCK_LAYERS = {
     props: (code) => ({ DISTRICT: code, REG: 3, REGYEAR: 2026, AREA_MI: 500 }),
     code: (index) => String(101 + index),
   },
+  "services5.arcgis.com": {
+    center: [-106.3, 39.3],
+    oid: "FID",
+    fields: ["FID", "GMUID", "DEERDAU", "ELKDAU", "ANTDAU", "MOOSEDAU", "BEARDAU", "LIONDAU", "SqMilesGIS"],
+    props: (code) => ({ GMUID: Number(code), DEERDAU: "D-9", ELKDAU: "E-99", ANTDAU: "A-99", MOOSEDAU: "M-99", BEARDAU: "B-99", LIONDAU: "L-99", SqMilesGIS: 300 }),
+    code: (index) => String(501 + index),
+  },
+  "services.arcgis.com": {
+    center: [-111.6, 39.6],
+    oid: "OBJECTID",
+    fields: ["OBJECTID", "boundary_name", "hunt_type", "species", "season"],
+    props: (code) => ({ boundary_name: code, hunt_type: "General Season", species: "Deer", season: "Fall 2026" }),
+    code: (index) => `Mock ${index + 1}`,
+  },
 };
 
 function mockFeatures(layer) {
@@ -161,7 +175,7 @@ async function exerciseMapControls(page) {
   await page.getByRole("button", { name: "Layers", exact: true }).click();
   await page.getByRole("dialog", { name: "Layers" }).waitFor({ state: "visible" });
   await page
-    .getByText("State agency unit lines where Fieldline has them (Arizona, Idaho, and Montana). Reference lines, not legal boundaries.", {
+    .getByText("State agency unit lines where Fieldline has them (Arizona, Idaho, Montana, Colorado, and Utah). Reference lines, not legal boundaries.", {
       exact: true,
     })
     .waitFor({ state: "visible" });
@@ -181,6 +195,8 @@ async function exerciseMapControls(page) {
     ["az 3", "Unit 3 · Arizona"],
     ["id 2", "Unit 2 · Idaho"],
     ["mt 101", "Hunting District 101 · Montana"],
+    ["co 501", "GMU 501 · Colorado"],
+    ["ut mock 1", "Deer unit Mock 1 · Utah"],
   ]) {
     await search.fill(query);
     await page.getByText(label, { exact: true }).waitFor({ state: "visible", timeout: 15_000 });

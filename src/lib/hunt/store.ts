@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { Basemap, HuntRegion, MapView, MarkKind, Track, Waypoint } from "@/lib/hunt/types";
+import type { LegacyBasemap, HuntRegion, MapView, MarkKind, Track, Waypoint } from "@/lib/hunt/types";
 import { isValidPersistedHuntState } from "./persistence.ts";
 
 let canWriteStorage = false;
@@ -55,13 +55,34 @@ export function getHuntStorageWarning() {
 }
 
 /**
+ * Once marks and tracks live in the content repository (IndexedDB), the copy
+ * in fieldline-v1 is frozen at its pre-migration value: older builds still
+ * open it, and later edits don't make it drift from what was migrated. The
+ * other fieldline-v1 fields keep saving normally.
+ */
+let frozenContent: { waypoints: Waypoint[]; tracks: Track[] } | null = null;
+
+export function freezeLegacyContent(content: { waypoints: Waypoint[]; tracks: Track[] }) {
+  frozenContent = content;
+}
+
+/** Makes fieldline-v1 the store of record for marks and tracks again. */
+export function unfreezeLegacyContent() {
+  frozenContent = null;
+}
+
+export function isLegacyContentFrozen() {
+  return frozenContent !== null;
+}
+
+/**
  * Preference fields fieldline-v1 stored before versioned settings. They are
  * read once to migrate into `fieldline-settings`, then preserved unchanged so
  * an older Fieldline build still opens this profile with its own preferences.
  * Nothing in the app reads or writes them anymore.
  */
 type LegacyPreferences = {
-  basemap: Basemap;
+  basemap: LegacyBasemap;
   showPublic: boolean;
   publicOpacity: number;
   showLabels: boolean;
@@ -96,6 +117,8 @@ type HuntState = LegacyPreferences & {
   toggleTrack: (id: string) => void;
   removeTrack: (id: string) => void;
   importAll: (waypoints: Waypoint[], tracks: Track[]) => void;
+  /** Replaces marks and tracks wholesale, e.g. with what the content repository holds. */
+  replaceContent: (waypoints: Waypoint[], tracks: Track[]) => void;
   setLastKind: (lastKind: MarkKind) => void;
   setActiveHunt: (activeHunt: string) => void;
   dismissIntro: () => void;
@@ -141,6 +164,7 @@ export const useHunt = create<HuntState>()(
           tracks: s.tracks.map((t) => (t.id === id ? { ...t, visible: !t.visible } : t)),
         })),
       removeTrack: (id) => set((s) => ({ tracks: s.tracks.filter((t) => t.id !== id) })),
+      replaceContent: (waypoints, tracks) => set({ waypoints, tracks }),
       importAll: (waypoints, tracks) =>
         set((s) => ({
           waypoints: [...waypoints, ...s.waypoints],
@@ -164,8 +188,8 @@ export const useHunt = create<HuntState>()(
         }
       },
       partialize: (s) => ({
-        waypoints: s.waypoints,
-        tracks: s.tracks,
+        waypoints: frozenContent ? frozenContent.waypoints : s.waypoints,
+        tracks: frozenContent ? frozenContent.tracks : s.tracks,
         basemap: s.basemap,
         showPublic: s.showPublic,
         publicOpacity: s.publicOpacity,

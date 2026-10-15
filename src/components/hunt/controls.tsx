@@ -1,4 +1,64 @@
 import * as Switch from "@radix-ui/react-switch";
+import { useRef, type KeyboardEvent } from "react";
+import { radioKeyTarget, radioTabStop } from "./radio-keys.ts";
+
+/**
+ * A row of radio buttons with the radio-group keyboard pattern: one tab stop
+ * (roving tabindex), arrow keys move and select, Home/End. 44-pixel targets.
+ */
+export function RadioRow<T extends string>({
+  options,
+  value,
+  onChange,
+  label,
+  describedBy,
+  className = "",
+}: {
+  options: { value: T; label: string }[];
+  value: T | null;
+  onChange: (value: T) => void;
+  label: string;
+  describedBy?: string;
+  className?: string;
+}) {
+  const buttons = useRef<(HTMLButtonElement | null)[]>([]);
+  const selected = options.findIndex((option) => option.value === value);
+  const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    const next = radioKeyTarget(event.key, index, options.length);
+    if (next === null) return;
+    event.preventDefault();
+    onChange(options[next].value);
+    buttons.current[next]?.focus();
+  };
+  return (
+    <div
+      className={`grid gap-1 rounded-lg bg-bg p-2 ${className}`}
+      style={{ gridTemplateColumns: `repeat(${options.length}, minmax(0, 1fr))` }}
+      role="radiogroup"
+      aria-label={label}
+      aria-describedby={describedBy}
+    >
+      {options.map((option, index) => (
+        <button
+          key={option.value}
+          ref={(element) => {
+            buttons.current[index] = element;
+          }}
+          type="button"
+          role="radio"
+          aria-checked={option.value === value}
+          tabIndex={radioTabStop(selected, index)}
+          data-on={option.value === value}
+          onClick={() => onChange(option.value)}
+          onKeyDown={(event) => onKeyDown(event, index)}
+          className="h-11 rounded-md text-sm text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function Toggle({
   checked,

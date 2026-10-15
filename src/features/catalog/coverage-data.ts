@@ -53,6 +53,10 @@ const HUNT_UNIT_PROVIDERS: Partial<Record<JurisdictionId, { providerId: string; 
     providerId: "azgfd-gmu",
     note: "Arizona Game and Fish hunt units. Reference lines, not the legal description.",
   },
+  "us-co": {
+    providerId: "cpw-gmu",
+    note: "Colorado Parks and Wildlife big-game game management units; bighorn sheep and mountain goat units are not included. Reference boundaries; check the current Colorado big-game brochure and GMU descriptions.",
+  },
   "us-id": {
     providerId: "idfg-gmu",
     note: "Idaho Fish and Game game management units. Reference lines, not the legal description.",
@@ -60,6 +64,10 @@ const HUNT_UNIT_PROVIDERS: Partial<Record<JurisdictionId, { providerId: string; 
   "us-mt": {
     providerId: "mtfwp-deer-elk-lion",
     note: "Montana Fish, Wildlife & Parks deer, elk and mountain lion hunting districts only; districts for other species (antelope, moose, sheep, goat, bear, birds) are not included. Reference boundaries; check current Montana regulations and district descriptions.",
+  },
+  "us-ut": {
+    providerId: "udwr-deer-general",
+    note: "Utah Division of Wildlife Resources general-season buck deer hunt units only; elk, limited-entry, once-in-a-lifetime, pronghorn and antlerless boundaries are not included, and limited-entry-only areas show no unit. Reference boundaries; check the Utah Big Game Guidebook boundary descriptions.",
   },
 };
 

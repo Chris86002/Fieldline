@@ -21,7 +21,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { Toggle } from "@/components/hunt/controls";
+import { RadioRow, Toggle } from "@/components/hunt/controls";
 import { MapCanvas, type GpsFix, type MapHandle } from "@/components/hunt/MapCanvas";
 import { MARK_ORDER, MARKS } from "@/components/hunt/marks";
 import { PRESETS, type AppSettings, type CoordinateFormat, type DistanceUnit, type SettingKey } from "@/features/settings/schema";
@@ -70,14 +70,60 @@ import type { Bounds, HuntUnit, JurisdictionCoverage, UnitHit } from "@/features
 import { hitsTag, unitLabels as toUnitLabels, unitsAt, unitShapes } from "@/features/catalog/units-view";
 import { deleteLegacyUnitCaches, useHuntUnits, type ProviderLoad } from "@/features/catalog/use-hunt-units";
 import { normalizeBounds } from "@/lib/geo/bounds";
+import { trackLength } from "@/lib/hunt/track-segments";
+import {
+  beginRecording,
+  cancelRecording,
+  deleteForever,
+  discardRecovered,
+  durableBackend,
+  finishRecording,
+  isDurableRecording,
+  recordFix,
+  recordGap,
+  restoreFromTrash,
+  saveRecovered,
+  startContentSync,
+  useContentSync,
+} from "@/lib/hunt/content-sync";
+import type { Fix, TrashEntry } from "@/lib/storage";
+import type { PackageBounds } from "@/lib/offline/plan";
+import { startOfflinePackages, useOffline } from "@/features/offline/controller";
+import { areaFeatures } from "@/features/offline/model";
+import { OfflineHere } from "@/features/offline/OfflineHere";
+import { OfflinePanel, type OfflineMapState } from "@/features/offline/OfflinePanel";
+import { contourIntervalText } from "@/features/map/contours";
+import { contoursShown } from "@/features/map/style-layers";
+import { mapStyleOf, styleFamily, type MapStyleId } from "@/features/map/tokens";
 import { formatUtm, localDate, localMinutes, sunPosition } from "@/lib/hunt/sun";
 import { noiseWord, rmsDb } from "@/lib/hunt/noise";
 
 type Tool = "none" | "drop" | "measure";
-type Sheet = null | "layers" | "saved" | "wind" | "edit" | "settings";
+type Sheet = null | "layers" | "saved" | "wind" | "edit" | "settings" | "offline";
 type Units = Pick<AppSettings, "distanceUnit" | "elevationUnit" | "areaUnit" | "speedUnit" | "temperatureUnit" | "pressureUnit">;
 
 const NEXT_FORMAT: Record<CoordinateFormat, CoordinateFormat> = { dd: "dms", dms: "utm", utm: "dd" };
+
+function trackName(stamp: Date): string {
+  return `Track ${stamp.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`;
+}
+
+/** A recorded fix with everything the device reported. Unknown values stay null, never 0. */
+function fixFrom(pos: GeolocationPosition): Fix {
+  const known = (value: number | null | undefined) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+  const { coords } = pos;
+  const heading = known(coords.heading);
+  return {
+    lng: coords.longitude,
+    lat: coords.latitude,
+    t: Number.isFinite(pos.timestamp) && pos.timestamp > 0 ? pos.timestamp : Date.now(),
+    accuracy: coords.accuracy,
+    altitude: known(coords.altitude),
+    altitudeAccuracy: known(coords.altitudeAccuracy),
+    speed: known(coords.speed),
+    heading: heading != null && heading >= 0 && heading < 360 ? heading : null,
+  };
+}
 
 /** State agencies to check at a point (legal hours, regulations). Near borders there can be two. */
 function agenciesAt(lng: number, lat: number): { name: string; url: string }[] {
@@ -121,23 +167,42 @@ type InstallPrompt = Event & {
   userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
 };
 
-const BASEMAPS: { id: Basemap; label: string }[] = [
-  { id: "hybrid", label: "Hybrid" },
-  { id: "satellite", label: "Satellite" },
-  { id: "usgs", label: "USGS" },
-  { id: "topo", label: "Topo" },
-  { id: "street", label: "Street" },
+/** The three map styles (MAP-03) and the base each one starts on. */
+const MAP_STYLES: { id: MapStyleId; label: string; base: Basemap }[] = [
+  { id: "terrain", label: "Terrain", base: "terrain" },
+  { id: "satellite", label: "Satellite", base: "satellite" },
+  { id: "field", label: "Field", base: "field" },
 ];
 
+/** Base choices inside a style; Field has one. */
+const STYLE_BASES: Record<MapStyleId, { id: Basemap; label: string; hint: string }[]> = {
+  terrain: [
+    { id: "terrain", label: "Fieldline", hint: "Land cover, contours and relief from downloadable map data." },
+    { id: "topo", label: "USGS topo", hint: "The USGS topo scan, with its own contours and names. Downloadable." },
+  ],
+  satellite: [
+    { id: "satellite", label: "Esri", hint: "Esri imagery: live only, never stored on this device." },
+    { id: "usgs", label: "USGS", hint: "USGS imagery: can be downloaded for offline use." },
+  ],
+  field: [],
+};
+
 /** Esri imagery base maps: viewable live, never stored on the device. */
-const LIVE_ONLY_BASEMAPS: Basemap[] = ["hybrid", "satellite"];
+const LIVE_ONLY_BASEMAPS: Basemap[] = ["satellite"];
 
 export function HuntApp() {
   const store = useHunt();
   const settings = useSettings((state) => state.effective);
   const setSetting = useSettings((state) => state.set);
   const activePreset = useSettings((state) => state.preset);
+  const contentMode = useContentSync((state) => state.mode);
+  const recovered = useContentSync((state) => state.recovered);
+  const trash = useContentSync((state) => state.trash);
   const bind = <K extends SettingKey>(key: K) => (value: AppSettings[K]) => setSetting(key, value);
+  /** Contours for the current style: Satellite has its own switch (MAP-03). */
+  const showContours = contoursShown(settings);
+  const contourKey: SettingKey = styleFamily(settings.basemap) === "imagery" ? "showImageryContours" : "showContours";
+  const mapStyle = mapStyleOf(settings.basemap);
   const mapRef = useRef<MapHandle>(null);
   const initialViewRef = useRef<MapView>(DEFAULT_VIEW);
   const wakeRef = useRef<{ release: () => Promise<void> } | null>(null);
@@ -146,6 +211,10 @@ export function HuntApp() {
   const recRef = useRef(false);
   const recordPendingRef = useRef(false);
   const lastRecRef = useRef<LngLat | null>(null);
+  /** Point indices where a new segment starts after a GPS outage (in-memory recording). */
+  const recSegStartsRef = useRef<number[]>([]);
+  /** True between a lost GPS signal and the next usable fix. */
+  const gapOpenRef = useRef(false);
   const recPtsRef = useRef<TrackPoint[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
   const dragDepth = useRef(0);
@@ -198,6 +267,12 @@ export function HuntApp() {
   const [dropHot, setDropHot] = useState(false);
   const [packNote, setPackNote] = useState<string | null>(null);
   const [packing, setPacking] = useState(false);
+  /** The area being planned in Offline maps, drawn dashed on the map. */
+  const [offlinePreview, setOfflinePreview] = useState<PackageBounds | null>(null);
+  /** Downloaded areas stay outlined after "Show on map" until the next tap on the map. */
+  const [showOfflineAreas, setShowOfflineAreas] = useState(false);
+  const offlinePackages = useOffline((state) => state.packages);
+  const offlineStatus = useOffline((state) => state.status);
   const [screenAwake, setScreenAwake] = useState(false);
   const [systemReduce, setSystemReduce] = useState(false);
   const coordMode = settings.coordinateFormat;
@@ -263,6 +338,15 @@ export function HuntApp() {
         } catch {
           /* settings keep their defaults; the store reports why */
         }
+        // Marks and tracks move to durable storage before anything can edit them.
+        return startContentSync().catch(() => "legacy" as const);
+      })
+      .then(() =>
+        // Downloaded offline areas share that database; the map reads them from its first tile.
+        startOfflinePackages(durableBackend(), { reason: useContentSync.getState().message }).catch(() => undefined),
+      )
+      .then(() => {
+        if (!live) return;
         const prefs = useSettings.getState().effective;
         const saved =
           prefs.startupView === "national"
@@ -275,7 +359,7 @@ export function HuntApp() {
           setView(saved);
         }
         setHydrated(true);
-        const warning = getHuntStorageWarning() ?? useSettings.getState().warning;
+        const warning = getHuntStorageWarning() ?? useSettings.getState().warning ?? useContentSync.getState().message;
         if (warning) setNotice(warning);
       });
     return () => {
@@ -288,8 +372,16 @@ export function HuntApp() {
       const warning = getHuntStorageWarning();
       if (warning) setNotice(warning);
     };
+    const onContentError = () => {
+      const message = useContentSync.getState().message;
+      if (message) setNotice(message);
+    };
     window.addEventListener("fieldline:storage-error", onStorageError);
-    return () => window.removeEventListener("fieldline:storage-error", onStorageError);
+    window.addEventListener("fieldline:content-error", onContentError);
+    return () => {
+      window.removeEventListener("fieldline:storage-error", onStorageError);
+      window.removeEventListener("fieldline:content-error", onContentError);
+    };
   }, []);
 
   useEffect(() => {
@@ -415,6 +507,14 @@ export function HuntApp() {
         : { lng: view.lng, lat: view.lat, where: "the map center" };
   const weatherKey = `${weatherPoint.lat.toFixed(2)},${weatherPoint.lng.toFixed(2)}`;
   const landNear = land && probe && Math.abs(land.lng - probe.lng) < 0.003 && Math.abs(land.lat - probe.lat) < 0.003 ? land : null;
+  const offlineAreas = useMemo(
+    () => areaFeatures(sheet === "offline" || showOfflineAreas ? offlinePackages : [], sheet === "offline" ? offlinePreview : null),
+    [sheet, showOfflineAreas, offlinePackages, offlinePreview],
+  );
+  const offlineMap = useMemo<OfflineMapState>(
+    () => ({ basemap: settings.basemap, showPublic: settings.showPublic, showUnits: settings.showUnits, terrain: settings.terrain, showShade: settings.showShade, contours: showContours }),
+    [settings.basemap, settings.showPublic, settings.showUnits, settings.terrain, settings.showShade, showContours],
+  );
   const landHit = landNear?.status === "ready" ? landNear.hit : null;
   const landDown = landNear?.status === "error";
 
@@ -517,8 +617,13 @@ export function HuntApp() {
             setRecordPending(false);
             recRef.current = true;
             lastRecRef.current = next;
+            recSegStartsRef.current = [];
+            gapOpenRef.current = false;
             const start = Date.now();
             const points = [{ lng: next.lng, lat: next.lat, t: start }];
+            // Durable storage checkpoints every kept fix, so a crash or reload doesn't lose the track.
+            void beginRecording(trackName(new Date(start)));
+            recordFix(fixFrom(pos));
             recPtsRef.current = points;
             setRecPts(points);
             setRecStart(start);
@@ -527,16 +632,33 @@ export function HuntApp() {
             setNotice("Track recording started.");
           } else if (recRef.current && usable) {
             const prev = lastRecRef.current;
-            if (!prev || haversine(prev, next) >= field.gpsMinMoveM) {
+            const afterGap = gapOpenRef.current;
+            if (afterGap || !prev || haversine(prev, next) >= field.gpsMinMoveM) {
+              if (afterGap) {
+                // The signal is back: the next point starts a new segment instead of a line across the gap.
+                gapOpenRef.current = false;
+                if (recPtsRef.current.length > 0) recSegStartsRef.current = [...recSegStartsRef.current, recPtsRef.current.length];
+              }
               lastRecRef.current = next;
               const points = [...recPtsRef.current, { lng: next.lng, lat: next.lat, t: Date.now() }];
+              recordFix(fixFrom(pos));
               recPtsRef.current = points;
               setRecPts(points);
             }
           }
         },
         (err) => {
-          const message = err.code === 1 ? "Location permission denied." : "Couldn't get a GPS fix.";
+          // Only a denied permission ends location. A lost or slow signal (tunnels, canyons, canopy)
+          // keeps the watch and the recording going; the outage is recorded as a gap.
+          if (err.code !== 1) {
+            setGpsError(recRef.current ? "GPS signal lost. Still recording; the gap won't be drawn as a line." : "Waiting for a GPS signal…");
+            if (recRef.current && !gapOpenRef.current) {
+              gapOpenRef.current = true;
+              recordGap();
+            }
+            return;
+          }
+          const message = "Location permission denied.";
           if (watchRef.current != null) navigator.geolocation.clearWatch(watchRef.current);
           watchRef.current = null;
           followRef.current = false;
@@ -549,12 +671,15 @@ export function HuntApp() {
           } else if (recRef.current) {
             recRef.current = false;
             setRecording(false);
-            saveRecordedTrack(recPtsRef.current);
+            void saveRecordedTrack(recPtsRef.current, recSegStartsRef.current).then((result) =>
+              setNotice(`Location permission was turned off, so recording stopped. ${result}`),
+            );
             recPtsRef.current = [];
+            recSegStartsRef.current = [];
+            gapOpenRef.current = false;
             setRecPts([]);
             setRecStart(null);
             lastRecRef.current = null;
-            setNotice("GPS was lost. Recording stopped; any recorded points were saved.");
           }
         },
         { enableHighAccuracy: true, maximumAge: 2000, timeout: 15000 },
@@ -721,22 +846,42 @@ export function HuntApp() {
       return;
     }
     setDetail(null);
+    setShowOfflineAreas(false);
     setPinned({ lng, lat, x, y });
     syncUnit(lng, lat);
     queueLand(lng, lat, true);
   }
 
-  function saveRecordedTrack(points: TrackPoint[]) {
-    if (points.length < 2) return false;
+  /**
+   * Saves the recording and returns the notice to show. With durable storage
+   * the track comes from the crash-safe checkpoints; otherwise from memory as
+   * before.
+   */
+  async function saveRecordedTrack(points: TrackPoint[], segmentStarts: number[] = []): Promise<string> {
+    if (isDurableRecording()) {
+      try {
+        if (points.length < 2) {
+          await cancelRecording();
+          return "Track was too short to save.";
+        }
+        const { track, message } = await finishRecording();
+        if (!track) return "Track couldn't be saved.";
+        return message ? `Track saved on this device. ${message}` : "Track saved on this device.";
+      } catch (error) {
+        return `Track couldn't be saved yet (${error instanceof Error ? error.message : "storage error"}). It will be offered again when Fieldline restarts.`;
+      }
+    }
+    if (points.length < 2) return "Track was too short to save.";
     const stamp = new Date();
     store.addTrack({
       id: crypto.randomUUID(),
-      name: `Track ${stamp.toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}`,
+      name: trackName(stamp),
       points,
       createdAt: stamp.getTime(),
       visible: true,
+      ...(segmentStarts.length ? { segmentStarts } : {}),
     });
-    return true;
+    return "Track saved on this device.";
   }
 
   function toggleRecord() {
@@ -749,13 +894,10 @@ export function HuntApp() {
     if (recording) {
       recRef.current = false;
       setRecording(false);
-      const points = recPtsRef.current;
-      if (!saveRecordedTrack(points)) {
-        setNotice("Track was too short to save.");
-      } else {
-        setNotice("Track saved on this device.");
-      }
+      void saveRecordedTrack(recPtsRef.current, recSegStartsRef.current).then(setNotice);
       recPtsRef.current = [];
+      recSegStartsRef.current = [];
+      gapOpenRef.current = false;
       setRecPts([]);
       setRecStart(null);
       lastRecRef.current = null;
@@ -772,6 +914,9 @@ export function HuntApp() {
   }
 
   function discardTrack() {
+    void cancelRecording();
+    recSegStartsRef.current = [];
+    gapOpenRef.current = false;
     recRef.current = false;
     recordPendingRef.current = false;
     setRecording(false);
@@ -826,18 +971,25 @@ export function HuntApp() {
     // Esri imagery can't be stored, so imagery views save USGS imagery instead.
     const swapped = LIVE_ONLY_BASEMAPS.includes(settings.basemap);
     if (settings.basemap === "topo") templates.push(TILES.topo);
-    else if (settings.basemap !== "street") templates.push(TILES.imagery);
+    else if (settings.basemap === "satellite" || settings.basemap === "usgs") templates.push(TILES.imagery);
     if (settings.showPublic) templates.push(TILES.sma);
     if (templates.length === 0) {
-      setPackNote("Street roads and labels are streamed live. Switch to USGS imagery or Topo to save a base map.");
+      setPackNote("This browser can't download areas, and the Terrain and Field styles are streamed live here. Switch to USGS imagery or the USGS topo scan to save a base map.");
       return;
     }
-    const swapNote = swapped ? " Esri imagery can't be stored, so USGS imagery was saved instead; switch the base map to USGS when you're offline." : "";
+    const vectorBase = settings.basemap === "terrain" || settings.basemap === "field";
+    const swapNote = swapped
+      ? " Esri imagery can't be stored, so USGS imagery was saved instead; switch the base map to USGS when you're offline."
+      : vectorBase
+        ? " Only public land was saved: the Terrain and Field base (land, water, contours) isn't kept by this one-zoom save. Switch to USGS imagery or the USGS topo scan to save a base map."
+        : "";
     setPacking(true);
     setPackNote("Preparing this view…");
     try {
       const result = await packTiles({
         ...bounds,
+        // These are 256-pixel raster tiles: the map draws them one zoom deeper than its own zoom.
+        zoom: bounds.zoom + 1,
         templates,
         onProgress: (done, total) => {
           if (done === total || done % 4 === 0) setPackNote(`Saving map tiles ${done} of ${total}…`);
@@ -1152,6 +1304,7 @@ export function HuntApp() {
             />
             <h2 className="mt-4 font-display text-xl tracking-wide">Tracks</h2>
             <TrackRows tracks={store.tracks} units={unitPrefs} onFit={(points) => mapRef.current?.fit(points)} onToggle={store.toggleTrack} onDelete={store.removeTrack} />
+            {contentMode === "repository" ? <TrashRows entries={trash} onNotice={setNotice} /> : null}
           </div>
         </aside>
       ) : null}
@@ -1171,6 +1324,10 @@ export function HuntApp() {
         showBorder={settings.showBorder}
         boundaryStrength={settings.boundaryStrength}
         labelDensity={settings.labelDensity}
+        showContours={showContours}
+        contourDetail={settings.contourDetail}
+        contourStrength={settings.contourStrength}
+        showLandCover={settings.showLandCover}
         terrain={settings.terrain}
         terrainExaggeration={settings.terrainExaggeration}
         distanceUnit={unitPrefs.distanceUnit}
@@ -1184,6 +1341,7 @@ export function HuntApp() {
         livePoints={recPts}
         measurePoints={measurePts}
         measureClosed={measureClosed}
+        offlineAreas={offlineAreas}
         gps={gps}
         tool={tool}
         showShade={settings.showShade}
@@ -1411,6 +1569,37 @@ export function HuntApp() {
           </div>
         </div>
 
+        {recovered && !recording ? (
+          <div role="alert" className="pointer-events-auto flex flex-col gap-2 rounded-lg border border-line bg-surface px-3 py-2.5 text-sm">
+            <p>
+              A recording from {new Date(recovered.session.startedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}{" "}
+              was interrupted. {recovered.fixCount} point{recovered.fixCount === 1 ? " was" : "s were"} kept
+              {recovered.intact ? "." : `; ${recovered.lostFixes} couldn't be recovered.`}
+            </p>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="h-10 flex-1 rounded-md bg-accent text-sm font-medium text-accent-fg"
+                onClick={() => {
+                  void saveRecovered()
+                    .then(setNotice)
+                    .catch((error: unknown) => setNotice(error instanceof Error ? error.message : "Couldn't save the track."));
+                }}
+              >
+                Save track
+              </button>
+              <button
+                type="button"
+                className="h-10 flex-1 rounded-md border border-line text-sm"
+                onClick={() => {
+                  void discardRecovered().then(() => setNotice("Interrupted recording discarded."));
+                }}
+              >
+                Discard
+              </button>
+            </div>
+          </div>
+        ) : null}
         {hydrated && !store.introDismissed ? (
           <div className="pointer-events-auto flex items-start gap-3 rounded-lg border border-line bg-surface px-3 py-2.5 text-sm text-muted lg:hidden">
             <p>
@@ -1590,19 +1779,46 @@ export function HuntApp() {
               {PRESETS[activePreset].label} preset is on. Changing a layer it controls edits the preset; turn presets off in Settings.
             </p>
           ) : null}
-          <div className="grid grid-cols-5 gap-1 rounded-lg bg-bg p-2">
-            {BASEMAPS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                data-on={settings.basemap === item.id}
-                onClick={() => setSetting("basemap", item.id)}
-                className="h-10 rounded-md text-sm text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
+          <RadioRow
+            label="Map style"
+            describedBy="layers-style-hint"
+            options={MAP_STYLES.map((item) => ({ value: item.id, label: item.label }))}
+            value={mapStyle}
+            onChange={(id) => {
+              const style = MAP_STYLES.find((item) => item.id === id);
+              if (style && mapStyle !== id) setSetting("basemap", style.base);
+            }}
+          />
+          {STYLE_BASES[mapStyle].length > 0 ? (
+            <RadioRow
+              className="mt-1"
+              label={mapStyle === "satellite" ? "Imagery" : "Terrain base"}
+              describedBy="layers-style-hint"
+              options={STYLE_BASES[mapStyle].map((item) => ({ value: item.id, label: item.label }))}
+              value={settings.basemap}
+              onChange={(id) => setSetting("basemap", id)}
+            />
+          ) : null}
+          <p id="layers-style-hint" className="pb-1 pt-1 text-sm text-subtle">
+            {STYLE_BASES[mapStyle].find((item) => item.id === settings.basemap)?.hint ??
+              "High contrast for a phone outdoors: fewer classes, bigger names, strong trails. Downloadable."}
+          </p>
+          {settings.basemap !== "topo" ? (
+            <Toggle
+              checked={settings[contourKey] as boolean}
+              onChange={(on) => setSetting(contourKey, on)}
+              label="Contours"
+              hint={`${contourIntervalText(view.zoom, unitPrefs.elevationUnit, settings.contourDetail)} Traced from the terrain elevation model; not a survey. Interval and strength in Settings.`}
+            />
+          ) : null}
+          {mapStyle !== "satellite" && settings.basemap !== "topo" ? (
+            <Toggle
+              checked={settings.showLandCover}
+              onChange={bind("showLandCover")}
+              label="Land cover"
+              hint="Forest, brush, grass, wetland, rock and ice where OpenStreetMap maps them. Unmapped ground stays plain; it isn't a vegetation survey."
+            />
+          ) : null}
           <Toggle checked={settings.showPublic} onChange={bind("showPublic")} label="Public land" hint="BLM surface-management agencies. Blank ground has no agency record; that doesn't make it private or public." />
           <Toggle
             checked={settings.showUnits}
@@ -1668,11 +1884,42 @@ export function HuntApp() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. Unit lines are state agency reference geometry, not legal descriptions. Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. Satellite and Hybrid use Esri imagery, which is live only. Save this view offline stores one zoom level of USGS imagery or Topo plus public land; streets, labels, units, weather, and search remain online.</p>
-          <button type="button" disabled={packing} onClick={() => void saveArea()} className="mt-3 h-11 w-full rounded-md bg-accent text-sm font-medium text-accent-fg disabled:opacity-50">
-            {packing ? "Saving tiles…" : "Save this view offline"}
+          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. Unit lines are state agency reference geometry, not legal descriptions. Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. Esri satellite imagery is live only; offline, use USGS imagery or the Terrain and Field styles. Hunt units, weather, and search need a connection.</p>
+          <button type="button" onClick={() => setSheet("offline")} className="mt-3 flex h-11 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-medium text-accent-fg">
+            <Download className="size-4" /> Offline maps
           </button>
-          {packNote ? <p className="mt-2 text-sm text-muted">{packNote}</p> : null}
+        </Panel>
+      ) : null}
+
+      {sheet === "offline" ? (
+        <Panel title="Offline maps" onClose={() => setSheet(null)}>
+          <OfflinePanel
+            getArea={() => {
+              const bounds = mapRef.current?.getBounds();
+              return bounds ? { west: bounds.west, south: bounds.south, east: bounds.east, north: bounds.north } : null;
+            }}
+            viewZoom={view.zoom}
+            map={offlineMap}
+            metric={unitPrefs.distanceUnit === "metric"}
+            onPreview={setOfflinePreview}
+            onShow={(bounds) => {
+              setSheet(null);
+              setShowOfflineAreas(true);
+              mapRef.current?.fit([
+                { lng: bounds.west, lat: bounds.south },
+                { lng: bounds.east, lat: bounds.north },
+              ]);
+            }}
+          />
+          {offlineStatus === "unavailable" ? (
+            <>
+              <p className="mt-3 text-sm text-muted">You can still keep one zoom level of this view in the browser's tile cache.</p>
+              <button type="button" disabled={packing} onClick={() => void saveArea()} className="mt-2 h-11 w-full rounded-md border border-line text-sm disabled:opacity-50">
+                {packing ? "Saving tiles…" : "Save this view (one zoom)"}
+              </button>
+              {packNote ? <p className="mt-2 text-sm text-muted">{packNote}</p> : null}
+            </>
+          ) : null}
         </Panel>
       ) : null}
 
@@ -1789,6 +2036,7 @@ export function HuntApp() {
             onToggle={store.toggleTrack}
             onDelete={store.removeTrack}
           />
+          {contentMode === "repository" ? <TrashRows entries={trash} onNotice={setNotice} /> : null}
         </Panel>
       ) : null}
 
@@ -1815,6 +2063,7 @@ export function HuntApp() {
               store.removeWaypoint(selected.id);
               setSelectedId(null);
               setSheet(null);
+              if (contentMode === "repository") setNotice(`${selected.name} moved to Recently deleted in Saved.`);
             }}
           />
         </Panel>
@@ -1908,7 +2157,7 @@ function TrackRows({
         <li key={track.id} className="flex min-h-12 items-center gap-2">
           <button type="button" className="min-w-0 flex-1 truncate text-left" onClick={() => onFit(track.points)}>
             <span className="block truncate">{track.name}</span>
-            <span className="text-sm text-muted">{formatDistance(pathLength(track.points), units.distanceUnit)}</span>
+            <span className="text-sm text-muted">{formatDistance(trackLength(track), units.distanceUnit)}</span>
           </button>
           <button type="button" className="h-9 px-2 text-sm text-muted" onClick={() => onToggle(track.id)}>
             {track.visible ? "Hide" : "Show"}
@@ -1942,6 +2191,60 @@ function TrackRows({
         </li>
       ))}
     </ul>
+  );
+}
+
+/** Deleted marks and tracks, kept until deleted forever. */
+function TrashRows({ entries, onNotice }: { entries: TrashEntry[]; onNotice: (message: string) => void }) {
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  if (entries.length === 0) return null;
+  return (
+    <section className="mt-4" aria-labelledby="trash-heading">
+      <h3 id="trash-heading" className="font-display text-xl tracking-wide">
+        Recently deleted
+      </h3>
+      <p className="text-sm text-muted">Kept on this device until you delete them forever.</p>
+      <ul className="mt-1">
+        {entries.map((entry) => (
+          <li key={entry.id} className="flex min-h-12 items-center gap-2">
+            <span className="min-w-0 flex-1">
+              <span className="block truncate">{entry.item.name}</span>
+              <span className="text-sm text-muted">
+                {entry.kind === "waypoint" ? "Mark" : "Track"} · deleted{" "}
+                {new Date(entry.deletedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+              </span>
+            </span>
+            <button
+              type="button"
+              className="h-9 px-2 text-sm"
+              onClick={() => {
+                void restoreFromTrash(entry.id)
+                  .then(() => onNotice(`Restored ${entry.item.name}.`))
+                  .catch((error: unknown) => onNotice(error instanceof Error ? error.message : "Couldn't restore that."));
+              }}
+            >
+              Restore
+            </button>
+            {confirmId === entry.id ? (
+              <button
+                type="button"
+                className="h-9 px-2 text-sm text-danger"
+                onClick={() => {
+                  setConfirmId(null);
+                  void deleteForever(entry.id).then(() => onNotice(`Deleted ${entry.item.name} forever.`));
+                }}
+              >
+                Delete forever
+              </button>
+            ) : (
+              <button type="button" aria-label={`Delete ${entry.item.name} forever`} className="h-9 px-2 text-sm text-danger" onClick={() => setConfirmId(entry.id)}>
+                Delete…
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -2491,6 +2794,7 @@ function SpotInfo({
               </p>
             ))
           : null}
+        <OfflineHere lng={detail.lng} lat={detail.lat} />
         <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
           <SpotFact label="Elevation" value={weather?.elevationM != null ? formatElev(weather.elevationM, units.elevationUnit) : null} />
           <SpotFact label="Slope" value={slope} />

@@ -6,26 +6,14 @@ import { circlePolygon, windFits } from "@/lib/hunt/format";
 import { destination } from "@/lib/hunt/sun";
 import { MARKS } from "@/components/hunt/marks";
 import { cachedTile, installTileProtocol, TILES } from "@/lib/hunt/tiles";
+import { trackSegments } from "@/lib/hunt/track-segments";
 import type { Basemap, LngLat, MapView, Track, TrackPoint, Waypoint } from "@/lib/hunt/types";
 import { DEFAULT_VIEW } from "@/lib/hunt/types";
-import type { BoundaryStrength, DistanceUnit, ElevationUnit, LabelDensity } from "@/features/settings/schema";
+import type { BoundaryStrength, ContourDetail, DistanceUnit, ElevationUnit, LabelDensity } from "@/features/settings/schema";
+import { CONTOUR_SOURCE_MAX_ZOOM } from "@/features/map/contours";
 import { firstLayerAbove } from "@/features/map/layer-groups";
 import { LABEL_LAYER_IDS, labelRules } from "@/features/map/labels";
-import {
-  BORDER_LAYERS,
-  buildLayers,
-  CREEK_LAYERS,
-  DYNAMIC_PAINT_LAYERS,
-  mapLayerGroups,
-  PEAK_LAYERS,
-  ROAD_LINE_LAYERS,
-  ROAD_NAME_LAYERS,
-  STREET_FILLS,
-  TOWN_LAYERS,
-  TRACK_LAYERS,
-  UNIT_LINE_LAYERS,
-  type StyleOptions,
-} from "@/features/map/style-layers";
+import { BORDER_LAYERS, buildLayers, DYNAMIC_PAINT_LAYERS, mapLayerGroups, styleLayout, styleVisibility, UNIT_LINE_LAYERS, type StyleOptions } from "@/features/map/style-layers";
 import { reliefPaint } from "@/features/map/tokens";
 
 export type GpsFix = { lng: number; lat: number; accuracy: number; heading: number | null };
@@ -58,6 +46,11 @@ type Props = {
   boundaryStrength: BoundaryStrength;
   /** How many ordinary labels show, and from which zoom. */
   labelDensity: LabelDensity;
+  /** Contours for the current style (`contoursShown`). */
+  showContours: boolean;
+  contourDetail: ContourDetail;
+  contourStrength: number;
+  showLandCover: boolean;
   showShade: boolean;
   showSun: boolean;
   showRings: boolean;
@@ -90,6 +83,8 @@ type Props = {
   livePoints: TrackPoint[];
   measurePoints: LngLat[];
   measureClosed: boolean;
+  /** Outlines of downloaded offline areas and the area being planned (src/features/offline/model.ts). */
+  offlineAreas: FC;
   gps: GpsFix | null;
   tool: Tool;
   onMapClick: (lng: number, lat: number, x: number, y: number) => void;
@@ -103,6 +98,7 @@ type Props = {
 
 type JsonGeometry =
   | { type: "LineString"; coordinates: number[][] }
+  | { type: "MultiLineString"; coordinates: number[][][] }
   | { type: "Polygon"; coordinates: number[][][] }
   | { type: "MultiPolygon"; coordinates: number[][][][] }
   | { type: "Point"; coordinates: number[] };
@@ -165,14 +161,22 @@ function styleOptions(p: Props): StyleOptions {
     publicOpacity: p.publicOpacity,
     boundaryStrength: p.boundaryStrength,
     labelDensity: p.labelDensity,
+    showContours: p.showContours,
+    contourStrength: p.contourStrength,
+    showLandCover: p.showLandCover,
   };
 }
 
-function buildStyle(opts: StyleOptions): StyleSpecification {
-  const dem = `${window.location.origin}/api/dem/{z}/{x}/{y}`;
+function demTemplate(): string {
+  return `${window.location.origin}/api/dem/{z}/{x}/{y}`;
+}
+
+function buildStyle(opts: StyleOptions, contourTiles: string | null): StyleSpecification {
+  const dem = demTemplate();
+  // Fonts, OpenFreeMap and terrain go through fltile:// so downloaded offline areas serve them.
   return {
     version: 8,
-    glyphs: GLYPHS,
+    glyphs: cachedTile(GLYPHS),
     sources: {
       // Esri imagery is fetched live and never written to the device cache (provider terms).
       satellite: {
@@ -185,14 +189,22 @@ function buildStyle(opts: StyleOptions): StyleSpecification {
       usgs: { type: "raster", tiles: [cachedTile(TILES.imagery)], tileSize: 256, maxzoom: 16, attribution: "Imagery: USGS The National Map, USDA" },
       topo: { type: "raster", tiles: [cachedTile(TILES.topo)], tileSize: 256, maxzoom: 16, attribution: "Topo: USGS The National Map" },
       sma: { type: "raster", tiles: [cachedTile(TILES.sma)], tileSize: 256, maxzoom: 16, attribution: "Public land © BLM" },
-      ofm: { type: "vector", url: OFM, attribution: "© OpenStreetMap, OpenFreeMap" },
-      dem: { type: "raster-dem", tiles: [dem], encoding: "terrarium", tileSize: 256, maxzoom: 14, attribution: "Terrain © AWS Terrain Tiles" },
+      ofm: { type: "vector", url: cachedTile(OFM), attribution: "© OpenStreetMap, OpenFreeMap" },
+      dem: { type: "raster-dem", tiles: [cachedTile(dem)], encoding: "terrarium", tileSize: 256, maxzoom: 14, attribution: "Terrain © AWS Terrain Tiles" },
+      // Contours traced in the browser from the same terrain tiles (src/features/map/contour-source.ts),
+      // at the map zoom (the zoom 3D terrain and offline packages use). Same credit as the terrain
+      // source, so MapLibre shows it once (a separate line wrapped to a third row on phones).
+      // Without the contour module (its chunk failed to load) the layers get an empty source.
+      contours: contourTiles
+        ? { type: "vector", tiles: [contourTiles], maxzoom: CONTOUR_SOURCE_MAX_ZOOM, attribution: "Terrain © AWS Terrain Tiles" }
+        : { type: "geojson", data: EMPTY },
       tracks: { type: "geojson", data: EMPTY },
       live: { type: "geojson", data: EMPTY },
       measure: { type: "geojson", data: EMPTY },
       accuracy: { type: "geojson", data: EMPTY },
       sun: { type: "geojson", data: EMPTY },
       rings: { type: "geojson", data: EMPTY },
+      "offline-areas": { type: "geojson", data: EMPTY },
       units: { type: "geojson", data: EMPTY, attribution: "Hunt units: state wildlife agencies (reference only)" },
       "unit-labels": { type: "geojson", data: EMPTY },
     },
@@ -223,6 +235,8 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   const mapRef = useRef<MlMap | null>(null);
   const mlRef = useRef<typeof import("maplibre-gl") | null>(null);
   const scaleRef = useRef<{ setUnit: (unit: "imperial" | "metric") => void } | null>(null);
+  const contourUrlRef = useRef<((unit: ElevationUnit, detail: ContourDetail) => string) | null>(null);
+  const contourResetRef = useRef<(() => void) | null>(null);
   const onMapClickRef = useRef(props.onMapClick);
   const onContextRef = useRef(props.onContextMenu);
   const onPointerMoveRef = useRef(props.onPointerMove);
@@ -311,16 +325,33 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
 
     void (async () => {
       try {
+        // Contours are optional: if their chunk can't load (e.g. offline right after an update), the map runs without them.
+        const contourModule = import("@/features/map/contour-source").catch((error: unknown) => {
+          console.warn("Contours unavailable:", error);
+          return null;
+        });
         const ml = await import("maplibre-gl");
+        const contour = await contourModule;
         if (dead) return;
         ml.setWorkerUrl(maplibreWorkerUrl);
         installTileProtocol(ml);
+        let contourTiles: string | null = null;
+        if (contour) {
+          try {
+            contour.installContourProtocol(ml, demTemplate());
+            contourTiles = contour.contourTilesUrl(propsRef.current.elevationUnit, propsRef.current.contourDetail);
+            contourUrlRef.current = contour.contourTilesUrl;
+            contourResetRef.current = contour.resetContours;
+          } catch (error) {
+            console.warn("Contours unavailable:", error);
+          }
+        }
         mlRef.current = ml;
         const state = propsRef.current;
         const saved = state.initialView;
         map = new ml.Map({
           container: el,
-          style: buildStyle(styleOptions(state)),
+          style: buildStyle(styleOptions(state), contourTiles),
           center: [saved.lng, saved.lat],
           zoom: saved.zoom,
           bearing: saved.bearing,
@@ -477,33 +508,66 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map) return;
-    const show = (id: string, on: boolean) => {
-      if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", vis(on));
-    };
-    const hybrid = props.basemap === "hybrid";
-    const street = props.basemap === "street";
-    const imagery = props.basemap === "satellite" || hybrid;
-    const vector = props.basemap !== "topo";
-    show("hillshade", props.showShade && props.basemap !== "topo");
-    show("satellite", imagery);
-    show("usgs", props.basemap === "usgs");
-    show("topo", props.basemap === "topo");
-    show("sma", props.showPublic);
-    for (const id of STREET_FILLS) show(id, street);
-    for (const id of ROAD_LINE_LAYERS) show(id, vector && props.showRoads);
-    for (const id of ROAD_NAME_LAYERS) show(id, vector && props.showRoads);
-    for (const id of TRACK_LAYERS) show(id, vector && props.showTracks);
-    for (const id of CREEK_LAYERS) show(id, vector && props.showCreeks);
-    for (const id of TOWN_LAYERS) show(id, vector && props.showLabels);
-    for (const id of PEAK_LAYERS) show(id, vector && props.showPeaks);
-  }, [ready, props.basemap, props.showPublic, props.showLabels, props.showRoads, props.showTracks, props.showCreeks, props.showPeaks, props.showShade]);
+    // The same visibility table the style was built from (style-layers.ts `styleVisibility`).
+    for (const [id, on] of Object.entries(styleVisibility(styleOptions(propsRef.current)))) {
+      if (!map.getLayer(id)) continue;
+      const next = vis(on);
+      if (map.getLayoutProperty(id, "visibility") !== next) map.setLayoutProperty(id, "visibility", next);
+    }
+  }, [
+    ready,
+    props.basemap,
+    props.showPublic,
+    props.showLabels,
+    props.showRoads,
+    props.showTracks,
+    props.showCreeks,
+    props.showPeaks,
+    props.showShade,
+    props.showContours,
+    props.showLandCover,
+  ]);
 
   // Colors, weights and public-land opacity come from the design tokens of the current style.
   useEffect(() => {
     const map = mapRef.current;
     if (!ready || !map) return;
     applyStylePaint(map, styleOptions(propsRef.current));
-  }, [ready, props.basemap, props.boundaryStrength, props.publicOpacity]);
+  }, [ready, props.basemap, props.boundaryStrength, props.publicOpacity, props.contourStrength]);
+
+  // Label sizes change with the style (Field reads larger).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    for (const { id, prop, value } of styleLayout(styleOptions(propsRef.current))) {
+      if (map.getLayer(id)) map.setLayoutProperty(id, prop as never, value as never);
+    }
+  }, [ready, props.basemap]);
+
+  // Contour interval and unit are part of the contour tile URL: swap the tiles, not the style.
+  useEffect(() => {
+    const map = mapRef.current;
+    const url = contourUrlRef.current;
+    if (!ready || !map || !url) return;
+    const source = map.getSource("contours") as { setTiles?: (tiles: string[]) => void; tiles?: string[] } | undefined;
+    const next = url(props.elevationUnit, props.contourDetail);
+    if (source?.setTiles && source.tiles?.[0] !== next) source.setTiles([next]);
+  }, [ready, props.elevationUnit, props.contourDetail]);
+
+  // Back online: contour tiles traced with a missing neighbor (edge gaps while offline) are traced again.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    const retrace = () => {
+      const url = contourUrlRef.current;
+      const source = map.getSource("contours") as { setTiles?: (tiles: string[]) => void } | undefined;
+      if (!url || !source?.setTiles) return;
+      contourResetRef.current?.();
+      source.setTiles([url(propsRef.current.elevationUnit, propsRef.current.contourDetail)]);
+    };
+    window.addEventListener("online", retrace);
+    return () => window.removeEventListener("online", retrace);
+  }, [ready]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -522,8 +586,8 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
       const groups = mapLayerGroups(styleOptions(propsRef.current));
       const relief = groups.relief.find((layer) => layer.id === "hillshade");
       if (!relief) return;
-      // Back on top of the relief group, under public land and everything above it.
-      map.addLayer(relief, firstLayerAbove(groups, "relief", (id) => Boolean(map.getLayer(id))));
+      // Back at the bottom of the relief group (under contours), or under public land and everything above it.
+      map.addLayer(relief, map.getLayer("contours") ? "contours" : firstLayerAbove(groups, "relief", (id) => Boolean(map.getLayer(id))));
     }
     // Sun-direction hillshade (not cast shadows); strength depends on the base map.
     const paint = reliefPaint(props.basemap, props.shadeAz, props.shadeEl);
@@ -662,7 +726,8 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
       .map((track) => ({
         type: "Feature",
         properties: { id: track.id },
-        geometry: { type: "LineString", coordinates: track.points.map((point) => [point.lng, point.lat]) },
+        // Recording gaps stay gaps: each segment is its own line.
+        geometry: { type: "MultiLineString", coordinates: trackSegments(track).map((segment) => segment.map((point) => [point.lng, point.lat])) },
       }));
     setGeo(map, "tracks", { type: "FeatureCollection", features });
   }, [ready, props.tracks]);
@@ -750,6 +815,12 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
         : [];
     setGeo(map, "rings", { type: "FeatureCollection", features });
   }, [ready, props.showRings, props.ringAt, props.distanceUnit]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    setGeo(map, "offline-areas", props.offlineAreas);
+  }, [ready, props.offlineAreas]);
 
   return (
     <div ref={stageRef} className="map-stage">

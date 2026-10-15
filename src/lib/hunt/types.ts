@@ -31,10 +31,29 @@ export type Track = {
   points: TrackPoint[];
   createdAt: number;
   visible: boolean;
+  /**
+   * Indices into `points` where a new segment starts after a recording gap.
+   * Absent on tracks made before gaps were recorded (one continuous line).
+   */
+  segmentStarts?: number[];
 };
 
-/** "satellite"/"hybrid" use Esri imagery (live only); "usgs" uses USGS imagery, which can be saved offline. */
-export type Basemap = "hybrid" | "satellite" | "usgs" | "topo" | "street";
+/**
+ * The map style and its base (MAP-03). Three Fieldline styles:
+ * - Terrain: "terrain" (vector land cover, contours, relief) or "topo" (the
+ *   USGS topo scan, kept as a reference base);
+ * - Satellite: "satellite" (Esri imagery, live only) or "usgs" (USGS imagery,
+ *   which can be saved offline);
+ * - Field: "field" (high-contrast vector map for phone navigation).
+ */
+export type Basemap = "terrain" | "topo" | "satellite" | "usgs" | "field";
+
+/**
+ * Base-map values saved by builds before MAP-03. "hybrid" drew exactly what
+ * "satellite" did; "street" became the Terrain style. Settings translate them
+ * on load (src/features/settings/schema.ts `BASEMAP_ALIASES`).
+ */
+export type LegacyBasemap = "hybrid" | "satellite" | "usgs" | "topo" | "street";
 
 export type MapView = {
   lng: number;

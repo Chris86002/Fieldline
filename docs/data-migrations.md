@@ -38,6 +38,22 @@ behave. Every schema change must update this file and add a fixture test.
 - **Export file.** `{ format: "fieldline-settings", version, exportedAt,
   prefs, preset, presetEdits }`. Contains no credentials or personal content.
   Imports from a newer version are refused.
+- **MAP-03 (2026-10-14), still version 1.** `basemap` values are now
+  `terrain`, `topo`, `satellite`, `usgs`, `field`. The removed values load
+  through `BASEMAP_ALIASES` wherever a setting is parsed (saved prefs, preset
+  edits, imports, the `fieldline-v1` migration): `"hybrid"` → `"satellite"`
+  (it drew exactly the same Esri imagery with roads and labels) and
+  `"street"` → `"terrain"` (the vector map Terrain replaces). They are not
+  reported as invalid; the new name is written on the next save. New keys
+  with defaults: `showContours` (true), `showImageryContours` (false, so
+  imagery profiles show no new lines), `contourDetail` ("standard"),
+  `contourStrength` (1), `showLandCover` (true). New profiles start on
+  `terrain`; saved profiles keep their base map. No version bump (as for
+  `"usgs"` below): a pre-MAP-03 development build that reads settings v1
+  rejects `terrain`/`field` and the new keys field by field and uses its
+  defaults; the 1.0.0 release reads only `fieldline-v1`, which is unchanged.
+  Tests: `settings.test.ts` "loads pre-MAP-03 base maps…", "starts new
+  profiles on Terrain…", "loads a saved Hybrid profile as Satellite…".
 
 ## Other caches (replaceable provider data, not personal content)
 
@@ -56,14 +72,17 @@ behave. Every schema change must update this file and add a fixture test.
 | From | To | Result | Evidence |
 | --- | --- | --- | --- |
 | fieldline-v1 profile with metric units, topo map, one mark | settings v1 build | Units, basemap and opacity carried over; mark intact; `fieldline-v1` unchanged | `settings.test.ts` "migrates from fieldline-v1…"; manual browser check 2026-10-13 |
+| settings v1 profile saved with `basemap: "hybrid"` or `"street"` (pre-MAP-03) | MAP-03 build | Loads as `satellite` / `terrain` without a warning; other values kept; next save writes the new name | `settings.test.ts` "loads a saved Hybrid profile as Satellite…", "loads pre-MAP-03 base maps…" |
 | settings v1 profile | older 1.0.0 build | Older build reads `fieldline-v1` only, with its frozen legacy preferences | By construction; not run against the packaged 1.0.0 binary |
 | settings from a future version | settings v1 build | Read-only, warning shown | `settings.test.ts` "does not overwrite corrupt or newer settings" |
 
-## `fieldline-content` (IndexedDB) — personal content, schema 1 (CC-05 wave 1, library only)
+## `fieldline-content` (IndexedDB) — personal content, schema 1
 
-Built and tested in `src/lib/storage/` but **not yet used by the app**; until
-the coordinator wires it in, `fieldline-v1` remains the store of record. Full
-design in [storage.md](storage.md).
+In use since 2026-10-14 (ADR-008): when migration succeeds and storage is
+durable this is the store of record for marks and tracks, and the
+`waypoints`/`tracks` inside `fieldline-v1` are frozen at their pre-migration
+value; otherwise `fieldline-v1` remains the store of record. Full design in
+[storage.md](storage.md).
 
 - **Layout.** IndexedDB database `fieldline-content`, version 1, object stores
   `waypoints`, `tracks`, `trash`, `sessions`, `chunks`, `meta` (string keys).
@@ -103,3 +122,27 @@ design in [storage.md](storage.md).
 | `fieldline-v1` content edited after migration | this build | `legacy-changed-after-migration`, nothing merged | `migrations.test.ts` |
 | Content schema or IndexedDB version from a newer build | this build | Refused, left untouched | `migrations.test.ts`; browser check (`future-version`) |
 | Backup v1 | clean or populated profile | All-or-nothing; identical records skipped; conflicts abort or keep existing | `backup.test.ts`; browser check restore |
+
+### IndexedDB layout version 2 (CC-05 wave 2, offline packages)
+
+- **Change.** `IDB_VERSION` 1 → 2. Upgrade step 2 only adds the object stores
+  `packages`, `packageAssets`, `assets`, `assetData` (replaceable provider
+  data). Content stores and the content schema (`meta/schema` = 1) are
+  untouched; step 1 now names its own six stores, so a fresh database is
+  built by replaying 1 then 2.
+- **Package records.** `PackageRecord` with manifest summaries carrying
+  `schemaVersion: 1` (`PACKAGE_SCHEMA_VERSION`). A record from a newer
+  package schema is not served, and writes to it fail with `future-version`.
+  Packages don't require the content migration to have run.
+- **Downgrade.** A build with `IDB_VERSION = 1` refuses a version-2 database
+  (`future-version`) and keeps using `fieldline-v1` (wave 1 behavior). The
+  library isn't wired into the app yet, so no shipped build is affected; once
+  it is, rolling back past this layout means content stays in the newer
+  database until the user updates again.
+- **Clearing.** The four offline stores are replaceable and clear together;
+  personal stores are never cleared as cache.
+
+| From | To | Result | Evidence |
+| --- | --- | --- | --- |
+| Layout 1 database (content only) | layout 2 | Offline stores added, content untouched | `backend.test.ts` "IndexedDB layout upgrades"; `scripts/offline-browser-check.mjs` builds a populated version-1 database in Chromium with `UPGRADES[1]`, opens it with this build, and compares every content record |
+| Layout 2 database | layout-1 build | Refused (`future-version`), left untouched | By construction (`openIndexedDbBackend` version check, wave-1 tests) |

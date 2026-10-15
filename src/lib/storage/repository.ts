@@ -1,6 +1,7 @@
 import type { Waypoint } from "@/lib/hunt/types";
 import {
   assertEvictable,
+  OFFLINE_STORES,
   REPLACEABLE_STORES,
   StorageError,
   type ReadTx,
@@ -231,16 +232,25 @@ export class ContentRepository {
   }
 
   /**
-   * Clears replaceable data only (provider caches, once wave 2 adds stores for
-   * them). Personal content, the trash and recording sessions are never in
-   * that list, and `assertEvictable` refuses any personal or unlisted store
-   * before anything is cleared. Returns the stores cleared.
+   * Clears replaceable data only (offline map packages). Personal content,
+   * the trash and recording sessions are never in that list, and
+   * `assertEvictable` refuses any personal or unlisted store before anything
+   * is cleared. The offline package stores are cleared together or not at
+   * all, so no package is left claiming assets that are gone. A download
+   * still running stops at its next write. Returns the stores cleared.
    */
   async clearReplaceableData(
     stores: readonly StoreName[] = REPLACEABLE_STORES,
   ): Promise<StoreName[]> {
     assertEvictable(stores);
     if (!stores.length) return [];
+    const offline = OFFLINE_STORES.filter((store) => stores.includes(store));
+    if (offline.length && offline.length !== OFFLINE_STORES.length) {
+      throw new StorageError(
+        "invalid",
+        `Offline package stores are cleared together (${OFFLINE_STORES.join(", ")}). Nothing was cleared.`,
+      );
+    }
     await this.backend.write(stores, async (tx: WriteTx) => {
       for (const store of stores) await tx.clear(store);
     });

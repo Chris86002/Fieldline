@@ -36,9 +36,9 @@ blocked. Device certification is tracked separately from code completion.
 | CC-00 Baseline and contracts | verified | Baseline report above; test glob widened to `src/**/*.test.ts` (verified a feature-folder test runs); provider register; ADR-001–006; ownership table above. |
 | CC-01 Phone feasibility | in progress | [phone-strategy.md](phone-strategy.md): options, proposed `LocationSource` / `TrackCheckpointStore` / `PackageStore` interfaces, 13-scenario device protocol, result template, capability matrix. No physical devices available; decision and certification pending (REL-02/03). Prototype not built yet. |
 | CC-02 Correctness and settings | verified (automated + manual browser); see deferred items | Slices below. Independent CC-12 review found 0 blockers, 2 major, 10 minor; both majors and 7 minors fixed with regression tests. |
-| CC-03 Nationwide catalog | verified (first slices); see CC-03 detail | AZ/ID mode removed; catalog contracts, three unit adapters (AZ, ID, MT), protected unit store, 51-entry coverage register, discovery, nationwide unit search, shell integration. Remaining slices listed below. |
-| CC-04 Map design | wave 1 verified (merged on `feature/cc04-cc05`) | MAP-01 named render groups (9 groups, stable ids, insert/remove order tests) + per-style tokens; MAP-02 cleanup: public-land default 0.62 → 0.25 for new profiles only (gallery trials: 0.15–0.2 lost agency distinction, 0.35+ washed out imagery), lighter casings on imagery, quieter highways, cased trails above local roads, relief ~half strength on imagery; unit labels use collision + priority instead of forced overlap; new settings Boundary strength and Label density. Gallery: `scripts/map-gallery.mjs` (96 before / 96 after shots kept locally in screenshots/gallery, not committed). Known trade-offs in docs/map-design.md (agency colors subtle at 0.25, less depth in gentle terrain, unit numbers can hide each other). Wave 2: MAP-03 signature styles + contours/land cover, MAP-04 comparison, MAP-06 recipes/inspection, text/marker size, clustering. |
-| CC-05 Storage and offline | wave 1 verified as a library (merged); not yet wired into the app | `src/lib/storage/`: IndexedDB + in-memory backends, v0→v1 migration copying fieldline-v1 content without modifying it (verified read-back, idempotent, refuses corrupt/newer), recording checkpoints with gap segments and damage reporting, trash, `fieldline-backup` v1 with integrity check and strict record validation. Independent review: 0 blockers, 2 major (silent loss of a missing checkpoint chunk; backup accepting an unknown mark kind that would crash rendering) + 9 minor — all fixed with regression tests and re-verified (237 tests; Chromium IndexedDB check: migrate → reload → read back, 602-fix recovery, restore, future-version refusal). Next: wire into the app shell (content store, recording, backup UI), then wave 2 offline package manifests/state machine. |
+| CC-03 Nationwide catalog | verified (first slices); see CC-03 detail | AZ/ID mode removed; catalog contracts, five unit adapters (AZ, ID, MT, CO, UT), protected unit store, 51-entry coverage register, discovery, nationwide unit search, shell integration. Remaining slices listed below. |
+| CC-04 Map design | wave 1 verified (merged on `feature/cc04-cc05`); wave 2 MAP-03 verified on branch `cc04/map-wave2`, CC-12 reviewed: 0 blockers/0 majors, minors fixed (automated, smoke, offline contour and offline UI checks, gallery; not yet merged; no real-device/phone check) | **MAP-03 (wave 2):** three styles — Terrain (new default for new profiles; vector land cover from OpenFreeMap's OSM classes, restrained elevation tint, relief, contours with index labels), Satellite (Esri live-only or USGS imagery, look unchanged; optional pale contours, off by default), Field (high contrast, larger names, fewer classes) — plus the USGS topo scan as Terrain's reference base. `hybrid` (identical to `satellite` in code) and `street` load as `satellite`/`terrain` via settings aliases (tests). Contours: maplibre-contour 0.1.1 (BSD-3) on the main thread, DEM read through `fltile://`, intervals in ft/m by zoom (Wider/Standard/Closer), strength setting; verified offline from a downloaded area with tile hosts blocked (`scripts/offline-contours-check.mjs`, including two zooms past the package with each failed terrain tile asked once); review fixes: no DEM fetch at zooms without contour levels, neighbor gaps only without network (not cached; re-traced when back online), 45 s memory of failed DEM tiles, map starts without contours if their chunk fails, keyboard radio groups in Layers, unit tests for the contour tile manager (`contour-source.test.ts`). Land cover offline via existing OFM packages. Measured cost: +20 DEM requests and 50–75 ms main-thread tasks while contour tiles are traced (Sawtooths z12.5, SwiftShader); details, gallery findings and gaps (night mode, worker tracing, OSM land-cover coverage, land-cover date) in docs/map-design.md. **Wave 1:** | MAP-01 named render groups (9 groups, stable ids, insert/remove order tests) + per-style tokens; MAP-02 cleanup: public-land default 0.62 → 0.25 for new profiles only (gallery trials: 0.15–0.2 lost agency distinction, 0.35+ washed out imagery), lighter casings on imagery, quieter highways, cased trails above local roads, relief ~half strength on imagery; unit labels use collision + priority instead of forced overlap; new settings Boundary strength and Label density. Gallery: `scripts/map-gallery.mjs` (96 before / 96 after shots kept locally in screenshots/gallery, not committed). Known trade-offs in docs/map-design.md (agency colors subtle at 0.25, less depth in gentle terrain, unit numbers can hide each other). Remaining: MAP-04 comparison, MAP-06 recipes/inspection, text/marker size, clustering, night/high-contrast. |
+| CC-05 Storage and offline | waves 1–2 verified and wired into the app (merged on `feature/cc04-cc05`); see "Offline maps" below | Wave 2 (offline packages, `src/lib/offline/`): CC-12 review found 3 major (long Retry-After not stopping a provider; per-download instead of tab-wide limits and no cross-tab lock; OpenFreeMap data versions pinning/unreachable offline) + 8 minor — all fixed with behavioral tests and re-verified, including a real v1 → v2 IndexedDB upgrade in Chromium. Wave 1: `src/lib/storage/`: IndexedDB + in-memory backends, v0→v1 migration copying fieldline-v1 content without modifying it (verified read-back, idempotent, refuses corrupt/newer), recording checkpoints with gap segments and damage reporting, trash, `fieldline-backup` v1 with integrity check and strict record validation. Independent review: 0 blockers, 2 major (silent loss of a missing checkpoint chunk; backup accepting an unknown mark kind that would crash rendering) + 9 minor — all fixed with regression tests and re-verified (237 tests; Chromium IndexedDB check: migrate → reload → read back, 602-fix recovery, restore, future-version refusal). Next: wire into the app shell (content store, recording, backup UI), then wave 2 offline package manifests/state machine. |
 | CC-06 Navigation | not started | Recording thresholds from settings are in place (CC-02). |
 | CC-07 Maintenance and reports | not started | REL-04 fields listed as "not tracked" in data-sources.md. |
 | CC-08 Weather platform | not started | Point-forecast nullability and provenance done in CC-02. |
@@ -104,9 +104,30 @@ Incident: worker C's shell briefly wrote `docs/coverage.md` in the
 coordinator's checkout through a relative .NET path, then reverted it; the
 coordinator confirmed the file was byte-identical to HEAD before merging.
 
+**Colorado and Utah (2026-10-14) — verified.** Two workers in parallel
+worktrees, adapter kit only (registry, host allowlist and register lines;
+no app-shell change). Colorado `cpw-gmu`: CPW's own ArcGIS Online layer, 186
+big-game GMUs with herd-unit (DAU) context and area; bighorn sheep and
+mountain goat units not included. Utah `udwr-deer-general`: DWR's 2026
+general-season buck deer layer, 31 named units ("Deer unit Cache"); elk,
+limited-entry and other sets not included, so limited-entry-only areas
+(Paunsaugunt, Henry Mtns) show no unit, and the layer URL is per season (move
+it to the 2027 layer when DWR publishes it). Both licences: as-is
+disclaimers granting nothing, download/redistribution "unknown". The
+coordinator re-ran both live tests (CO 186; Leadville → GMU 49, Gunnison →
+55; UT 31; Logan → Cache, St. George → Pine Valley), resolved the shared-line
+merge conflicts, and fixed unit search for named units (commas, and names
+starting with a state code such as "La Sal Mtns" or "Mt Dutton"; the state
+reading ranks first, the whole-name match still shows) with tests. Live check
+in Chromium against the production build: a Four Corners view lists Arizona
+77, Colorado 186, Utah 31 and New Mexico "not in Fieldline yet"; the CO–UT
+line loads both; searches "La Sal Mtns", "beaver east", "co 49", "Mt Dutton"
+find their units; smoke passes with both mocks; 373 tests.
+
 **CC-03 remaining slices:**
-- More jurisdictions (one adapter each) — the coverage register lists 48
-  states + DC without a unit source.
+- More jurisdictions (one adapter each) — the coverage register lists 46
+  states + DC without a unit source. Colorado and Utah each have more unit
+  sets to add (CO sheep/goat; UT elk, limited-entry, pronghorn, others).
 - Spatial index for local identify (linear scan today; fine at ~300 units).
 - Verified legal-hours rules registry (§7) — not started; UI links agencies.
 - Coverage boxes are discovery hints only; "which state am I in" needs real
@@ -159,11 +180,61 @@ coordinator confirmed the file was byte-identical to HEAD before merging.
 
 ## Next runnable work
 
-1. Wire CC-05 storage into the app (coordinator; HuntApp/store.ts): content
-   repository when migration succeeds, recording via checkpoints with
-   segment-aware drawing/GPX export, backup/restore UI, surface
-   `legacy-changed-after-migration`. Then CC-05 wave 2 and CC-04 wave 2 in
-   parallel.
+1. CC-04 wave 2: MAP-03 done on `cc04/map-wave2` (review and merge next);
+   MAP-04 comparison and MAP-06 inspection remain.
+
+**Offline maps (coordinator, 2026-10-14) — verified.** `src/features/offline/`:
+Layers → Offline maps plans the map view (layers preselected from the map,
+map zoom range, per-layer files and size, exclusions with reasons, provider
+violations), downloads with progress and pause/resume, lists downloaded areas
+(state, size, expiry, errors; show on map, resume, update, check, repair,
+drop update, delete); the spot card shows "Offline here" (FIELD-01); area
+outlines on the map. Found while verifying: MapLibre requests 256-pixel
+raster/terrain tiles one zoom deeper than the map zoom, so packages are now
+planned in map zooms (`zoomBasis: "map"`), and offline tiles past a
+package's top zoom are enlarged from a packaged ancestor instead of going
+blank. Desktop sends OpenFreeMap an identifying User-Agent.
+Independent CC-12 review of the screens: 0 blockers, 1 major, 8 minor, all
+fixed. The major: with 3D terrain on, MapLibre asks for terrain tiles at the
+map zoom (512-px, plus parent and a zoom-5 ancestor), not one deeper, so 3D
+terrain went flat offline at the downloaded zoom; terrain is now planned for
+both consumers. Minors: list re-read on open/foreground; packages still
+served if the startup read fails; "Update not finished" instead of a stuck
+"Updating"; a new download holds the slot while its area is created; no
+enlarging over HTTP errors or cancelled requests; coverage text keeps zoom
+gaps and names out-of-date areas; row labels follow the running operation
+and Pause hides while files are checked; 44 px targets, quieter live
+progress, focus into the delete confirmation. Also: default zooms start two
+levels out (cheap; covers zooming out and tilted 3D distance); the legacy
+one-zoom save had the same raster zoom off-by-one.
+Evidence: 19 controller/model tests + style-layer and desktop policy tests
+(331 + 16 desktop; the slot race test fails on the old controller);
+`scripts/offline-ui-check.mjs` against the production build in Chromium with
+USGS imagery and 3D terrain on: download with pause and resume, reload with
+every tile host blocked → no tile the package holds reached the network
+(checked against its stored tile ranges); zoom past the package
+(screenshot-checked only), "Offline here", outline, delete;
+`offline-browser-check.mjs` and `storage-browser-check.mjs` pass.
+Gaps: the area is always the map view (no drawing); a tilted 3D view's far
+distance and edges need the package's lower zooms; the desktop User-Agent is
+unit-tested but not run in a packaged build (the Electron binary isn't
+installed here); checking files shows no progress; enlarged tiles are soft.
+
+**Storage wiring (coordinator, 2026-10-14) — verified.** `content-sync.ts`
+(ADR-008): repository is the store of record after a verified migration;
+changes mirrored in order; Recently deleted with restore / delete forever;
+recordings checkpointed per fix, recovered after reload (banner: save or
+discard), saved with `segmentStarts`; tracks drawn, measured and exported to
+GPX per segment; Settings → Backup and restore (plan shown before restore).
+ADR-009: transient GPS errors no longer end a recording. Evidence: 8
+content-sync tests + 4 track-segment tests (275 total); real-browser
+acceptance in Chromium against the production build — existing mark
+migrated, new mark persisted across reload with `fieldline-v1` content
+frozen, delete → restore, recording through simulated GPS outages recovered
+after a mid-recording reload (6 points), full backup restored into a fresh
+profile; smoke + desktop tests pass. Gaps: the live recording line still
+draws straight across an outage until the track is saved; no cross-tab
+change sync; old-build edits after upgrade are reported, not merged.
 2. CC-01 PWA recording prototype behind the proposed `LocationSource`
    interface (isolated files).
 3. More CC-03 jurisdiction adapters (each is an independent worker task).

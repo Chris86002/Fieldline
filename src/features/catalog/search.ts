@@ -39,15 +39,24 @@ for (const j of JURISDICTIONS) {
 }
 const MAX_NAME_WORDS = Math.max(...JURISDICTIONS.map((j) => j.name.split(" ").length));
 
-/** Canonical unit code: case-, space- and dash-insensitive, without leading zeros ("06-a" -> "6a"). */
+/**
+ * Canonical unit code: case-, space- and punctuation-insensitive, without
+ * leading zeros ("06-a" -> "6a", "Beaver, East" -> "beavereast"). Strips the
+ * same punctuation the query parser treats as a separator.
+ */
 export function normalizeUnitCode(code: string): string {
   return code
     .toLowerCase()
-    .replace(/[\s\-_.]+/g, "")
+    .replace(/[\s\-_.·,#:;/]+/g, "")
     .replace(/^0+(?=\d)/, "");
 }
 
-type ParsedQuery = { code: string; jurisdictionId: JurisdictionId | null };
+type ParsedQuery = {
+  code: string;
+  jurisdictionId: JurisdictionId | null;
+  /** The code with nothing taken off as a jurisdiction ("la sal mtns": "la" is also Louisiana). */
+  wholeCode: string;
+};
 
 /** Takes a jurisdiction name or USPS code off the start or end of the tokens. */
 function takeJurisdiction(tokens: string[]): { rest: string[]; id: JurisdictionId | null } {
@@ -68,7 +77,7 @@ export function parseUnitQuery(query: string): ParsedQuery {
     .split(/\s+/)
     .filter((t) => t && !UNIT_WORDS.has(t));
   const { rest, id } = takeJurisdiction(tokens);
-  return { code: normalizeUnitCode(rest.join("")), jurisdictionId: id };
+  return { code: normalizeUnitCode(rest.join("")), jurisdictionId: id, wholeCode: normalizeUnitCode(tokens.join("")) };
 }
 
 function jurisdictionName(id: JurisdictionId): string {
@@ -87,21 +96,30 @@ export function searchUnits(
   opts: UnitSearchOptions = {},
 ): UnitSearchResult[] {
   const parsed = parseUnitQuery(query);
-  if (!parsed.code) return [];
+  // A leading or trailing word that is also a state code ("la" in "La Sal
+  // Mtns", "mt" in "Mt Dutton") may be part of the unit's name, so the whole
+  // query is also tried as a name; the state reading ranks first.
+  const whole = parsed.jurisdictionId !== null && parsed.wholeCode !== parsed.code ? parsed.wholeCode : null;
+  if (!parsed.code && !whole) return [];
   const wanted = parsed.jurisdictionId ?? opts.jurisdictionId ?? null;
   const near =
     opts.near && Number.isFinite(opts.near.lng) && Number.isFinite(opts.near.lat) ? opts.near : null;
 
   const results: UnitSearchResult[] = [];
   for (const unit of units) {
-    if (normalizeUnitCode(unit.code) !== parsed.code) continue;
+    const code = normalizeUnitCode(unit.code);
+    const byState = parsed.code !== "" && code === parsed.code;
+    if (!byState && code !== whole) continue;
     const name = jurisdictionName(unit.jurisdictionId);
     const base = unit.label.trim() || `Unit ${unit.code}`;
+    // A whole-query match didn't use the state word, so it isn't a state match
+    // (unless the filter names that state).
+    const target = byState ? wanted : (opts.jurisdictionId ?? null);
     results.push({
       unit,
       label: `${base} · ${name}`,
       jurisdictionName: name,
-      jurisdictionMatch: wanted !== null && unit.jurisdictionId === wanted,
+      jurisdictionMatch: target !== null && unit.jurisdictionId === target,
       distanceMeters: near ? haversine(near, unit.labelPoint) : null,
     });
   }
