@@ -1,5 +1,6 @@
 const CACHE_NAME = "fieldline-shell-v1";
 const SHELL_CACHE_PREFIX = "fieldline-shell-";
+const OFFLINE_PAGES = ["/", "/field-test"];
 
 self.addEventListener("activate", (event) => {
   event.waitUntil(
@@ -31,18 +32,21 @@ self.addEventListener("fetch", (event) => {
   }
 
   if (request.mode === "navigate") {
+    // The map and the phone field-test page (CC-01) reopen without a network.
+    const page = OFFLINE_PAGES.includes(url.pathname) ? url.pathname : null;
     event.respondWith(
       fetch(request)
         .then((response) => {
-          if (response.ok && url.pathname === "/") {
+          if (response.ok && page) {
             const copy = response.clone();
-            void caches.open(CACHE_NAME).then((cache) => cache.put("/", copy)).catch(() => undefined);
+            void caches.open(CACHE_NAME).then((cache) => cache.put(page, copy)).catch(() => undefined);
           }
           return response;
         })
         .catch(async () => {
           try {
-            return (await caches.open(CACHE_NAME)).match("/") || Response.error();
+            const cache = await caches.open(CACHE_NAME);
+            return (page && (await cache.match(page))) || (await cache.match("/")) || Response.error();
           } catch {
             return Response.error();
           }

@@ -119,14 +119,27 @@ describe("searchUnits", () => {
     assert.deepEqual(labels(""), []);
     assert.deepEqual(labels("unit"), []);
     assert.deepEqual(labels("arizona"), []);
+    assert.deepEqual(labels("hunt area"), []);
+  });
+
+  it("accepts Wyoming-style 'hunt area' wording around a code", () => {
+    const WY7 = { ...fixtureUnit("us-wy", "wgfd-elk-areas", "7", { lng: -105.6, lat: 42.3 }), label: "Elk hunt area 7" };
+    for (const q of ["hunt area 7", "Area 7", "wy area 7", "Wyoming hunt area 7", "hunt area 7 WY", "areas 7"]) {
+      assert.deepEqual(searchUnits([WY7, AZ22], q).map((r) => r.label), ["Elk hunt area 7 · Wyoming"], q);
+    }
+    assert.equal(searchUnits([WY7], "wy area 7")[0].jurisdictionMatch, true);
+    // Other states' codes are unchanged by the extra words.
+    assert.deepEqual(labels("area 22 az"), ["Unit 22 · Arizona", "Unit 22 · Idaho"]);
   });
 });
 
 describe("query parsing", () => {
   it("separates the code from a jurisdiction name", () => {
-    assert.deepEqual(parseUnitQuery("New Mexico unit 34"), { code: "34", jurisdictionId: "us-nm", wholeCode: "newmexico34" });
-    assert.deepEqual(parseUnitQuery("34 new mexico"), { code: "34", jurisdictionId: "us-nm", wholeCode: "34newmexico" });
-    assert.deepEqual(parseUnitQuery("GMU 6A"), { code: "6a", jurisdictionId: null, wholeCode: "6a" });
+    const none = { speciesFreeCode: "", species: [] };
+    assert.deepEqual(parseUnitQuery("New Mexico unit 34"), { code: "34", jurisdictionId: "us-nm", wholeCode: "newmexico34", ...none });
+    assert.deepEqual(parseUnitQuery("34 new mexico"), { code: "34", jurisdictionId: "us-nm", wholeCode: "34newmexico", ...none });
+    assert.deepEqual(parseUnitQuery("GMU 6A"), { code: "6a", jurisdictionId: null, wholeCode: "6a", ...none });
+    assert.deepEqual(parseUnitQuery("wy elk area 7"), { code: "elk7", jurisdictionId: "us-wy", wholeCode: "wyelk7", speciesFreeCode: "7", species: ["elk"] });
   });
 
   it("normalizes codes without merging different ones", () => {
@@ -175,5 +188,28 @@ describe("named units (Utah-style names)", () => {
     ]);
     // Codes elsewhere are unchanged: "az 22" is still Arizona's 22 first.
     assert.equal(searchUnits(UNITS, "az 22")[0].unit.id, AZ22.id);
+  });
+});
+
+describe("species words in a query", () => {
+  // Test fixtures: a Wyoming elk area and a Utah deer unit tagged with their species.
+  const WY7 = { ...fixtureUnit("us-wy", "wgfd-elk-areas", "7", { lng: -110.9, lat: 43.9 }), label: "Elk hunt area 7", speciesTags: ["Elk"] };
+  const UT_CACHE = { ...fixtureUnit("us-ut", "udwr-deer-general", "Cache", { lng: -111.7, lat: 41.7 }), label: "Deer unit Cache", speciesTags: ["Deer"] };
+  const AZ7 = fixtureUnit("us-az", "azgfd-gmu", "7", { lng: -111.9, lat: 35.4 });
+  const ELK_RIDGE = fixtureUnit("us-ut", "udwr-deer-general", "Elk Ridge", { lng: -112.5, lat: 37.8 });
+
+  it("finds units with the species word left in", () => {
+    assert.equal(searchUnits([UT_CACHE], "deer unit cache")[0]?.unit.id, UT_CACHE.id);
+    assert.equal(searchUnits([WY7, AZ7], "wy elk area 7")[0]?.unit.id, WY7.id);
+  });
+
+  it("ranks units tagged with the named species first", () => {
+    // No state named: Wyoming's elk area 7 before Arizona's unit 7.
+    assert.deepEqual(searchUnits([AZ7, WY7], "elk area 7").map((h) => h.unit.id), [WY7.id, AZ7.id]);
+  });
+
+  it("still matches a unit whose name contains a species word", () => {
+    assert.equal(searchUnits([ELK_RIDGE, WY7], "elk ridge")[0]?.unit.id, ELK_RIDGE.id);
+    assert.equal(searchUnits([ELK_RIDGE], "elk").length, 0);
   });
 });

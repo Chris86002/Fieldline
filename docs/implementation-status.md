@@ -34,9 +34,9 @@ blocked. Device certification is tracked separately from code completion.
 | Packet | Status | Evidence / notes |
 | --- | --- | --- |
 | CC-00 Baseline and contracts | verified | Baseline report above; test glob widened to `src/**/*.test.ts` (verified a feature-folder test runs); provider register; ADR-001–006; ownership table above. |
-| CC-01 Phone feasibility | in progress | [phone-strategy.md](phone-strategy.md): options, proposed `LocationSource` / `TrackCheckpointStore` / `PackageStore` interfaces, 13-scenario device protocol, result template, capability matrix. No physical devices available; decision and certification pending (REL-02/03). Prototype not built yet. |
+| CC-01 Phone feasibility | prototype built, device results pending | [phone-strategy.md](phone-strategy.md): options, interfaces, 13-scenario device protocol, result template, capability matrix. Prototype (`cc01/recording-prototype`): `LocationSource` + browser implementation (`src/features/location/`), field-test screen at `/field-test` (and Settings link) and as a static page for GitHub Pages (`npm run field-test:build`, `.github/workflows/field-test-pages.yml`), recording through `TrackCheckpointStore` into a separate `fieldline-field-test` database, JSON/GPX reports; owner steps in [field-test-checklist.md](field-test-checklist.md). Verified in headless Chromium only (`npm run field-test:check`); real phone behavior unmeasured. Decision and certification pending (REL-02/03); owner must enable Pages and run the first round. |
 | CC-02 Correctness and settings | verified (automated + manual browser); see deferred items | Slices below. Independent CC-12 review found 0 blockers, 2 major, 10 minor; both majors and 7 minors fixed with regression tests. |
-| CC-03 Nationwide catalog | verified (first slices); see CC-03 detail | AZ/ID mode removed; catalog contracts, five unit adapters (AZ, ID, MT, CO, UT), protected unit store, 51-entry coverage register, discovery, nationwide unit search, shell integration. Remaining slices listed below. |
+| CC-03 Nationwide catalog | verified (first slices); see CC-03 detail | AZ/ID mode removed; catalog contracts, seven unit adapters (AZ, ID, MT, CO, UT, NM, WY), protected unit store, 51-entry coverage register, discovery, nationwide unit search, shell integration. Remaining slices listed below. |
 | CC-04 Map design | wave 1 verified (merged on `feature/cc04-cc05`); wave 2 MAP-03 verified on branch `cc04/map-wave2`, CC-12 reviewed: 0 blockers/0 majors, minors fixed (automated, smoke, offline contour and offline UI checks, gallery; not yet merged; no real-device/phone check) | **MAP-03 (wave 2):** three styles — Terrain (new default for new profiles; vector land cover from OpenFreeMap's OSM classes, restrained elevation tint, relief, contours with index labels), Satellite (Esri live-only or USGS imagery, look unchanged; optional pale contours, off by default), Field (high contrast, larger names, fewer classes) — plus the USGS topo scan as Terrain's reference base. `hybrid` (identical to `satellite` in code) and `street` load as `satellite`/`terrain` via settings aliases (tests). Contours: maplibre-contour 0.1.1 (BSD-3) on the main thread, DEM read through `fltile://`, intervals in ft/m by zoom (Wider/Standard/Closer), strength setting; verified offline from a downloaded area with tile hosts blocked (`scripts/offline-contours-check.mjs`, including two zooms past the package with each failed terrain tile asked once); review fixes: no DEM fetch at zooms without contour levels, neighbor gaps only without network (not cached; re-traced when back online), 45 s memory of failed DEM tiles, map starts without contours if their chunk fails, keyboard radio groups in Layers, unit tests for the contour tile manager (`contour-source.test.ts`). Land cover offline via existing OFM packages. Measured cost: +20 DEM requests and 50–75 ms main-thread tasks while contour tiles are traced (Sawtooths z12.5, SwiftShader); details, gallery findings and gaps (night mode, worker tracing, OSM land-cover coverage, land-cover date) in docs/map-design.md. **Wave 1:** | MAP-01 named render groups (9 groups, stable ids, insert/remove order tests) + per-style tokens; MAP-02 cleanup: public-land default 0.62 → 0.25 for new profiles only (gallery trials: 0.15–0.2 lost agency distinction, 0.35+ washed out imagery), lighter casings on imagery, quieter highways, cased trails above local roads, relief ~half strength on imagery; unit labels use collision + priority instead of forced overlap; new settings Boundary strength and Label density. Gallery: `scripts/map-gallery.mjs` (96 before / 96 after shots kept locally in screenshots/gallery, not committed). Known trade-offs in docs/map-design.md (agency colors subtle at 0.25, less depth in gentle terrain, unit numbers can hide each other). Remaining: MAP-04 comparison, MAP-06 recipes/inspection, text/marker size, clustering, night/high-contrast. |
 | CC-05 Storage and offline | waves 1–2 verified and wired into the app (merged on `feature/cc04-cc05`); see "Offline maps" below | Wave 2 (offline packages, `src/lib/offline/`): CC-12 review found 3 major (long Retry-After not stopping a provider; per-download instead of tab-wide limits and no cross-tab lock; OpenFreeMap data versions pinning/unreachable offline) + 8 minor — all fixed with behavioral tests and re-verified, including a real v1 → v2 IndexedDB upgrade in Chromium. Wave 1: `src/lib/storage/`: IndexedDB + in-memory backends, v0→v1 migration copying fieldline-v1 content without modifying it (verified read-back, idempotent, refuses corrupt/newer), recording checkpoints with gap segments and damage reporting, trash, `fieldline-backup` v1 with integrity check and strict record validation. Independent review: 0 blockers, 2 major (silent loss of a missing checkpoint chunk; backup accepting an unknown mark kind that would crash rendering) + 9 minor — all fixed with regression tests and re-verified (237 tests; Chromium IndexedDB check: migrate → reload → read back, 602-fix recovery, restore, future-version refusal). Next: wire into the app shell (content store, recording, backup UI), then wave 2 offline package manifests/state machine. |
 | CC-06 Navigation | not started | Recording thresholds from settings are in place (CC-02). |
@@ -124,11 +124,27 @@ in Chromium against the production build: a Four Corners view lists Arizona
 line loads both; searches "La Sal Mtns", "beaver east", "co 49", "Mt Dutton"
 find their units; smoke passes with both mocks; 373 tests.
 
+**New Mexico and Wyoming (2026-10-14) — verified.** Two more workers in
+parallel worktrees, adapter kit only. New Mexico `nmdgf-gmu`: the agency's
+own layer, 70 GMUs including lettered sub-units, bear/cougar zones, national
+forests; GMUs 1, 3, 11, 35 carry no detail in the source. Wyoming
+`wgfd-elk-areas`: WGFD's elk hunt areas (105), labelled "Elk hunt area N"
+with area name, herd unit and nonresident region; deer, pronghorn, moose and
+other species are separate layers (later slices). Both licences are
+disclaimers granting nothing (download/redistribution "unknown"). The
+coordinator re-ran both live tests (NM 70: Gila Cliff Dwellings → 16B,
+Cowles → 45, Chama → 4, Luna → 15; WY 105: Jackson → 84, Cody → 58, Snowy
+Range → 12, Victor ID → none), merged the shared lines by hand, and extended
+unit search: "hunt area 7" (worker) and species words ("elk area 7", "deer
+unit cache"; units tagged with the named species rank next after a state
+match; names containing a species word still match), with tests.
+
 **CC-03 remaining slices:**
-- More jurisdictions (one adapter each) — the coverage register lists 46
-  states + DC without a unit source. Colorado and Utah each have more unit
-  sets to add (CO sheep/goat; UT elk, limited-entry, pronghorn, others).
-- Spatial index for local identify (linear scan today; fine at ~300 units).
+- More jurisdictions (one adapter each) — the coverage register lists 44
+  states + DC without a unit source; more unit sets for CO (sheep/goat), UT
+  (elk, limited-entry, pronghorn, others) and WY (deer, pronghorn, moose,
+  others).
+- Spatial index for local identify (linear scan today; fine at ~600 units).
 - Verified legal-hours rules registry (§7) — not started; UI links agencies.
 - Coverage boxes are discovery hints only; "which state am I in" needs real
   boundaries (not needed yet).
@@ -235,7 +251,9 @@ after a mid-recording reload (6 points), full backup restored into a fresh
 profile; smoke + desktop tests pass. Gaps: the live recording line still
 draws straight across an outage until the track is saved; no cross-tab
 change sync; old-build edits after upgrade are reported, not merged.
-2. CC-01 PWA recording prototype behind the proposed `LocationSource`
-   interface (isolated files).
+2. CC-01: prototype built on `cc01/recording-prototype` (review and merge);
+   then the owner publishes the field-test page and runs the first round
+   (tests 1, 2, 3, 9, 10, 4 on both phones) per
+   [field-test-checklist.md](field-test-checklist.md).
 3. More CC-03 jurisdiction adapters (each is an independent worker task).
 3. CC-08 (when reached): implement ADR-007 NWS gridpoint primary source.

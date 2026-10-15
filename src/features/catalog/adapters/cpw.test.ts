@@ -343,8 +343,7 @@ describe("Colorado cross-border", () => {
     assert.ok(discovered.includes("azgfd-gmu") && discovered.includes("cpw-gmu"), discovered.join());
     assert.deepEqual([...discovered].sort(), [...fromRegister].sort());
     for (const id of discovered) assert.ok(unitAdapterById(id), id);
-    // New Mexico has no unit source: the register says so instead of showing an empty map as "no units".
-    assert.equal(layerStatus("us-nm", "hunt-units").status, "unavailable");
+    assert.equal(layerStatus("us-nm", "hunt-units").status, "available");
   });
 
   it("a point in Colorado near the Four Corners gets the CO GMU; Arizona's provider answers empty, not unavailable", async () => {

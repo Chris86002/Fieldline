@@ -10,11 +10,17 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as FieldTestRouteImport } from './routes/field-test'
 import { Route as ApiDemZXYRouteImport } from './routes/api/dem/$z/$x/$y'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const FieldTestRoute = FieldTestRouteImport.update({
+  id: '/field-test',
+  path: '/field-test',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiDemZXYRoute = ApiDemZXYRouteImport.update({
@@ -25,27 +31,31 @@ const ApiDemZXYRoute = ApiDemZXYRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/field-test': typeof FieldTestRoute
   '/api/dem/$z/$x/$y': typeof ApiDemZXYRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/field-test': typeof FieldTestRoute
   '/api/dem/$z/$x/$y': typeof ApiDemZXYRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/field-test': typeof FieldTestRoute
   '/api/dem/$z/$x/$y': typeof ApiDemZXYRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/api/dem/$z/$x/$y'
+  fullPaths: '/' | '/field-test' | '/api/dem/$z/$x/$y'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/api/dem/$z/$x/$y'
-  id: '__root__' | '/' | '/api/dem/$z/$x/$y'
+  to: '/' | '/field-test' | '/api/dem/$z/$x/$y'
+  id: '__root__' | '/' | '/field-test' | '/api/dem/$z/$x/$y'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  FieldTestRoute: typeof FieldTestRoute
   ApiDemZXYRoute: typeof ApiDemZXYRoute
 }
 
@@ -56,6 +66,13 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/field-test': {
+      id: '/field-test'
+      path: '/field-test'
+      fullPath: '/field-test'
+      preLoaderRoute: typeof FieldTestRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/dem/$z/$x/$y': {
@@ -70,6 +87,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  FieldTestRoute: FieldTestRoute,
   ApiDemZXYRoute: ApiDemZXYRoute,
 }
 export const routeTree = rootRouteImport

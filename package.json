@@ -19,6 +19,8 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "smoke": "node scripts/browser-smoke.mjs",
+    "field-test:build": "vite build --config vite.field-test.config.ts",
+    "field-test:check": "node scripts/field-test-check.mjs",
     "desktop:build": "node scripts/desktop-build.mjs",
     "desktop:dev": "npm run desktop:build && electron .",
     "desktop:test": "node --test desktop/*.test.mjs scripts/desktop-bundle.test.mjs",
