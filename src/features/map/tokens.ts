@@ -3,11 +3,17 @@ import type { Basemap } from "@/lib/hunt/types";
 /**
  * Map design tokens (spec §17 "Shared design system"). Every color and weight
  * the map style uses comes from here, per style family, instead of constants
- * scattered through MapCanvas. The five base maps share three families:
- * imagery (Hybrid, Satellite, USGS imagery), the USGS topo scan, and Street.
- * The three signature styles (MAP-03) will add their own token sets.
+ * scattered through MapCanvas.
+ *
+ * Families (MAP-03): `terrain` (the Fieldline Terrain vector style), `imagery`
+ * (Fieldline Satellite on Esri or USGS imagery), `topo` (the USGS topo scan,
+ * the reference base inside Terrain) and `field` (the high-contrast Field
+ * style).
  */
-export type StyleFamily = "imagery" | "topo" | "street";
+export type StyleFamily = "terrain" | "imagery" | "topo" | "field";
+
+/** The three styles a user picks between; each base map belongs to one. */
+export type MapStyleId = "terrain" | "satellite" | "field";
 
 export type LineToken = {
   line: string;
@@ -19,13 +25,32 @@ export type LineToken = {
 
 export type MapTokens = {
   family: StyleFamily;
-  /** Background under every raster; only visible on Street or while tiles load. */
+  /** Background under everything; the land color of the vector styles. */
   land: string;
   water: string;
+  /** Forest and woodland (OpenMapTiles landcover class `wood`). */
   vegetation: string;
   park: string;
   /** Rivers and creeks, line and label. */
   waterway: string;
+  /**
+   * Land-cover fills from OpenStreetMap (OpenMapTiles `landcover` and
+   * `landuse`). Only classes the source actually carries; unmapped ground
+   * shows the land color. Drawn on the vector styles only, never on imagery.
+   */
+  landcover: {
+    scrub: string;
+    grass: string;
+    wetland: string;
+    rock: string;
+    sand: string;
+    ice: string;
+    farmland: string;
+    /** Built-up land use (residential, commercial, industrial). */
+    developed: string;
+    /** Fill opacity shared by the land-cover classes. */
+    opacity: number;
+  };
   roads: {
     freeway: LineToken;
     highway: LineToken;
@@ -39,6 +64,15 @@ export type MapTokens = {
   state: LineToken;
   label: { text: string; halo: string; haloWidth: number };
   unitLabel: { text: string; halo: string };
+  /** Contour lines derived from the terrain DEM (minor and index lines, index labels). */
+  contour: { minor: string; index: string; minorOpacity: number; indexOpacity: number; label: string; halo: string };
+  /** Multiplier on ordinary label sizes (Field reads at arm's length outdoors). */
+  textScale: number;
+  /**
+   * Restrained elevation tint under the land cover, in meters, or null for
+   * none. Display only: it does not change any elevation value.
+   */
+  tint: { opacity: number; stops: [number, string][] } | null;
   /** Reserved for the inspection group (MAP-06): the selected unit, parcel or route. */
   selected: string;
   /** Reserved for closure and alert overlays; never used for ordinary content. */
@@ -83,6 +117,19 @@ const NAV = {
   offlinePreview: "#f3f1ea",
 } as const;
 
+/** Natural-earth land-cover colors (Terrain). */
+const NATURAL_LANDCOVER: MapTokens["landcover"] = {
+  scrub: "#d2dab0",
+  grass: "#e1e4bf",
+  wetland: "#c6dcd3",
+  rock: "#d9d3c9",
+  sand: "#eee1bd",
+  ice: "#f4f8fb",
+  farmland: "#e9e4ca",
+  developed: "#e1dad0",
+  opacity: 0.85,
+};
+
 const IMAGERY: MapTokens = {
   family: "imagery",
   land: "#1c2418",
@@ -90,6 +137,8 @@ const IMAGERY: MapTokens = {
   vegetation: "#d3dcc8",
   park: "#d7e3c4",
   waterway: "#d5e6f2",
+  // Never drawn on imagery (no invented detail); kept so every family has a full set.
+  landcover: NATURAL_LANDCOVER,
   roads: {
     // Hues kept (orange freeway, gold highway, gray local) so the Layers hint stays true; weight and casing reduced.
     freeway: { line: "#e8823a", casing: "#2a1004", casingOpacity: 0.5, lineOpacity: 0.85 },
@@ -101,6 +150,10 @@ const IMAGERY: MapTokens = {
   state: { line: "#fffaf0", casing: "#0c0e0a", casingOpacity: 0.45, lineOpacity: 0.9 },
   label: { text: "#f7f4ea", halo: "#141810", haloWidth: 1.6 },
   unitLabel: { text: "#f3f1ea", halo: "#121410" },
+  // Pale lines over imagery, index lines a little stronger; labels with a dark halo.
+  contour: { minor: "#fff4dc", index: "#fff4dc", minorOpacity: 0.3, indexOpacity: 0.62, label: "#fff8ea", halo: "#141810" },
+  textScale: 1,
+  tint: null,
   selected: "#ffd84d",
   warning: "#ff6b4a",
   route: ROUTE,
@@ -117,39 +170,115 @@ const TOPO: MapTokens = {
   state: { line: "#2b2924", casing: "#fbf8f0", casingOpacity: 0.7, lineOpacity: 0.85 },
   unitLabel: { text: "#3f1d55", halo: "#fbf8f0" },
   label: { text: "#1a1e16", halo: "#f3f0e8", haloWidth: 1.5 },
+  // The scan has its own contours; Fieldline's are not drawn over it.
+  contour: { minor: "#8a6a45", index: "#6e5232", minorOpacity: 0.35, indexOpacity: 0.7, label: "#5e4426", halo: "#f3efe4" },
   relief: { strength: 0.8, shadowAlpha: 0.6, highlightAlpha: 0.3 },
 };
 
-const STREET: MapTokens = {
-  family: "street",
-  land: "#e4dfd4",
-  water: "#c5d4e2",
-  vegetation: "#d3dcc8",
-  park: "#d7e3c4",
-  waterway: "#3e6278",
+/** Fieldline Terrain: natural earth colors, blue water, clear trails, crisp relief, fine contours. */
+const TERRAIN: MapTokens = {
+  family: "terrain",
+  land: "#ebe5d4",
+  water: "#a9c9e1",
+  vegetation: "#bcd3a1",
+  park: "#d6e4c2",
+  waterway: "#3b7db3",
+  landcover: NATURAL_LANDCOVER,
   roads: {
-    freeway: { line: "#e0702a", casing: "#7a3410", casingOpacity: 0.7, lineOpacity: 0.9 },
-    highway: { line: "#d4a04a", casing: "#8a6230", casingOpacity: 0.6, lineOpacity: 0.9 },
-    minor: { line: "#fffcf7", casing: "#b7b1a6", casingOpacity: 0.9, lineOpacity: 1 },
+    freeway: { line: "#d9673a", casing: "#8a3a1a", casingOpacity: 0.6, lineOpacity: 0.95 },
+    highway: { line: "#e8bb5f", casing: "#8f6a2a", casingOpacity: 0.55, lineOpacity: 0.95 },
+    minor: { line: "#fffdf8", casing: "#9a9285", casingOpacity: 0.85, lineOpacity: 1 },
   },
-  trail: { line: "#5c4a2e", casing: "#f3f0e8", casingOpacity: 0.6, lineOpacity: 1 },
+  trail: { line: "#8a3412", casing: "#fbf8f0", casingOpacity: 0.7, lineOpacity: 1 },
   unit: { line: "#5b2a78", casing: "#fbf8f0", casingOpacity: 0.7, lineOpacity: 0.85 },
   state: { line: "#2b2924", casing: "#fbf8f0", casingOpacity: 0.7, lineOpacity: 0.85 },
-  label: { text: "#1a1e16", halo: "#f3f0e8", haloWidth: 1.5 },
+  label: { text: "#20241b", halo: "#f6f3ea", haloWidth: 1.5 },
   unitLabel: { text: "#3f1d55", halo: "#fbf8f0" },
+  contour: { minor: "#9c7449", index: "#7f5a33", minorOpacity: 0.4, indexOpacity: 0.75, label: "#6b4a28", halo: "#f4f0e5" },
+  textScale: 1,
+  // Low ground slightly green, middle heights tan, high ground pale. Restrained: land cover sits above it.
+  tint: {
+    opacity: 0.5,
+    stops: [
+      [0, "#dfe8cf"],
+      [600, "#e9e8cf"],
+      [1500, "#e7dcc1"],
+      [2600, "#ddd3c4"],
+      [3600, "#ecebe8"],
+      [5000, "#ffffff"],
+    ],
+  },
   selected: "#c2410c",
   warning: "#c62828",
   route: ROUTE,
   nav: NAV,
-  relief: { strength: 1, shadowAlpha: 0.75, highlightAlpha: 0.38 },
+  // Gallery: Street's 1 / 0.75 made Pennsylvania ridges and shaded Sawtooth slopes near black and hid contours there.
+  relief: { strength: 0.85, shadowAlpha: 0.55, highlightAlpha: 0.3 },
 };
 
-export const STYLE_TOKENS: Record<StyleFamily, MapTokens> = { imagery: IMAGERY, topo: TOPO, street: STREET };
+/**
+ * Fieldline Field: high contrast and fewer classes for a phone held outdoors.
+ * Pale land, strong dark text, white roads with gray edges, dark-red trails,
+ * quiet contours and gentle relief.
+ */
+const FIELD: MapTokens = {
+  family: "field",
+  land: "#f5f3ec",
+  water: "#79b0db",
+  vegetation: "#c9debb",
+  park: "#d9e8cc",
+  waterway: "#1f66a3",
+  landcover: {
+    // Fewer distinctions than Terrain: open ground stays near the land color.
+    scrub: "#e3e8d2",
+    grass: "#ecefdc",
+    wetland: "#cfe3e0",
+    rock: "#e2ded6",
+    sand: "#f1e8cc",
+    ice: "#fbfdff",
+    farmland: "#f0eedf",
+    developed: "#e3ddd5",
+    opacity: 0.9,
+  },
+  roads: {
+    freeway: { line: "#d4480f", casing: "#5c1d05", casingOpacity: 0.85, lineOpacity: 1 },
+    highway: { line: "#f0b43c", casing: "#6b4a10", casingOpacity: 0.85, lineOpacity: 1 },
+    minor: { line: "#ffffff", casing: "#55524c", casingOpacity: 0.95, lineOpacity: 1 },
+  },
+  trail: { line: "#9b1c0c", casing: "#ffffff", casingOpacity: 0.95, lineOpacity: 1 },
+  unit: { line: "#4b1a6b", casing: "#ffffff", casingOpacity: 0.85, lineOpacity: 0.95 },
+  state: { line: "#121212", casing: "#ffffff", casingOpacity: 0.85, lineOpacity: 0.95 },
+  label: { text: "#0b0d09", halo: "#ffffff", haloWidth: 2 },
+  unitLabel: { text: "#35124d", halo: "#ffffff" },
+  contour: { minor: "#a8885f", index: "#7b5a32", minorOpacity: 0.3, indexOpacity: 0.65, label: "#5a3e1e", halo: "#ffffff" },
+  textScale: 1.15,
+  tint: null,
+  selected: "#c2410c",
+  warning: "#c62828",
+  route: ROUTE,
+  nav: NAV,
+  relief: { strength: 0.6, shadowAlpha: 0.45, highlightAlpha: 0.25 },
+};
+
+export const STYLE_TOKENS: Record<StyleFamily, MapTokens> = { terrain: TERRAIN, imagery: IMAGERY, topo: TOPO, field: FIELD };
 
 export function styleFamily(basemap: Basemap): StyleFamily {
+  if (basemap === "terrain") return "terrain";
+  if (basemap === "field") return "field";
   if (basemap === "topo") return "topo";
-  if (basemap === "street") return "street";
   return "imagery";
+}
+
+/** Which of the three styles a base map belongs to. */
+export function mapStyleOf(basemap: Basemap): MapStyleId {
+  if (basemap === "terrain" || basemap === "topo") return "terrain";
+  if (basemap === "field") return "field";
+  return "satellite";
+}
+
+/** True for the vector styles drawn from OpenFreeMap land and water (Terrain, Field). */
+export function isVectorBase(basemap: Basemap): boolean {
+  return basemap === "terrain" || basemap === "field";
 }
 
 export function tokensFor(basemap: Basemap): MapTokens {

@@ -51,10 +51,12 @@ try {
   await page.locator(".maplibregl-canvas").waitFor({ state: "attached", timeout: 30000 });
   await page.waitForTimeout(2500);
 
-  // USGS base map, so nothing on screen is live-only; 3D terrain on, which
-  // asks for terrain tiles differently from hillshade (docs/storage.md).
+  // Satellite style on USGS imagery, so nothing on screen is live-only; 3D
+  // terrain on, which asks for terrain tiles differently from hillshade
+  // (docs/storage.md).
   await visible("Layers").click();
-  await page.getByRole("button", { name: "USGS", exact: true }).click();
+  await page.getByRole("radio", { name: "Satellite", exact: true }).click();
+  await page.getByRole("radio", { name: "USGS", exact: true }).click();
   const terrain = page.getByRole("switch", { name: "3D terrain" });
   if ((await terrain.getAttribute("aria-checked")) !== "true") await terrain.click();
   await page.waitForTimeout(1500);

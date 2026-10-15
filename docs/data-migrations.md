@@ -38,6 +38,22 @@ behave. Every schema change must update this file and add a fixture test.
 - **Export file.** `{ format: "fieldline-settings", version, exportedAt,
   prefs, preset, presetEdits }`. Contains no credentials or personal content.
   Imports from a newer version are refused.
+- **MAP-03 (2026-10-14), still version 1.** `basemap` values are now
+  `terrain`, `topo`, `satellite`, `usgs`, `field`. The removed values load
+  through `BASEMAP_ALIASES` wherever a setting is parsed (saved prefs, preset
+  edits, imports, the `fieldline-v1` migration): `"hybrid"` → `"satellite"`
+  (it drew exactly the same Esri imagery with roads and labels) and
+  `"street"` → `"terrain"` (the vector map Terrain replaces). They are not
+  reported as invalid; the new name is written on the next save. New keys
+  with defaults: `showContours` (true), `showImageryContours` (false, so
+  imagery profiles show no new lines), `contourDetail` ("standard"),
+  `contourStrength` (1), `showLandCover` (true). New profiles start on
+  `terrain`; saved profiles keep their base map. No version bump (as for
+  `"usgs"` below): a pre-MAP-03 development build that reads settings v1
+  rejects `terrain`/`field` and the new keys field by field and uses its
+  defaults; the 1.0.0 release reads only `fieldline-v1`, which is unchanged.
+  Tests: `settings.test.ts` "loads pre-MAP-03 base maps…", "starts new
+  profiles on Terrain…", "loads a saved Hybrid profile as Satellite…".
 
 ## Other caches (replaceable provider data, not personal content)
 
@@ -56,6 +72,7 @@ behave. Every schema change must update this file and add a fixture test.
 | From | To | Result | Evidence |
 | --- | --- | --- | --- |
 | fieldline-v1 profile with metric units, topo map, one mark | settings v1 build | Units, basemap and opacity carried over; mark intact; `fieldline-v1` unchanged | `settings.test.ts` "migrates from fieldline-v1…"; manual browser check 2026-10-13 |
+| settings v1 profile saved with `basemap: "hybrid"` or `"street"` (pre-MAP-03) | MAP-03 build | Loads as `satellite` / `terrain` without a warning; other values kept; next save writes the new name | `settings.test.ts` "loads a saved Hybrid profile as Satellite…", "loads pre-MAP-03 base maps…" |
 | settings v1 profile | older 1.0.0 build | Older build reads `fieldline-v1` only, with its frozen legacy preferences | By construction; not run against the packaged 1.0.0 binary |
 | settings from a future version | settings v1 build | Read-only, warning shown | `settings.test.ts` "does not overwrite corrupt or newer settings" |
 

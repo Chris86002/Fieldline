@@ -501,6 +501,18 @@ the tile zooms the map requests (`mapZoomTileRange`, MapLibre 6.13):
   terrain is planned from min(5, min − 1) to max + 1; the shallow levels are a
   handful of tiles.
 
+- Contours (MAP-03) are a third terrain consumer: 512-pixel contour tiles at
+  floor(map zoom), each traced from the DEM tile with the same z/x/y and its
+  eight neighbors, read through `fltile://` (`src/features/map/contour-source.ts`).
+  For map zooms up to the package's top zoom + 1 that zoom is inside the
+  terrain range above, so packages need no change; contour tiles themselves
+  are made on the device and never stored. Deeper, offline, the terrain tile
+  comes from the ancestor enlargement below, so contours are traced from
+  coarser enlarged terrain. A neighbor outside the area is also enlarged from
+  a packaged ancestor when one exists; with none, and no network, that tile
+  edge is left without lines (and re-traced when the network returns). Land
+  cover is drawn from the OpenFreeMap tiles a package already holds.
+
 Manifests keep the map zooms in `zoomRange` and each layer's tile zooms in
 `layers[]`. The "Offline here" line lists, per layer, the map zoom ranges of
 the covering areas where that layer is complete, merging only overlapping or
@@ -549,6 +561,12 @@ on an HTTP error from a reachable provider or a request the map cancelled.
   (OpenFreeMap's TileJSON is asked online once by design; tiles the tilted
   view asks for outside the package are listed), zoom past the package
   (screenshot only, no assertion), "Offline here", outline, delete.
+- `node scripts/offline-contours-check.mjs` against `npm start` (live): a new
+  profile on the Terrain style downloads its view at map zoom 12 (public
+  land, OpenFreeMap, terrain; no raster base), reloads with every tile host
+  and the terrain proxy blocked: no packaged tile may reach the network, and
+  turning contours off must change the screenshot (contours were drawn from
+  the package).
 - `node scripts/offline-browser-check.mjs` (live, about 50 polite requests;
   not in `npm test`): first a real IndexedDB upgrade (a populated version-1
   database built with `UPGRADES[1]` is opened by this build: every content

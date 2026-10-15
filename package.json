@@ -35,6 +35,7 @@
     "@tanstack/react-router": "^1.170.0",
     "@tanstack/react-start": "^1.168.60",
     "lucide-react": "^0.510.0",
+    "maplibre-contour": "0.1.1",
     "maplibre-gl": "^6.13.0",
     "nitro": "3.0.260610-beta",
     "react": "^19.2.0",

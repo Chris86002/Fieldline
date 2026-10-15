@@ -9,11 +9,14 @@ import {
   migrateLegacy,
   parseSettings,
   presetControls,
+  PRESETS,
   resetCategory,
   resolveSettings,
   SETTING_KEYS,
+  settingsState,
   type SettingsState,
 } from "./schema.ts";
+import { contoursShown } from "../map/style-layers.ts";
 import { hydrateSettings, loadSettings, useSettings } from "./store.ts";
 
 const originalStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
@@ -105,6 +108,57 @@ describe("settings schema", () => {
     state = resetCategory(state, "map");
     assert.equal(state.prefs.labelDensity, "standard");
     assert.equal(state.prefs.boundaryStrength, "standard");
+  });
+
+  it("loads pre-MAP-03 base maps as the style that draws the same thing", () => {
+    // "hybrid" drew exactly what "satellite" draws; "street" became Terrain.
+    for (const [saved, loaded] of [
+      ["hybrid", "satellite"],
+      ["street", "terrain"],
+      ["satellite", "satellite"],
+      ["usgs", "usgs"],
+      ["topo", "topo"],
+    ] as const) {
+      const { settings, rejected } = parseSettings({ basemap: saved });
+      assert.equal(settings.basemap, loaded, saved);
+      assert.deepEqual(rejected, [], `${saved} is not reported as invalid`);
+      assert.equal(migrateLegacy({ ...legacyProfile.state, basemap: saved }).basemap, loaded, `fieldline-v1 ${saved}`);
+    }
+    // Prototype keys are not aliases.
+    assert.deepEqual(parseSettings({ basemap: "constructor" }).rejected, ["basemap"]);
+    // A user's edit to the Scouting preset saved as "hybrid" keeps working.
+    const state = settingsState({ prefs: {}, preset: "scouting", presetEdits: { scouting: { basemap: "hybrid", terrain: false } } });
+    assert.equal(state.presetEdits.scouting?.basemap, "satellite");
+    assert.equal(resolveSettings(state).basemap, "satellite");
+    assert.equal(PRESETS.scouting.values.basemap, "satellite", "Scouting stays on imagery");
+    // Settings files exported before MAP-03 import without rejections.
+    const text = JSON.stringify({ format: "fieldline-settings", version: 1, prefs: { basemap: "street" } });
+    const imported = importSettings(text, base());
+    assert.ok(imported.ok);
+    assert.equal(imported.state.prefs.basemap, "terrain");
+    assert.deepEqual(imported.rejected, []);
+  });
+
+  it("starts new profiles on Terrain and leaves imagery profiles without contours (MAP-03)", () => {
+    assert.equal(DEFAULT_SETTINGS.basemap, "terrain");
+    assert.equal(DEFAULT_SETTINGS.showContours, true);
+    assert.equal(DEFAULT_SETTINGS.showImageryContours, false, "no new lines over imagery after the update");
+    assert.equal(DEFAULT_SETTINGS.showLandCover, true);
+    assert.equal(DEFAULT_SETTINGS.contourDetail, "standard");
+    assert.equal(DEFAULT_SETTINGS.contourStrength, 1);
+    // A settings copy saved before these existed loads without warnings.
+    const older = parseSettings({ basemap: "hybrid", publicOpacity: 0.62, labelDensity: "more" });
+    assert.deepEqual(older.rejected, []);
+    assert.equal(older.settings.basemap, "satellite");
+    assert.equal(contoursShown(older.settings), false, "an imagery user sees no contours until they turn them on");
+    assert.equal(contoursShown({ ...older.settings, basemap: "terrain" }), true);
+    const bad = parseSettings({ contourDetail: "dense", contourStrength: 5, showLandCover: "yes" });
+    assert.deepEqual(bad.rejected.sort(), ["contourDetail", "contourStrength", "showLandCover"]);
+    let state = applySetting(base(), "contourDetail", "fine");
+    state = applySetting(state, "showImageryContours", true);
+    state = resetCategory(state, "map");
+    assert.equal(state.prefs.contourDetail, "standard");
+    assert.equal(state.prefs.showImageryContours, false);
   });
 
   it("keeps valid values and rejects invalid ones individually", () => {
@@ -291,6 +345,26 @@ describe("settings persistence", () => {
     const result = useSettings.getState().importText(exportSettings(base()));
     assert.equal(result.ok, false);
     assert.match(result.message, /not saved/);
+  });
+
+  it("loads a saved Hybrid profile as Satellite and saves the new name on the next change", () => {
+    const storage = installStorage({ "fieldline-settings": JSON.stringify({ version: 1, state: { prefs: { basemap: "hybrid", showRoads: false }, preset: null, presetEdits: {} } }) });
+    hydrateSettings();
+    assert.equal(useSettings.getState().effective.basemap, "satellite");
+    assert.equal(useSettings.getState().warning, null);
+    useSettings.getState().set("speedUnit", "kmh");
+    const saved = JSON.parse(storage.get("fieldline-settings") ?? "null");
+    assert.equal(saved.version, 1);
+    assert.equal(saved.state.prefs.basemap, "satellite");
+    assert.equal(saved.state.prefs.showRoads, false);
+    // An older profile known only from fieldline-v1 (whose content store always wrote "hybrid").
+    installStorage({ "fieldline-v1": JSON.stringify({ ...legacyProfile, state: { ...legacyProfile.state, basemap: "hybrid" } }) });
+    hydrateSettings();
+    assert.equal(useSettings.getState().effective.basemap, "satellite");
+    // A brand-new profile starts on Terrain.
+    installStorage({});
+    hydrateSettings();
+    assert.equal(useSettings.getState().effective.basemap, "terrain");
   });
 
   it("reports invalid saved values instead of hiding them", () => {

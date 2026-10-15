@@ -39,6 +39,8 @@ export type OfflineMapState = {
   showUnits: boolean;
   terrain: boolean;
   showShade: boolean;
+  /** Contours on for the current style (they draw from the terrain tiles). */
+  contours: boolean;
 };
 
 const TONE: Record<StateTone, string> = {

@@ -309,15 +309,24 @@ describe("map zooms and enlarging offline", () => {
 
 describe("offline screen helpers", () => {
   it("preselects storable layers from what the map shows", () => {
-    assert.deepEqual(defaultLayers({ basemap: "hybrid", showPublic: true, terrain: false, showShade: true }), ["usgs-imagery", "blm-sma", "ofm-vector", "dem"]);
+    assert.deepEqual(defaultLayers({ basemap: "satellite", showPublic: true, terrain: false, showShade: true }), ["usgs-imagery", "blm-sma", "ofm-vector", "dem"]);
     assert.deepEqual(defaultLayers({ basemap: "topo", showPublic: false, terrain: false, showShade: false }), ["usgs-topo", "ofm-vector"]);
-    assert.deepEqual(defaultLayers({ basemap: "street", showPublic: false, terrain: true, showShade: false }), ["ofm-vector", "dem"]);
+    assert.deepEqual(defaultLayers({ basemap: "field", showPublic: false, terrain: true, showShade: false }), ["ofm-vector", "dem"]);
     assert.deepEqual(unpackageableShown({ basemap: "satellite", showUnits: true }), ["esri-imagery", "hunt-units"]);
     assert.deepEqual(unpackageableShown({ basemap: "usgs", showUnits: false }), []);
   });
 
+  it("packages the vector styles from vector and terrain tiles only (MAP-03)", () => {
+    // Terrain: land cover from OpenFreeMap; relief, tint and contours from the terrain tiles.
+    assert.deepEqual(defaultLayers({ basemap: "terrain", showPublic: false, terrain: false, showShade: false }), ["ofm-vector", "dem"]);
+    // Field with contours on still needs the terrain tiles, with sun shade off.
+    assert.deepEqual(defaultLayers({ basemap: "field", showPublic: true, terrain: false, showShade: false, contours: true }), ["blm-sma", "ofm-vector", "dem"]);
+    assert.deepEqual(defaultLayers({ basemap: "field", showPublic: false, terrain: false, showShade: false, contours: false }), ["ofm-vector"]);
+    for (const basemap of ["terrain", "field", "topo", "usgs"] as const) assert.deepEqual(unpackageableShown({ basemap, showUnits: false }), [], basemap);
+  });
+
   it("lists Esri imagery and hunt units as excluded with a reason when they're on the map", () => {
-    const plan = planPackage({ ...SMALL_AREA, layers: ["usgs-imagery", ...unpackageableShown({ basemap: "hybrid", showUnits: true })] });
+    const plan = planPackage({ ...SMALL_AREA, layers: ["usgs-imagery", ...unpackageableShown({ basemap: "satellite", showUnits: true })] });
     assert.deepEqual(plan.excluded.map((e) => e.layerId), ["esri-imagery", "hunt-units"]);
     assert.ok(plan.ok);
   });

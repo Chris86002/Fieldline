@@ -1,8 +1,9 @@
 import type { Basemap, MapView } from "@/lib/hunt/types";
+import type { ContourDetail } from "@/features/map/contours";
 import type { LabelDensity } from "@/features/map/labels";
 import type { BoundaryStrength } from "@/features/map/tokens";
 
-export type { BoundaryStrength, LabelDensity };
+export type { BoundaryStrength, ContourDetail, LabelDensity };
 
 /**
  * Versioned, validated user preferences. Every field has a default, a
@@ -39,6 +40,11 @@ export type AppSettings = {
   showPeaks: boolean;
   showLabels: boolean;
   labelDensity: LabelDensity;
+  showContours: boolean;
+  showImageryContours: boolean;
+  contourDetail: ContourDetail;
+  contourStrength: number;
+  showLandCover: boolean;
   showMarks: boolean;
   showShade: boolean;
   showSun: boolean;
@@ -86,20 +92,27 @@ export type FieldSpec =
   | { kind: "view"; category: Category; label: string; help: string };
 
 const BASEMAPS: Choice<Basemap>[] = [
-  { value: "hybrid", label: "Hybrid" },
-  { value: "satellite", label: "Satellite" },
-  { value: "usgs", label: "USGS imagery" },
-  { value: "topo", label: "Topo" },
-  { value: "street", label: "Street" },
+  { value: "terrain", label: "Terrain" },
+  { value: "topo", label: "Terrain: USGS topo scan" },
+  { value: "satellite", label: "Satellite: Esri imagery" },
+  { value: "usgs", label: "Satellite: USGS imagery" },
+  { value: "field", label: "Field" },
 ];
+
+/**
+ * Base-map values older builds saved, and what they load as (MAP-03).
+ * "hybrid" drew exactly what "satellite" draws (Esri imagery with roads and
+ * labels); "street" was the plain vector map that Terrain replaces.
+ */
+export const BASEMAP_ALIASES: Readonly<Record<string, Basemap>> = { hybrid: "satellite", street: "terrain" };
 
 /** UI metadata and validation bounds for every setting, in display order. */
 export const FIELDS: Record<SettingKey, FieldSpec> = {
   basemap: {
     kind: "choice",
     category: "map",
-    label: "Base map",
-    help: "Esri imagery is live only. USGS imagery and the USGS topo scan can be saved for offline use.",
+    label: "Map style",
+    help: "Terrain and Field draw from downloadable map data. Esri imagery is live only; USGS imagery and the USGS topo scan can be saved for offline use.",
     choices: BASEMAPS,
   },
   showPublic: { kind: "toggle", category: "map", label: "Public land", help: "BLM surface-management agency colors." },
@@ -134,6 +147,31 @@ export const FIELDS: Record<SettingKey, FieldSpec> = {
       { value: "more", label: "More" },
     ],
   },
+  showContours: {
+    kind: "toggle",
+    category: "map",
+    label: "Contours",
+    help: "Terrain and Field styles. Traced from the terrain elevation model, in your elevation unit; not a survey.",
+  },
+  showImageryContours: { kind: "toggle", category: "map", label: "Contours on satellite", help: "Pale contour lines over imagery." },
+  contourDetail: {
+    kind: "choice",
+    category: "map",
+    label: "Contour interval",
+    help: "Closer or wider lines at each zoom. Fine intervals can show noise from the elevation model in flat ground.",
+    choices: [
+      { value: "coarse", label: "Wider" },
+      { value: "standard", label: "Standard" },
+      { value: "fine", label: "Closer" },
+    ],
+  },
+  contourStrength: { kind: "range", category: "map", label: "Contour strength", help: "How dark contour lines draw.", min: 0.3, max: 1.6, step: 0.1, unit: "×" },
+  showLandCover: {
+    kind: "toggle",
+    category: "map",
+    label: "Land cover",
+    help: "Terrain and Field styles: forest, brush, grass, wetland, rock and ice where OpenStreetMap maps them. Unmapped ground stays plain.",
+  },
   showMarks: { kind: "toggle", category: "map", label: "My marks", help: "Your saved waypoints on the map." },
   showShade: { kind: "toggle", category: "map", label: "Sun shade", help: "Shaded faces follow the sun time on the shade bar. Not cast shadows." },
   showSun: { kind: "toggle", category: "map", label: "Sun lines", help: "Sunrise, sunset, and current sun direction from the selected mark." },
@@ -165,7 +203,7 @@ export const FIELDS: Record<SettingKey, FieldSpec> = {
     kind: "choice",
     category: "units",
     label: "Elevation",
-    help: "Spot elevation and peak labels.",
+    help: "Spot elevation, peak labels, and contour intervals.",
     choices: [
       { value: "ft", label: "Feet" },
       { value: "m", label: "Meters" },
@@ -270,7 +308,9 @@ export const FIELDS: Record<SettingKey, FieldSpec> = {
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
-  basemap: "hybrid",
+  // Fieldline Terrain is the signature default for new profiles (spec §17). Saved
+  // profiles keep their base map: "hybrid" loads as "satellite" (BASEMAP_ALIASES).
+  basemap: "terrain",
   showPublic: true,
   // 0.62 before MAP-02. New profiles only: saved and migrated values are kept (see docs/map-design.md).
   publicOpacity: 0.25,
@@ -284,6 +324,12 @@ export const DEFAULT_SETTINGS: AppSettings = {
   showPeaks: true,
   showLabels: true,
   labelDensity: "standard",
+  showContours: true,
+  // Off so imagery users see no new lines after the update; Terrain and Field show contours.
+  showImageryContours: false,
+  contourDetail: "standard",
+  contourStrength: 1,
+  showLandCover: true,
   showMarks: true,
   showShade: true,
   showSun: true,
@@ -329,6 +375,7 @@ export function parseView(value: unknown): MapView | null | undefined {
 /** Validates one setting. Returns undefined when the value is unusable. */
 export function parseSetting<K extends SettingKey>(key: K, value: unknown): AppSettings[K] | undefined {
   const spec = FIELDS[key];
+  if (key === "basemap" && typeof value === "string" && Object.hasOwn(BASEMAP_ALIASES, value)) value = BASEMAP_ALIASES[value];
   if (spec.kind === "toggle") return (typeof value === "boolean" ? value : undefined) as AppSettings[K] | undefined;
   if (spec.kind === "choice") {
     return (typeof value === "string" && spec.choices.some((choice) => choice.value === value) ? value : undefined) as AppSettings[K] | undefined;
@@ -393,7 +440,8 @@ export const PRESETS: Record<PresetId, Preset> = {
     id: "scouting",
     label: "Scouting / terrain",
     description: "3D terrain with extra relief, sun shade, and unit lines on imagery.",
-    values: { basemap: "hybrid", terrain: true, terrainExaggeration: 1.5, showShade: true, showUnits: true },
+    // "hybrid" before MAP-03; the same Esri imagery. Saved preset edits translate the same way.
+    values: { basemap: "satellite", terrain: true, terrainExaggeration: 1.5, showShade: true, showUnits: true },
   },
 };
 
