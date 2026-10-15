@@ -110,11 +110,16 @@ the format for other apps. Desktop uses a separate
 persistent profile; browser data does not transfer automatically. Export backups
 before upgrades or uninstalling. There is no cloud sync.
 
-The app can cache map tiles for a small, user-selected view at one zoom level.
-This is best-effort browser storage, not a complete offline map: roads, labels,
-search, weather, unit data, and some map styles still require a connection.
-Browser storage limits, private browsing, and map-provider terms can also limit
-tile caching.
+**Layers → Offline maps** downloads the map view for use with no signal: USGS
+imagery or topo, public land, roads and labels, and terrain, over a zoom range
+you choose, with a size estimate first, pause and resume, and a check that every
+file arrived before an area counts as ready. Downloaded areas can be checked,
+repaired, updated, shown on the map, or deleted; the spot card says whether a
+spot is covered. Esri imagery and hunt units are never downloaded (provider
+terms; unverified rights), and search, weather and land lookups still need a
+connection. Downloads live in browser storage: private browsing or a full device
+can still clear them, so check an area before a trip. See
+[docs/storage.md](docs/storage.md).
 
 ## Data providers and limits
 

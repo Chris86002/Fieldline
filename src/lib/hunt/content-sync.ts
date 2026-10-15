@@ -183,6 +183,14 @@ export function startContentSync(options: { legacy?: LegacySource; open?: () => 
   return started;
 }
 
+/**
+ * The durable backend while the repository is the store of record (offline
+ * map packages share its database), else null.
+ */
+export function durableBackend(): StorageBackend | null {
+  return useContentSync.getState().mode === "repository" ? (storage?.backend ?? null) : null;
+}
+
 /* ---------- Trash ---------- */
 
 export async function restoreFromTrash(trashId: string): Promise<void> {

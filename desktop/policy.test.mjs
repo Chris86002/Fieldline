@@ -6,7 +6,17 @@ import { join } from "node:path";
 import {
   ORIGIN, HOST, PORT, PROFILE_NAME, AUTH_HEADER, isAppUrl, isAppNavigation,
   isExternalUrl, isAllowedRequest, canRequestLocation, isAppDownload, assertResources,
+  PROVIDER_HEADER_URLS, providerUserAgent,
 } from "./policy.mjs";
+
+test("OpenFreeMap requests get an identifying User-Agent; nothing else does", () => {
+  assert.deepEqual(PROVIDER_HEADER_URLS, ["https://tiles.openfreemap.org/*"]);
+  assert.equal(providerUserAgent("https://tiles.openfreemap.org/planet", "1.0.0"), "Fieldline/1.0.0 (desktop; hunting map with offline areas)");
+  assert.equal(providerUserAgent("https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/0-255.pbf", "1.2.3")?.startsWith("Fieldline/1.2.3 "), true);
+  for (const url of ["http://tiles.openfreemap.org/planet", "https://tiles.openfreemap.org.evil.test/x", "https://basemap.nationalmap.gov/x", `${ORIGIN}/`, "not a url"]) {
+    assert.equal(providerUserAgent(url, "1.0.0"), null, url);
+  }
+});
 
 test("origin and profile remain stable across launches and upgrades", () => {
   assert.equal(HOST, "127.0.0.1");

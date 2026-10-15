@@ -281,8 +281,8 @@ the transaction).
 ## Offline packages (CC-05 wave 2)
 
 `src/lib/offline/` downloads a rectangle of map data into IndexedDB so every
-advertised layer works with no network. Library only; the coordinator builds
-the screens.
+advertised layer works with no network. The screens are in
+`src/features/offline/` ("In the app" below).
 
 | File | Purpose |
 | --- | --- |
@@ -336,8 +336,9 @@ asset list is resolved, and again on real bytes while downloading:
 - Before starting: the remaining estimate × 1.1 must fit in
   `navigator.storage.estimate()` headroom, else `quota` (nothing downloaded).
 - OpenFreeMap asks for a unique User-Agent. Browsers don't let pages set it;
-  `downloadPackage({ requestHeaders })` passes one where the runtime allows
-  (desktop). See "Known gaps".
+  the desktop shell adds one to every `tiles.openfreemap.org` request
+  (`desktop/policy.mjs` `providerUserAgent`). `downloadPackage({
+  requestHeaders })` remains for runtimes that allow it. See "Known gaps".
 
 ### Manifest and states
 
@@ -450,38 +451,57 @@ versioned), so it is handled differently:
 - Corrupt assets are never served: the complete corrupt list from the last
   verification is consulted, not the 50-entry display preview.
 
-### Wiring it in (coordinator)
+### In the app (`src/features/offline/`)
 
-1. Startup, after `openContentStorage`: `const packages = new
-   OfflinePackageStore(storage.backend)` (needs `storage.durable`; otherwise
-   hide downloads and say why), then
-   `setPackageTileSource(createPackageTileSource(packages))`.
-2. MapCanvas `buildStyle` (only these three lines change):
-   - `glyphs: cachedTile(GLYPHS)`
-   - `ofm: { type: "vector", url: cachedTile(OFM), … }`
-   - `dem: { type: "raster-dem", tiles: [cachedTile(dem)], … }`
+- `controller.ts` (Zustand `useOffline`): `startOfflinePackages(backend)`
+  runs at startup after content sync, with `durableBackend()` from
+  content-sync (repository mode only; otherwise `status: "unavailable"` with
+  the reason, and the Offline maps sheet keeps the old one-zoom tile-cache
+  save as a fallback). The map waits for the package list, so the first tile
+  can come from a package. `setPackageTileSource` is attached only while at
+  least one package is servable, so nothing reads IndexedDB per tile when
+  nothing is downloaded. One operation at a time in the tab (download,
+  update, check, repair) with throttled progress; `pauseDownload()` aborts;
+  `resumePackage` continues a first download or update (repairing only bad
+  files when its check found damage); a `conflict` from another tab is shown
+  as its message.
+- `OfflinePanel.tsx` (Layers → Offline maps): area = the map view (dashed on
+  the map, "Use the map view now" to re-take it), name, layers preselected
+  from what the map shows (USGS imagery stands in for Esri), map zoom range,
+  per-layer files and size, totals, violations, what's not included and why
+  (Esri imagery, hunt units), attribution. Progress with Pause. Downloaded
+  areas: state, size, zooms, expiry, update/stale notes, provider
+  wait-until, interrupted, last error, absent tiles; Show on map, Resume,
+  Update, Check, Repair, Drop update, Delete (confirmed).
+- `OfflineHere.tsx` (FIELD-01): the spot card's "Offline here: … (zooms)"
+  line from `coverage()`; hidden when nothing is downloaded.
+- Map: `offline-areas` GeoJSON source and three navigation-group layers
+  (`offline-areas-casing`, `offline-areas` solid sage = usable / amber =
+  unfinished, `offline-area-preview` dashed). Outlines show while Offline
+  maps is open and after "Show on map" until the next tap on the map.
+- MapCanvas sends glyphs, OpenFreeMap and terrain through `fltile://`
+  (`usgs`, `topo`, `sma` already were; Esri stays plain HTTPS).
+- Desktop: `desktop/policy.mjs` `providerUserAgent` gives
+  `tiles.openfreemap.org` requests `Fieldline/<version> (desktop; …)` in the
+  session's single `onBeforeSendHeaders` listener.
 
-   `usgs`, `topo`, `sma` already use `cachedTile`; `satellite` (Esri) must
-   stay plain HTTPS.
-3. Download screen: `planPackage({ bounds: map.getBounds(), minZoom, maxZoom,
-   layers })` → show `layers[].assetCount/estimatedBytes`, `totals`,
-   `excluded[].reason`, `violations[].message`, `attribution`; disable the
-   button unless `plan.ok`. Then `createPackage(plan, { name })` and
-   `downloadPackage(packages, id, { signal, onProgress })`; abort the signal
-   to pause; call `downloadPackage` again to resume; show
-   `result.persistence`.
-   A `conflict` rejection means another tab is downloading: say so.
-4. Package list: `listPackages()` → `state`, `activeState`, `servable`,
-   `interrupted`, `stale`, `expiresAt`, `waitUntil`, `manifest.progress`,
-   `manifest.lastError`, `manifest.integrityStatus.absentCount`, `update`.
-   Actions: `verifyPackage`, `repairPackage`, `startUpdate` +
-   `downloadPackage`, `discardPending`, `deletePackage` (pause first),
-   `storageUsage()`.
-5. FIELD-01: `packages.coverage({ lng, lat } | bounds)` → `covered`,
-   `packages[]` (usable, per-layer `complete` and zooms), `incomplete[]`,
-   `layers` (usable zoom ranges per layer). Draw `manifest.bounds` on the map.
-6. Desktop: give OpenFreeMap requests an identifying User-Agent (e.g.
-   `session.webRequest.onBeforeSendHeaders` for `tiles.openfreemap.org`).
+### Map zooms vs tile zooms
+
+MapLibre's zoom is based on 512-pixel tiles. The map's 256-pixel sources
+(USGS imagery and topo, BLM SMA, terrain) request tiles one zoom deeper than
+the map zoom (map zoom 12 → z13 tiles; raster sources also round), while
+OpenFreeMap's 512-pixel vector tiles match it. The screen asks for map zooms
+and plans with `planPackage({ …, zoomBasis: "map" })`, which applies
+`mapZoomOffset(layerId)` per layer; manifests keep the map zooms in
+`zoomRange` and each layer's tile zooms in `layers[]`. Coverage text converts
+back to map zooms ("12+" where a layer reaches its deepest tiles, since the
+map enlarges past a source's maximum).
+
+Past a package's top zoom, offline: `fltile://` enlarges the missing raster
+or terrain tile from the nearest packaged ancestor up to 4 levels up
+(`ancestorTile`, canvas crop and scale; nearest-neighbor for terrain, whose
+colors encode elevation). This runs only after the network failed, so it
+never replaces a real tile online.
 
 ### Verification
 
@@ -498,6 +518,16 @@ versioned), so it is handled differently:
   real-byte package cap, failed-update reporting and discard, stale, Esri
   tampering, serving through `fltile://` with the network down, unverified
   packages not served, coverage).
+- `src/features/offline/controller.test.ts`: the app controller (unavailable
+  storage, download to ready with sizes and coverage, serving only while a
+  package is usable, pause/resume, one operation at a time, check/update/
+  delete, provider failure and resume), map-zoom planning, ancestor tile
+  math and enlarging offline, default layers/zooms, outlines across the
+  antimeridian.
+- `node scripts/offline-ui-check.mjs` against `npm start` (live, about 80
+  requests): the real screens — plan, download with pause and resume, reload
+  with every tile host blocked (only OpenFreeMap's TileJSON may reach the
+  network), zoom past the package, "Offline here", outline, delete.
 - `node scripts/offline-browser-check.mjs` (live, about 50 polite requests;
   not in `npm test`): first a real IndexedDB upgrade (a populated version-1
   database built with `UPGRADES[1]` is opened by this build: every content
@@ -510,12 +540,17 @@ versioned), so it is handled differently:
 
 ## Known gaps
 
-- Offline packages: rectangle selection only (no polygon / route corridor);
-  no sprites (the style uses none); no local search index or hunt-unit
-  identify data; OFM User-Agent can't be set from a browser page; staleness
-  is time-based (no upstream version check); a package downloading in
-  another tab shows as "paused (interrupted)" here until that tab finishes.
-- Not wired into the app; no UI; no cross-tab change notification.
+- Offline packages: rectangle selection only, and the rectangle is the map
+  view (no drawing, polygon or route corridor); no sprites (the style uses
+  none); no local search index or hunt-unit identify data; OFM User-Agent
+  can't be set from a browser page (desktop sets it; unit-tested, not yet
+  run in a packaged desktop build); staleness is time-based (no upstream
+  version check); a package downloading in another tab shows as "Stopped"
+  here until that tab finishes, and there's no cross-tab change
+  notification (reopen the sheet to refresh).
+- Enlarged tiles past a package's top zoom are blurrier than real ones;
+  OpenFreeMap vector tiles aren't enlarged this way (MapLibre overzooms
+  them only past 14).
 - No undo/redo stack yet (trash only).
 - Backup restore of a single huge file runs in one transaction on the main
   thread; very large profiles may need chunked restore later.

@@ -132,6 +132,17 @@ export const PACKAGE_LAYERS: Record<PackageLayerId, PackageLayerDef> = {
   },
 };
 
+/**
+ * Tile zoom minus MapLibre map zoom for a layer. MapLibre's zoom is based on
+ * 512-pixel tiles, so the map's 256-pixel raster and terrain sources request
+ * tiles one zoom deeper than the map zoom (at map zoom 12, USGS z13);
+ * OpenFreeMap's 512-pixel vector tiles match the map zoom.
+ */
+export function mapZoomOffset(layerId: PackageLayerId): number {
+  const kind = PACKAGE_LAYERS[layerId].kind;
+  return kind === "raster" || kind === "terrain" ? 1 : 0;
+}
+
 /** Layers a user can choose; label fonts are added to every package automatically. */
 export const SELECTABLE_LAYERS: readonly PackageLayerId[] = [
   "usgs-imagery",

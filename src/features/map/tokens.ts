@@ -55,6 +55,10 @@ export type MapTokens = {
     sunRise: string;
     sunNow: string;
     sunSet: string;
+    /** Downloaded offline areas: usable, not finished, and the area being planned. */
+    offlineReady: string;
+    offlinePartial: string;
+    offlinePreview: string;
   };
   /**
    * Relief (hillshade). `strength` scales the sun-linked exaggeration;
@@ -74,6 +78,9 @@ const NAV = {
   sunRise: "#f6e7b0",
   sunNow: "#fffdf6",
   sunSet: "#e39455",
+  offlineReady: "#d7e2c8",
+  offlinePartial: "#e39455",
+  offlinePreview: "#f3f1ea",
 } as const;
 
 const IMAGERY: MapTokens = {

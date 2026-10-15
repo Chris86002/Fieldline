@@ -43,11 +43,20 @@ const find = (layers: LayerSpecification[], id: string) => {
 };
 
 describe("map style layers", () => {
-  it("keeps every existing layer id, adds only the trail casing, and has no duplicates", () => {
+  it("keeps every existing layer id, adds only the trail casing and offline-area outlines, and has no duplicates", () => {
     const list = ids(buildLayers(options()));
     assert.equal(new Set(list).size, list.length);
     for (const id of PRE_MAP01_IDS) assert.ok(list.includes(id), `${id} kept`);
-    assert.deepEqual(list.filter((id) => !PRE_MAP01_IDS.includes(id)), ["vx-track-casing"]);
+    assert.deepEqual(list.filter((id) => !PRE_MAP01_IDS.includes(id)), ["vx-track-casing", "offline-areas-casing", "offline-areas", "offline-area-preview"]);
+  });
+
+  it("draws offline-area outlines as navigation aids, the planned area dashed", () => {
+    const groups = mapLayerGroups(options());
+    for (const id of ["offline-areas-casing", "offline-areas", "offline-area-preview"]) assert.equal(groupOf(groups, id), "navigation");
+    const list = ids(buildLayers(options()));
+    assert.ok(list.indexOf("live") < list.indexOf("offline-areas"), "above personal content");
+    assert.ok(list.indexOf("offline-area-preview") < list.indexOf("rings"), "below range rings");
+    assert.ok(find(buildLayers(options()), "offline-area-preview").paint?.["line-dasharray"]);
   });
 
   it("uses the same ids in the same order for every base map and option", () => {

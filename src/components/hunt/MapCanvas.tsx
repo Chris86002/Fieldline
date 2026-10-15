@@ -91,6 +91,8 @@ type Props = {
   livePoints: TrackPoint[];
   measurePoints: LngLat[];
   measureClosed: boolean;
+  /** Outlines of downloaded offline areas and the area being planned (src/features/offline/model.ts). */
+  offlineAreas: FC;
   gps: GpsFix | null;
   tool: Tool;
   onMapClick: (lng: number, lat: number, x: number, y: number) => void;
@@ -172,9 +174,10 @@ function styleOptions(p: Props): StyleOptions {
 
 function buildStyle(opts: StyleOptions): StyleSpecification {
   const dem = `${window.location.origin}/api/dem/{z}/{x}/{y}`;
+  // Fonts, OpenFreeMap and terrain go through fltile:// so downloaded offline areas serve them.
   return {
     version: 8,
-    glyphs: GLYPHS,
+    glyphs: cachedTile(GLYPHS),
     sources: {
       // Esri imagery is fetched live and never written to the device cache (provider terms).
       satellite: {
@@ -187,14 +190,15 @@ function buildStyle(opts: StyleOptions): StyleSpecification {
       usgs: { type: "raster", tiles: [cachedTile(TILES.imagery)], tileSize: 256, maxzoom: 16, attribution: "Imagery: USGS The National Map, USDA" },
       topo: { type: "raster", tiles: [cachedTile(TILES.topo)], tileSize: 256, maxzoom: 16, attribution: "Topo: USGS The National Map" },
       sma: { type: "raster", tiles: [cachedTile(TILES.sma)], tileSize: 256, maxzoom: 16, attribution: "Public land © BLM" },
-      ofm: { type: "vector", url: OFM, attribution: "© OpenStreetMap, OpenFreeMap" },
-      dem: { type: "raster-dem", tiles: [dem], encoding: "terrarium", tileSize: 256, maxzoom: 14, attribution: "Terrain © AWS Terrain Tiles" },
+      ofm: { type: "vector", url: cachedTile(OFM), attribution: "© OpenStreetMap, OpenFreeMap" },
+      dem: { type: "raster-dem", tiles: [cachedTile(dem)], encoding: "terrarium", tileSize: 256, maxzoom: 14, attribution: "Terrain © AWS Terrain Tiles" },
       tracks: { type: "geojson", data: EMPTY },
       live: { type: "geojson", data: EMPTY },
       measure: { type: "geojson", data: EMPTY },
       accuracy: { type: "geojson", data: EMPTY },
       sun: { type: "geojson", data: EMPTY },
       rings: { type: "geojson", data: EMPTY },
+      "offline-areas": { type: "geojson", data: EMPTY },
       units: { type: "geojson", data: EMPTY, attribution: "Hunt units: state wildlife agencies (reference only)" },
       "unit-labels": { type: "geojson", data: EMPTY },
     },
@@ -753,6 +757,12 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
         : [];
     setGeo(map, "rings", { type: "FeatureCollection", features });
   }, [ready, props.showRings, props.ringAt, props.distanceUnit]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    setGeo(map, "offline-areas", props.offlineAreas);
+  }, [ready, props.offlineAreas]);
 
   return (
     <div ref={stageRef} className="map-stage">

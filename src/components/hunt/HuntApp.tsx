@@ -76,6 +76,7 @@ import {
   cancelRecording,
   deleteForever,
   discardRecovered,
+  durableBackend,
   finishRecording,
   isDurableRecording,
   recordFix,
@@ -86,11 +87,16 @@ import {
   useContentSync,
 } from "@/lib/hunt/content-sync";
 import type { Fix, TrashEntry } from "@/lib/storage";
+import type { PackageBounds } from "@/lib/offline/plan";
+import { startOfflinePackages, useOffline } from "@/features/offline/controller";
+import { areaFeatures } from "@/features/offline/model";
+import { OfflineHere } from "@/features/offline/OfflineHere";
+import { OfflinePanel, type OfflineMapState } from "@/features/offline/OfflinePanel";
 import { formatUtm, localDate, localMinutes, sunPosition } from "@/lib/hunt/sun";
 import { noiseWord, rmsDb } from "@/lib/hunt/noise";
 
 type Tool = "none" | "drop" | "measure";
-type Sheet = null | "layers" | "saved" | "wind" | "edit" | "settings";
+type Sheet = null | "layers" | "saved" | "wind" | "edit" | "settings" | "offline";
 type Units = Pick<AppSettings, "distanceUnit" | "elevationUnit" | "areaUnit" | "speedUnit" | "temperatureUnit" | "pressureUnit">;
 
 const NEXT_FORMAT: Record<CoordinateFormat, CoordinateFormat> = { dd: "dms", dms: "utm", utm: "dd" };
@@ -242,6 +248,12 @@ export function HuntApp() {
   const [dropHot, setDropHot] = useState(false);
   const [packNote, setPackNote] = useState<string | null>(null);
   const [packing, setPacking] = useState(false);
+  /** The area being planned in Offline maps, drawn dashed on the map. */
+  const [offlinePreview, setOfflinePreview] = useState<PackageBounds | null>(null);
+  /** Downloaded areas stay outlined after "Show on map" until the next tap on the map. */
+  const [showOfflineAreas, setShowOfflineAreas] = useState(false);
+  const offlinePackages = useOffline((state) => state.packages);
+  const offlineStatus = useOffline((state) => state.status);
   const [screenAwake, setScreenAwake] = useState(false);
   const [systemReduce, setSystemReduce] = useState(false);
   const coordMode = settings.coordinateFormat;
@@ -310,6 +322,10 @@ export function HuntApp() {
         // Marks and tracks move to durable storage before anything can edit them.
         return startContentSync().catch(() => "legacy" as const);
       })
+      .then(() =>
+        // Downloaded offline areas share that database; the map reads them from its first tile.
+        startOfflinePackages(durableBackend(), { reason: useContentSync.getState().message }).catch(() => undefined),
+      )
       .then(() => {
         if (!live) return;
         const prefs = useSettings.getState().effective;
@@ -472,6 +488,14 @@ export function HuntApp() {
         : { lng: view.lng, lat: view.lat, where: "the map center" };
   const weatherKey = `${weatherPoint.lat.toFixed(2)},${weatherPoint.lng.toFixed(2)}`;
   const landNear = land && probe && Math.abs(land.lng - probe.lng) < 0.003 && Math.abs(land.lat - probe.lat) < 0.003 ? land : null;
+  const offlineAreas = useMemo(
+    () => areaFeatures(sheet === "offline" || showOfflineAreas ? offlinePackages : [], sheet === "offline" ? offlinePreview : null),
+    [sheet, showOfflineAreas, offlinePackages, offlinePreview],
+  );
+  const offlineMap = useMemo<OfflineMapState>(
+    () => ({ basemap: settings.basemap, showPublic: settings.showPublic, showUnits: settings.showUnits, terrain: settings.terrain, showShade: settings.showShade }),
+    [settings.basemap, settings.showPublic, settings.showUnits, settings.terrain, settings.showShade],
+  );
   const landHit = landNear?.status === "ready" ? landNear.hit : null;
   const landDown = landNear?.status === "error";
 
@@ -803,6 +827,7 @@ export function HuntApp() {
       return;
     }
     setDetail(null);
+    setShowOfflineAreas(false);
     setPinned({ lng, lat, x, y });
     syncUnit(lng, lat);
     queueLand(lng, lat, true);
@@ -1286,6 +1311,7 @@ export function HuntApp() {
         livePoints={recPts}
         measurePoints={measurePts}
         measureClosed={measureClosed}
+        offlineAreas={offlineAreas}
         gps={gps}
         tool={tool}
         showShade={settings.showShade}
@@ -1801,11 +1827,42 @@ export function HuntApp() {
               </li>
             ))}
           </ul>
-          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. Unit lines are state agency reference geometry, not legal descriptions. Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. Satellite and Hybrid use Esri imagery, which is live only. Save this view offline stores one zoom level of USGS imagery or Topo plus public land; streets, labels, units, weather, and search remain online.</p>
-          <button type="button" disabled={packing} onClick={() => void saveArea()} className="mt-3 h-11 w-full rounded-md bg-accent text-sm font-medium text-accent-fg disabled:opacity-50">
-            {packing ? "Saving tiles…" : "Save this view offline"}
+          <p className="mt-3 text-sm text-subtle">Right-click a spot, or press and hold, for the unit, who manages the ground, and the weather there. Unit lines are state agency reference geometry, not legal descriptions. Owner names aren't included; parcel data availability varies by county. Fieldline shows the managing agency and wind for each stand. Satellite and Hybrid use Esri imagery, which is live only; offline maps use USGS imagery instead. Hunt units, weather, and search need a connection.</p>
+          <button type="button" onClick={() => setSheet("offline")} className="mt-3 flex h-11 w-full items-center justify-center gap-2 rounded-md bg-accent text-sm font-medium text-accent-fg">
+            <Download className="size-4" /> Offline maps
           </button>
-          {packNote ? <p className="mt-2 text-sm text-muted">{packNote}</p> : null}
+        </Panel>
+      ) : null}
+
+      {sheet === "offline" ? (
+        <Panel title="Offline maps" onClose={() => setSheet(null)}>
+          <OfflinePanel
+            getArea={() => {
+              const bounds = mapRef.current?.getBounds();
+              return bounds ? { west: bounds.west, south: bounds.south, east: bounds.east, north: bounds.north } : null;
+            }}
+            viewZoom={view.zoom}
+            map={offlineMap}
+            metric={unitPrefs.distanceUnit === "metric"}
+            onPreview={setOfflinePreview}
+            onShow={(bounds) => {
+              setSheet(null);
+              setShowOfflineAreas(true);
+              mapRef.current?.fit([
+                { lng: bounds.west, lat: bounds.south },
+                { lng: bounds.east, lat: bounds.north },
+              ]);
+            }}
+          />
+          {offlineStatus === "unavailable" ? (
+            <>
+              <p className="mt-3 text-sm text-muted">You can still keep one zoom level of this view in the browser's tile cache.</p>
+              <button type="button" disabled={packing} onClick={() => void saveArea()} className="mt-2 h-11 w-full rounded-md border border-line text-sm disabled:opacity-50">
+                {packing ? "Saving tiles…" : "Save this view (one zoom)"}
+              </button>
+              {packNote ? <p className="mt-2 text-sm text-muted">{packNote}</p> : null}
+            </>
+          ) : null}
         </Panel>
       ) : null}
 
@@ -2680,6 +2737,7 @@ function SpotInfo({
               </p>
             ))
           : null}
+        <OfflineHere lng={detail.lng} lat={detail.lat} />
         <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
           <SpotFact label="Elevation" value={weather?.elevationM != null ? formatElev(weather.elevationM, units.elevationUnit) : null} />
           <SpotFact label="Slope" value={slope} />

@@ -38,7 +38,7 @@ blocked. Device certification is tracked separately from code completion.
 | CC-02 Correctness and settings | verified (automated + manual browser); see deferred items | Slices below. Independent CC-12 review found 0 blockers, 2 major, 10 minor; both majors and 7 minors fixed with regression tests. |
 | CC-03 Nationwide catalog | verified (first slices); see CC-03 detail | AZ/ID mode removed; catalog contracts, three unit adapters (AZ, ID, MT), protected unit store, 51-entry coverage register, discovery, nationwide unit search, shell integration. Remaining slices listed below. |
 | CC-04 Map design | wave 1 verified (merged on `feature/cc04-cc05`) | MAP-01 named render groups (9 groups, stable ids, insert/remove order tests) + per-style tokens; MAP-02 cleanup: public-land default 0.62 → 0.25 for new profiles only (gallery trials: 0.15–0.2 lost agency distinction, 0.35+ washed out imagery), lighter casings on imagery, quieter highways, cased trails above local roads, relief ~half strength on imagery; unit labels use collision + priority instead of forced overlap; new settings Boundary strength and Label density. Gallery: `scripts/map-gallery.mjs` (96 before / 96 after shots kept locally in screenshots/gallery, not committed). Known trade-offs in docs/map-design.md (agency colors subtle at 0.25, less depth in gentle terrain, unit numbers can hide each other). Wave 2: MAP-03 signature styles + contours/land cover, MAP-04 comparison, MAP-06 recipes/inspection, text/marker size, clustering. |
-| CC-05 Storage and offline | wave 1 verified as a library (merged); not yet wired into the app | `src/lib/storage/`: IndexedDB + in-memory backends, v0→v1 migration copying fieldline-v1 content without modifying it (verified read-back, idempotent, refuses corrupt/newer), recording checkpoints with gap segments and damage reporting, trash, `fieldline-backup` v1 with integrity check and strict record validation. Independent review: 0 blockers, 2 major (silent loss of a missing checkpoint chunk; backup accepting an unknown mark kind that would crash rendering) + 9 minor — all fixed with regression tests and re-verified (237 tests; Chromium IndexedDB check: migrate → reload → read back, 602-fix recovery, restore, future-version refusal). Next: wire into the app shell (content store, recording, backup UI), then wave 2 offline package manifests/state machine. |
+| CC-05 Storage and offline | waves 1–2 verified and wired into the app (merged on `feature/cc04-cc05`); see "Offline maps" below | Wave 2 (offline packages, `src/lib/offline/`): CC-12 review found 3 major (long Retry-After not stopping a provider; per-download instead of tab-wide limits and no cross-tab lock; OpenFreeMap data versions pinning/unreachable offline) + 8 minor — all fixed with behavioral tests and re-verified, including a real v1 → v2 IndexedDB upgrade in Chromium. Wave 1: `src/lib/storage/`: IndexedDB + in-memory backends, v0→v1 migration copying fieldline-v1 content without modifying it (verified read-back, idempotent, refuses corrupt/newer), recording checkpoints with gap segments and damage reporting, trash, `fieldline-backup` v1 with integrity check and strict record validation. Independent review: 0 blockers, 2 major (silent loss of a missing checkpoint chunk; backup accepting an unknown mark kind that would crash rendering) + 9 minor — all fixed with regression tests and re-verified (237 tests; Chromium IndexedDB check: migrate → reload → read back, 602-fix recovery, restore, future-version refusal). Next: wire into the app shell (content store, recording, backup UI), then wave 2 offline package manifests/state machine. |
 | CC-06 Navigation | not started | Recording thresholds from settings are in place (CC-02). |
 | CC-07 Maintenance and reports | not started | REL-04 fields listed as "not tracked" in data-sources.md. |
 | CC-08 Weather platform | not started | Point-forecast nullability and provenance done in CC-02. |
@@ -159,9 +159,29 @@ coordinator confirmed the file was byte-identical to HEAD before merging.
 
 ## Next runnable work
 
-1. Integrate CC-05 wave 2 (offline packages; worker running in
-   `Fieldline-wt-offline`) and build its download/coverage UI; then CC-04 wave 2
-   (MAP-03 signature styles, contours) once MapCanvas is free.
+1. CC-04 wave 2 (MAP-03 signature styles, contours/land cover, MAP-04
+   comparison, MAP-06 inspection) — MapCanvas is free again.
+
+**Offline maps (coordinator, 2026-10-14) — verified.** `src/features/offline/`:
+Layers → Offline maps plans the map view (layers preselected from the map,
+map zoom range, per-layer files and size, exclusions with reasons, provider
+violations), downloads with progress and pause/resume, lists downloaded areas
+(state, size, expiry, errors; show on map, resume, update, check, repair,
+drop update, delete); the spot card shows "Offline here" (FIELD-01); area
+outlines on the map. Found while verifying: MapLibre requests 256-pixel
+raster/terrain tiles one zoom deeper than the map zoom, so packages are now
+planned in map zooms (`zoomBasis: "map"`), and offline tiles past a
+package's top zoom are enlarged from a packaged ancestor instead of going
+blank. Desktop sends OpenFreeMap an identifying User-Agent. Evidence: 14
+controller/model tests + style-layer and desktop policy tests (326 + 16
+desktop); `scripts/offline-ui-check.mjs` against the production build in
+Chromium: download with pause and resume, reload with every tile host
+blocked → only OpenFreeMap's TileJSON reached the network (asked online
+first by design), zoom past the package rendered, "Offline here", outline,
+delete; `offline-browser-check.mjs` and `storage-browser-check.mjs` pass.
+Gaps: the area is always the map view (no drawing); the desktop User-Agent
+is unit-tested but not run in a packaged build (the Electron binary isn't
+installed here); no cross-tab refresh of the list; enlarged tiles are soft.
 
 **Storage wiring (coordinator, 2026-10-14) — verified.** `content-sync.ts`
 (ADR-008): repository is the store of record after a verified migration;

@@ -15,7 +15,8 @@ This register lists every external data provider that Fieldline calls today, plu
 ## How the app stores provider data today
 
 - `src/lib/hunt/tiles.ts:23-66`: map sources wrapped in `cachedTile()` go through the `fltile://` protocol. Every tile the user views is written to Cache Storage `fieldline-tiles-v1`, with no expiry. Wrapped sources: Esri World Imagery, USGS Topo and BLM SMA (`MapCanvas.tsx:504-506`).
-- `tiles.ts:116-174` (`packTiles`) and `HuntApp.tsx:694-714` ("save area"): pre-fetch up to 220 tiles at one zoom level (z8–15) for the current view. Templates: `TILES.topo`, `TILES.satellite` (Esri) and `TILES.sma`.
+- Offline map packages (since CC-05 wave 2; `src/lib/offline/`, screens in `src/features/offline/`): Layers → Offline maps downloads a rectangle into IndexedDB from USGS imagery/topo, BLM SMA, OpenFreeMap (TileJSON, vector tiles, fonts) and AWS terrain only (`packageRuleFor` refuses every other host, Esri included), within each provider's limits (OpenFreeMap ≤ 3,000 files / 50 MB per download, ≤ 4 parallel). Packages expire by layer (BLM 90 days, OpenFreeMap 60, USGS 365). The desktop app sends OpenFreeMap an identifying User-Agent. Details: docs/storage.md "Offline packages".
+- `tiles.ts` (`packTiles`): the older one-zoom save of up to 220 tiles into Cache Storage, now offered only when durable storage isn't available; templates are `OFFLINE_TEMPLATES` only (USGS imagery, USGS topo, BLM SMA).
 - `src/features/catalog/unit-store.ts` (since CC-03): each hunt-unit provider's processed units are stored in Cache Storage `fieldline-units-v3` with a manifest (retrieval time, source version, counts) and a 30-day refresh policy; updates are promoted only after validation. The older `fieldline-units-v2` / `fieldline-units-id-v1` caches are deleted on startup.
 - `src/routes/api/dem/$z/$x/$y.ts:20-26`: proxies AWS Terrain Tiles and sets `Cache-Control: public, max-age=604800` (7 days).
 - `src/lib/hunt/search-core.ts:18-22`: place-search results are kept in memory for 60 s, with at most 100 entries.
@@ -41,7 +42,7 @@ This register lists every external data provider that Fieldline calls today, plu
 - **Attribution:** Required. MapLibre shows it automatically. The app shows "© OpenStreetMap, OpenFreeMap".
 - **Coverage:** Planet (OSM-derived). AK/HI are included in planet scope. Rendering quality there was not checked.
 - **Freshness:** Weekly planet builds.
-- **Current app behavior vs terms:** OFM tiles are not wrapped in `fltile://` and are not pre-fetched. "Save area" refuses the Street basemap (`HuntApp.tsx:701-703`). No conflict.
+- **Current app behavior vs terms:** OFM's TileJSON, vector tiles and fonts go through `fltile://` (served from offline packages first; never written to Cache Storage). Offline packages download them within the stated limits: ≤ 3,000 files and ≤ 50 MB per package (planned and enforced on real bytes), ≤ 4 parallel requests tab-wide, one downloading tab at a time. The desktop app sets a unique User-Agent on OFM requests; browsers can't, so web downloads go without one (open; ask the operator if web downloads become common).
 - **Maintainer:** unassigned.
 - **Fallback/exit:** Self-host the weekly planet download, or use PMTiles.
 - **Sources checked:** https://openfreemap.org/ , https://openfreemap.org/tos/

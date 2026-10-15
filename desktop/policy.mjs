@@ -54,6 +54,22 @@ export function isExternalUrl(value) {
   }
 }
 
+// OpenFreeMap asks apps for an identifying User-Agent (https://openfreemap.org/tos/).
+// Page code can't set one; the desktop shell adds it to OpenFreeMap requests.
+export const PROVIDER_HEADER_URLS = ["https://tiles.openfreemap.org/*"];
+
+export function providerUserAgent(value, appVersion) {
+  try {
+    const url = new URL(value);
+    if (url.protocol === "https:" && url.hostname === "tiles.openfreemap.org" && !url.port) {
+      return `Fieldline/${appVersion} (desktop; hunting map with offline areas)`;
+    }
+  } catch {
+    // Not a URL: no header.
+  }
+  return null;
+}
+
 export function isAllowedRequest(headers, token) {
   return headers.host === `${HOST}:${PORT}` &&
     headers[AUTH_HEADER] === token &&

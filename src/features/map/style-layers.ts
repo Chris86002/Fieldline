@@ -1,4 +1,4 @@
-import type { ExpressionSpecification, HillshadeLayerSpecification, LayerSpecification } from "maplibre-gl";
+import type { ExpressionSpecification, FilterSpecification, HillshadeLayerSpecification, LayerSpecification } from "maplibre-gl";
 import type { Basemap } from "@/lib/hunt/types";
 import { orderLayers, type GroupedLayers, type RenderGroup } from "./layer-groups.ts";
 import { LABEL_LAYER_IDS, labelRules, type LabelDensity, type LabelLayerId } from "./labels.ts";
@@ -418,7 +418,18 @@ function personalLayers(t: MapTokens): LayerSpecification[] {
 
 function navigationLayers(t: MapTokens): LayerSpecification[] {
   const n = t.nav;
+  const isPreview: FilterSpecification = ["==", ["get", "kind"], "preview"];
   return [
+    // Downloaded offline areas (solid) and the area being planned (dashed).
+    { id: "offline-areas-casing", type: "line", source: "offline-areas", paint: { "line-color": n.casing, "line-width": 4, "line-opacity": 0.6 } },
+    {
+      id: "offline-areas",
+      type: "line",
+      source: "offline-areas",
+      filter: ["!", isPreview],
+      paint: { "line-color": ["match", ["get", "kind"], "ready", n.offlineReady, n.offlinePartial], "line-width": 2 },
+    },
+    { id: "offline-area-preview", type: "line", source: "offline-areas", filter: isPreview, paint: { "line-color": n.offlinePreview, "line-width": 2, "line-dasharray": [2, 1.5] } },
     { id: "rings", type: "line", source: "rings", paint: { "line-color": n.ring, "line-width": 1.25, "line-opacity": 0.8, "line-dasharray": [1.4, 1.1] } },
     { id: "sun-casing", type: "line", source: "sun", filter: ["==", ["geometry-type"], "LineString"], paint: { "line-color": n.casing, "line-width": 4.5, "line-opacity": 0.8 } },
     {

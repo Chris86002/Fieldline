@@ -3,8 +3,8 @@ import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  AUTH_HEADER, ORIGIN, PORT, PROFILE_NAME, isAppUrl, isAppNavigation,
-  isExternalUrl, isAppDownload, canRequestLocation,
+  AUTH_HEADER, ORIGIN, PORT, PROFILE_NAME, PROVIDER_HEADER_URLS, isAppUrl, isAppNavigation,
+  isExternalUrl, isAppDownload, canRequestLocation, providerUserAgent,
 } from "./policy.mjs";
 import { waitForServer } from "./lifecycle.mjs";
 
@@ -59,10 +59,13 @@ async function start() {
   const desktopSession = session.fromPartition("persist:fieldline");
   let locationAllowed = false;
   let locationPrompt;
-  desktopSession.webRequest.onBeforeSendHeaders({ urls: [`${ORIGIN}/*`] }, (details, callback) => {
+  // One listener per session (a second call would replace this one): app requests and provider headers.
+  desktopSession.webRequest.onBeforeSendHeaders({ urls: [`${ORIGIN}/*`, ...PROVIDER_HEADER_URLS] }, (details, callback) => {
     const headers = { ...details.requestHeaders };
     // No credentials are exposed to renderer JavaScript or forwarded to providers.
     if (isAppUrl(details.url)) headers[AUTH_HEADER] = token;
+    const agent = providerUserAgent(details.url, app.getVersion());
+    if (agent) headers["User-Agent"] = agent;
     callback({ requestHeaders: headers });
   });
   desktopSession.setPermissionCheckHandler((contents, permission, origin, details) =>

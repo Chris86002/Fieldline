@@ -171,8 +171,107 @@ export async function loadTile(
       const substitute = await fromPackage(true);
       if (substitute) return substitute;
     }
+    // Zoomed past a downloaded area's deepest level: enlarge its tile.
+    const enlarged = await fromAncestor(url);
+    if (enlarged) {
+      stats.package += 1;
+      return respond(enlarged);
+    }
     throw error;
   }
+}
+
+/** Raster grids whose missing tiles can be enlarged from a packaged ancestor: URL prefix and path order. */
+type RasterGrid = { prefix: string; order: "zyx" | "zxy"; terrain: boolean };
+
+function rasterGrids(): RasterGrid[] {
+  const grids: RasterGrid[] = OFFLINE_TEMPLATES.map((template) => ({ prefix: template.slice(0, template.indexOf("{")), order: "zyx", terrain: false }));
+  const origin = globalThis.location?.origin;
+  if (origin) grids.push({ prefix: `${origin}/api/dem/`, order: "zxy", terrain: true });
+  return grids;
+}
+
+/** Deepest ancestor search when enlarging (a tile from 4 levels up is 16 pixels across). */
+const MAX_ENLARGE_LEVELS = 4;
+
+/**
+ * The tile `levels` zooms above a raster tile URL, and the square of it that
+ * covers the original (in 256-pixel tile coordinates). Null for URLs that
+ * aren't raster grid tiles.
+ */
+export function ancestorTile(
+  url: string,
+  levels: number,
+  grids = rasterGrids(),
+): { url: string; sx: number; sy: number; size: number; terrain: boolean } | null {
+  for (const grid of grids) {
+    if (!url.startsWith(grid.prefix)) continue;
+    const match = /^(\d+)\/(\d+)\/(\d+)$/.exec(url.slice(grid.prefix.length));
+    if (!match) return null;
+    const z = Number(match[1]);
+    const [x, y] = grid.order === "zxy" ? [Number(match[2]), Number(match[3])] : [Number(match[3]), Number(match[2])];
+    if (levels < 1 || levels > z) return null;
+    const px = x >> levels;
+    const py = y >> levels;
+    const size = 256 / 2 ** levels;
+    const path = grid.order === "zxy" ? `${z - levels}/${px}/${py}` : `${z - levels}/${py}/${px}`;
+    return { url: `${grid.prefix}${path}`, sx: (x - px * 2 ** levels) * size, sy: (y - py * 2 ** levels) * size, size, terrain: grid.terrain };
+  }
+  return null;
+}
+
+/** Crops a square of an image and scales it to a full tile (PNG bytes). Browser only. */
+export type TileEnlarger = (
+  image: { data: ArrayBuffer; contentType: string },
+  crop: { sx: number; sy: number; size: number; smooth: boolean },
+) => Promise<ArrayBuffer>;
+
+const canvasEnlarger: TileEnlarger = async (image, crop) => {
+  const bitmap = await createImageBitmap(new Blob([image.data], { type: image.contentType }));
+  const scale = bitmap.width / 256;
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("No 2D canvas");
+  // Terrain tiles encode elevation in their colors: never blend neighboring pixels.
+  context.imageSmoothingEnabled = crop.smooth;
+  context.drawImage(bitmap, crop.sx * scale, crop.sy * scale, crop.size * scale, crop.size * scale, 0, 0, bitmap.width, bitmap.height);
+  bitmap.close();
+  return (await canvas.convertToBlob({ type: "image/png" })).arrayBuffer();
+};
+
+let enlarger: TileEnlarger | null =
+  typeof createImageBitmap === "function" && typeof OffscreenCanvas === "function" ? canvasEnlarger : null;
+
+/** @internal Tests: replace the image step (Node has no canvas). */
+export function _setTileEnlarger(next: TileEnlarger | null) {
+  enlarger = next;
+}
+
+/** A raster tile enlarged from the nearest packaged ancestor, or null. */
+async function fromAncestor(url: string): Promise<ArrayBuffer | null> {
+  if (!packageSource || !enlarger) return null;
+  for (let levels = 1; levels <= MAX_ENLARGE_LEVELS; levels += 1) {
+    const ancestor = ancestorTile(url, levels);
+    if (!ancestor) return null;
+    let hit: PackagedTile | null = null;
+    try {
+      hit = await packageSource(ancestor.url);
+    } catch {
+      hit = null;
+    }
+    if (!hit) continue;
+    // The provider had no data there: nothing to enlarge.
+    if (hit.status === 404) return null;
+    try {
+      return await enlarger(
+        { data: hit.data, contentType: hit.contentType ?? "image/png" },
+        { sx: ancestor.sx, sy: ancestor.sy, size: ancestor.size, smooth: !ancestor.terrain },
+      );
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 async function fromNetwork(

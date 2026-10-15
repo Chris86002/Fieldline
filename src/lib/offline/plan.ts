@@ -1,5 +1,6 @@
 import {
   glyphUrls,
+  mapZoomOffset,
   PACKAGE_LAYERS,
   PACKAGE_LIMITS,
   PROVIDER_LIMITS,
@@ -33,6 +34,13 @@ export type PlanRequest = {
   layers: readonly string[];
   /** Label fonts are added automatically (marks and sun labels need them); false omits them. */
   includeGlyphs?: boolean;
+  /**
+   * What `minZoom`/`maxZoom` mean. "tile" (default): tile zooms, the same for
+   * every layer. "map": MapLibre map zooms; each layer gets the tile zooms
+   * the map requests for them (`mapZoomOffset`: 256-pixel raster and terrain
+   * tiles are one zoom deeper than the map, 512-pixel vector tiles are not).
+   */
+  zoomBasis?: "tile" | "map";
 };
 
 export type PlannedLayer = {
@@ -224,8 +232,9 @@ export function planPackage(request: PlanRequest): PackagePlan {
         });
         continue;
       }
-      const lo = Math.min(minZoom, def.maxZoom);
-      const hi = Math.min(maxZoom, def.maxZoom);
+      const offset = request.zoomBasis === "map" ? mapZoomOffset(layerId) : 0;
+      const lo = Math.min(minZoom + offset, def.maxZoom);
+      const hi = Math.min(maxZoom + offset, def.maxZoom);
       const ranges: TileRange[] = [];
       for (let z = lo; z <= hi; z += 1) ranges.push(...tileRanges(bounds, z));
       const tileCount = ranges.reduce((sum, range) => sum + rangeCount(range), 0);
