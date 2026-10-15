@@ -69,9 +69,29 @@ export type DownloadOptions = {
   requestHeaders?: Record<string, string>;
   persist?: () => Promise<PersistenceResult>;
   estimate?: () => Promise<{ usage: number | null; quota: number | null }>;
-  onProgress?: (progress: { done: number; total: number; failed: number; bytes: number }) => void;
+  onProgress?: (progress: DownloadProgress) => void;
   /** Re-download these canonical URLs even if stored (repair of corrupt assets). */
   only?: readonly string[];
+  /**
+   * Cross-tab lock manager (default `navigator.locks`). Only one tab
+   * downloads packages at a time; null disables the lock (tests, runtimes
+   * without Web Locks).
+   */
+  locks?: LockManager | null;
+  /** @internal Tests only: lower (never raise) the byte caps. */
+  limitsOverride?: {
+    providerMaxBytes?: Partial<Record<ProviderId, number>>;
+    packageMaxBytes?: number;
+  };
+};
+
+export type DownloadProgress = {
+  done: number;
+  total: number;
+  failed: number;
+  bytes: number;
+  /** A provider asked us to stop until this time (ms since epoch); its files wait. */
+  waitUntil: number | null;
 };
 
 export type DownloadResult = {
@@ -83,7 +103,14 @@ export type DownloadResult = {
   persistence: PersistenceResult;
 };
 
-type Job = { url: string; layerIndex: number; provider: ProviderId; kind: string };
+type Job = {
+  url: string;
+  layerIndex: number;
+  provider: ProviderId;
+  kind: string;
+  /** A first 404 was seen; a second one confirms the provider has no tile here. */
+  seen404?: boolean;
+};
 
 /** Copies another package fetched within this window are shared instead of re-downloaded. */
 const ADOPT_MAX_AGE_MS = 7 * 86_400_000;
@@ -148,6 +175,107 @@ class Semaphore {
 
 class PermanentFailure extends Error {}
 
+/** The provider asked us to wait longer than we will: stop requesting it until `until`. */
+class ProviderBackoff extends Error {
+  readonly provider: ProviderId;
+  readonly until: number;
+  constructor(provider: ProviderId, until: number) {
+    super(
+      `${PROVIDER_NAMES[provider]} asked Fieldline to wait until ${new Date(until).toISOString()}; its files will download when you resume after that.`,
+    );
+    this.provider = provider;
+    this.until = until;
+  }
+}
+
+/** A first 404: re-queued once before the tile is accepted as absent. */
+class Unconfirmed404 extends Error {}
+
+const PROVIDER_NAMES: Record<ProviderId, string> = {
+  usgs: "USGS",
+  blm: "BLM",
+  openfreemap: "OpenFreeMap",
+  "aws-terrain": "AWS Terrain Tiles",
+};
+
+/**
+ * Tab-wide request limits, shared by every download in this tab, so two
+ * packages downloading at once still respect each provider's cap.
+ */
+const sharedGlobal = new Semaphore(DEFAULTS.concurrency);
+const sharedLanes = new Map<ProviderId, Semaphore>();
+/** Tab-wide "no request before" per provider (Retry-After). */
+const sharedNotBefore = new Map<ProviderId, number>();
+
+function laneFor(provider: ProviderId): Semaphore {
+  let lane = sharedLanes.get(provider);
+  if (!lane) {
+    lane = new Semaphore(PROVIDER_LIMITS[provider].maxConcurrency);
+    sharedLanes.set(provider, lane);
+  }
+  return lane;
+}
+
+function noteNotBefore(provider: ProviderId, until: number) {
+  sharedNotBefore.set(provider, Math.max(sharedNotBefore.get(provider) ?? 0, until));
+}
+
+/** @internal Tests: forget tab-wide Retry-After state between cases. */
+export function _resetProviderBackoff() {
+  sharedNotBefore.clear();
+}
+
+const LOCK_NAME = "fieldline-offline-download";
+let tabLock: { holders: number; release: () => void } | null = null;
+let tabLockPending: Promise<"held" | "busy" | "unsupported"> | null = null;
+
+/**
+ * One tab downloads at a time: the first download in a tab takes the
+ * `fieldline-offline-download` Web Lock (if it's free) and the tab keeps it
+ * while any of its downloads run; downloads in this tab share it. Another tab
+ * gets a `conflict` error instead of starting.
+ */
+async function enterDownloadLock(locks: LockManager | null): Promise<() => void> {
+  if (!locks) return () => undefined;
+  if (!tabLock) {
+    tabLockPending ??= new Promise<"held" | "busy" | "unsupported">((resolve) => {
+      locks
+        .request(LOCK_NAME, { ifAvailable: true }, (lock) => {
+          if (!lock) {
+            resolve("busy");
+            return null;
+          }
+          return new Promise<void>((release) => {
+            tabLock = { holders: 0, release };
+            resolve("held");
+          });
+        })
+        .catch(() => resolve("unsupported"));
+    });
+    const outcome = await tabLockPending;
+    tabLockPending = null;
+    if (outcome === "unsupported") return () => undefined;
+    if (outcome === "busy" || !tabLock) {
+      throw new StorageError(
+        "conflict",
+        "Another Fieldline tab or window is downloading a map package. Let it finish (or pause it there), then try again.",
+      );
+    }
+  }
+  const held: { holders: number; release: () => void } = tabLock;
+  held.holders += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    held.holders -= 1;
+    if (held.holders === 0) {
+      if (tabLock === held) tabLock = null;
+      held.release();
+    }
+  };
+}
+
 const EXPECTED_TYPES: Record<string, RegExp> = {
   raster: /^image\//i,
   terrain: /^image\/png/i,
@@ -178,10 +306,21 @@ export async function downloadPackage(
   const signal = options.signal;
 
   store.claim(packageId);
+  let leaveLock: () => void = () => undefined;
   let version = 0;
   try {
+    leaveLock = await enterDownloadLock(
+      options.locks !== undefined ? options.locks : (globalThis.navigator?.locks ?? null),
+    );
     const record = await store.getRecord(packageId);
     if (!record) throw new StorageError("not-found", "That offline package no longer exists.");
+    // A provider's earlier "wait until" survives restarts: honor it before any request.
+    for (const [provider, until] of Object.entries(record.providerNotBefore ?? {}) as [
+      ProviderId,
+      number,
+    ][]) {
+      noteNotBefore(provider, until);
+    }
     const target = workTarget(record);
     if (!target) {
       return {
@@ -220,9 +359,7 @@ export async function downloadPackage(
       appOrigin,
       signal,
       headers: options.requestHeaders ?? {},
-      notBefore: new Map(),
-      global: new Semaphore(options.concurrency ?? DEFAULTS.concurrency),
-      lanes: new Map(),
+      local: options.concurrency ? new Semaphore(options.concurrency) : null,
       now,
     };
 
@@ -272,14 +409,35 @@ export async function downloadPackage(
     }
     const stored = await store.storedAssets(packageId, version, list.urls);
     const only = new Set(options.only ?? []);
+    // Real bytes per provider and for the whole package, each asset counted
+    // once (a re-downloaded asset replaces its stored size, never adds to it).
+    const assetBytes = new Map<string, number>();
     const providerBytes = new Map<ProviderId, number>();
+    let packageBytes = 0;
+    const account = (url: string, provider: ProviderId, bytes: number) => {
+      const delta = bytes - (assetBytes.get(url) ?? 0);
+      assetBytes.set(url, bytes);
+      providerBytes.set(provider, (providerBytes.get(provider) ?? 0) + delta);
+      packageBytes += delta;
+    };
+    const providerCap = (provider: ProviderId) => {
+      const caps = [
+        PROVIDER_LIMITS[provider].maxBytesPerPackage,
+        options.limitsOverride?.providerMaxBytes?.[provider],
+      ];
+      const set = caps.filter((c): c is number => typeof c === "number");
+      return set.length ? Math.min(...set) : null;
+    };
+    const packageCap = Math.min(
+      PACKAGE_LIMITS.maxBytes,
+      options.limitsOverride?.packageMaxBytes ?? PACKAGE_LIMITS.maxBytes,
+    );
     const jobs: Job[] = [];
     list.urls.forEach((url, i) => {
       const layerIndex = list.layerIndex[i];
       const rule = packageRuleFor(url)!;
       const have = stored.get(url);
-      if (have)
-        providerBytes.set(rule.provider, (providerBytes.get(rule.provider) ?? 0) + have.bytes);
+      if (have) account(url, rule.provider, have.bytes);
       if (!have || only.has(url))
         jobs.push({ url, layerIndex, provider: rule.provider, kind: rule.kind });
     });
@@ -302,12 +460,15 @@ export async function downloadPackage(
       for (let i = jobs.length - 1; i >= 0; i -= 1) {
         const bytes = adopted.get(jobs[i].url);
         if (bytes === undefined) continue;
-        providerBytes.set(jobs[i].provider, (providerBytes.get(jobs[i].provider) ?? 0) + bytes);
+        account(jobs[i].url, jobs[i].provider, bytes);
         jobs.splice(i, 1);
       }
     }
 
     const failures: AssetFailure[] = [];
+    /** Providers that asked us to stop until a time beyond our wait cap. */
+    const blockedUntil = new Map<ProviderId, number>();
+    let stopAll: string | null = null;
     let downloaded = 0;
     let writeError: unknown = null;
     const internal = new AbortController();
@@ -331,6 +492,7 @@ export async function downloadPackage(
             total: m.progress.total,
             failed: failures.length,
             bytes: m.actualBytes,
+            waitUntil: blockedUntil.size ? Math.max(...blockedUntil.values()) : null,
           });
         } catch (error) {
           writeError = error;
@@ -354,30 +516,45 @@ export async function downloadPackage(
     const workers: Promise<void>[] = [];
     for (const [provider, providerJobs] of byProvider) {
       const limits = PROVIDER_LIMITS[provider];
-      const lane = new Semaphore(limits.maxConcurrency);
-      net.lanes.set(provider, lane);
       let stopProvider: string | null = null;
       const worker = async () => {
         while (providerJobs.length && !runSignal.aborted) {
-          if (stopProvider) {
-            for (const job of providerJobs.splice(0))
-              failures.push({ url: job.url, reason: stopProvider });
+          const stop = stopAll ?? stopProvider;
+          if (stop) {
+            // Never requested: they stay missing and are fetched on a later resume.
+            for (const job of providerJobs.splice(0)) failures.push({ url: job.url, reason: stop });
             return;
           }
           const job = providerJobs.shift()!;
           try {
             const asset = await fetchAsset(job, net);
-            if (limits.maxBytesPerPackage !== null) {
-              const total = (providerBytes.get(provider) ?? 0) + asset.bytes;
-              if (total > limits.maxBytesPerPackage) {
-                stopProvider = `OpenFreeMap allows at most ${mb(limits.maxBytesPerPackage)} per download; this package reached that limit.`;
-                failures.push({ url: job.url, reason: stopProvider });
-                continue;
-              }
-              providerBytes.set(provider, total);
+            const cap = providerCap(provider);
+            const previous = assetBytes.get(job.url) ?? 0;
+            if (cap !== null && (providerBytes.get(provider) ?? 0) + asset.bytes - previous > cap) {
+              stopProvider = `${PROVIDER_NAMES[provider]} allows at most ${mb(cap)} per download; this package reached that limit.`;
+              failures.push({ url: job.url, reason: stopProvider });
+              continue;
             }
+            if (packageBytes + asset.bytes - previous > packageCap) {
+              stopAll = `A package can be at most ${mb(packageCap)}; this one reached that limit. Choose a smaller area or fewer layers.`;
+              failures.push({ url: job.url, reason: stopAll });
+              continue;
+            }
+            account(job.url, provider, asset.bytes);
             enqueue(asset);
           } catch (error) {
+            if (error instanceof Unconfirmed404) {
+              // Ask again later in the run before accepting "no tile here".
+              job.seen404 = true;
+              providerJobs.push(job);
+              continue;
+            }
+            if (error instanceof ProviderBackoff) {
+              blockedUntil.set(provider, Math.max(blockedUntil.get(provider) ?? 0, error.until));
+              stopProvider = error.message;
+              failures.push({ url: job.url, reason: error.message });
+              continue;
+            }
             if (runSignal.aborted) {
               // Paused or storage failed: the job stays undone and is fetched on resume.
               return;
@@ -427,6 +604,7 @@ export async function downloadPackage(
         signal,
         now,
         downloaded,
+        blockedUntil,
       );
     }
     store.release(packageId);
@@ -440,6 +618,7 @@ export async function downloadPackage(
       persistence,
     };
   } finally {
+    leaveLock();
     store.release(packageId);
   }
 }
@@ -483,10 +662,8 @@ type NetContext = {
   appOrigin: string | null;
   signal: AbortSignal | undefined;
   headers: Record<string, string>;
-  /** Per provider: no request before this time (Retry-After). */
-  notBefore: Map<ProviderId, number>;
-  global: Semaphore;
-  lanes: Map<ProviderId, Semaphore>;
+  /** Optional per-call cap (`concurrency` option), below the tab-wide limits. */
+  local: Semaphore | null;
   now: () => number;
 };
 
@@ -495,27 +672,45 @@ async function fetchAsset(job: Job, net: NetContext): Promise<FetchedAsset> {
   if (!rule) throw new PermanentFailure("Not a source that permits offline storage.");
   const target = fetchUrlFor(job.url, net.appOrigin);
   let lastError = "failed";
+  /** Throws ProviderBackoff when the provider's "wait until" is beyond our cap. */
+  const checkBlocked = () => {
+    const until = sharedNotBefore.get(job.provider) ?? 0;
+    if (until - net.now() > net.maxRetryAfterMs) throw new ProviderBackoff(job.provider, until);
+    return until - net.now();
+  };
   for (let attempt = 1; attempt <= net.maxAttempts; attempt += 1) {
-    const wait = (net.notBefore.get(job.provider) ?? 0) - net.now();
+    const wait = checkBlocked();
     if (wait > 0) await net.sleep(wait, net.signal);
     if (net.signal?.aborted) throw abortError(net.signal);
-    const lane = net.lanes.get(job.provider);
-    await lane?.acquire();
-    await net.global.acquire();
+    const lane = laneFor(job.provider);
+    await lane.acquire();
+    await net.local?.acquire();
+    await sharedGlobal.acquire();
     let retryAfter: number | null = null;
     try {
+      // Another download may have been told to stop while we waited for a slot.
+      checkBlocked();
+      if (net.signal?.aborted) throw abortError(net.signal);
       const timeout = AbortSignal.timeout(net.timeoutMs);
       const signal = net.signal ? AbortSignal.any([net.signal, timeout]) : timeout;
       const response = await net.fetchFn(target, {
         signal,
         credentials: "omit",
         headers: net.headers,
+        // Never follow a redirect: no request may reach a host that isn't allowlisted.
+        redirect: "manual",
       });
-      if (response.url && !responseHostAllowed(response.url, target)) {
-        throw new PermanentFailure("The provider redirected to a host that isn't allowed.");
+      if (
+        response.type === "opaqueredirect" ||
+        (response.status >= 300 && response.status < 400) ||
+        (response.url && !responseHostAllowed(response.url, target))
+      ) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new PermanentFailure("The provider redirected elsewhere; redirects aren't followed.");
       }
       if (response.status === 404) {
         await response.body?.cancel().catch(() => undefined);
+        if (!job.seen404) throw new Unconfirmed404();
         return {
           url: job.url,
           layerIndex: job.layerIndex,
@@ -532,15 +727,12 @@ async function fetchAsset(job: Job, net: NetContext): Promise<FetchedAsset> {
         await response.body?.cancel().catch(() => undefined);
         lastError = `HTTP ${response.status}`;
         if (retryAfter !== null && retryAfter > net.maxRetryAfterMs) {
-          throw new PermanentFailure(
-            `The provider asked to wait ${Math.round(retryAfter / 1000)} s; try again later.`,
-          );
+          // Stop asking this provider for the rest of the run (and across resumes, until then).
+          noteNotBefore(job.provider, net.now() + retryAfter);
+          throw new ProviderBackoff(job.provider, net.now() + retryAfter);
         }
         const delay = retryAfter ?? backoff(attempt, net.random);
-        net.notBefore.set(
-          job.provider,
-          Math.max(net.notBefore.get(job.provider) ?? 0, net.now() + delay),
-        );
+        noteNotBefore(job.provider, net.now() + delay);
         continue;
       }
       if (response.status >= 500) {
@@ -579,13 +771,19 @@ async function fetchAsset(job: Job, net: NetContext): Promise<FetchedAsset> {
         };
       }
     } catch (error) {
-      if (error instanceof PermanentFailure) throw error;
+      if (
+        error instanceof PermanentFailure ||
+        error instanceof ProviderBackoff ||
+        error instanceof Unconfirmed404
+      )
+        throw error;
       if (net.signal?.aborted) throw abortError(net.signal);
       lastError =
         error instanceof Error && error.name === "TimeoutError" ? "timed out" : "network error";
     } finally {
-      net.global.release();
-      lane?.release();
+      sharedGlobal.release();
+      net.local?.release();
+      lane.release();
     }
     if (attempt < net.maxAttempts && retryAfter === null) {
       await net.sleep(backoff(attempt, net.random), net.signal);
@@ -620,7 +818,6 @@ async function resolveAssets(
   const ofmIndex = manifest.layers.findIndex((layer) => layer.layerId === "ofm-vector");
   if (ofmIndex >= 0) {
     try {
-      net.lanes.set("openfreemap", new Semaphore(PROVIDER_LIMITS.openfreemap.maxConcurrency));
       tileJson = await fetchAsset(
         { url: OFM_TILEJSON_URL, layerIndex: ofmIndex, provider: "openfreemap", kind: "tilejson" },
         net,
@@ -715,17 +912,28 @@ async function finishFailed(
   signal: AbortSignal | undefined,
   now: () => number,
   downloaded = 0,
+  blocked: Map<ProviderId, number> = new Map(),
 ): Promise<DownloadResult> {
   const paused = signal?.aborted;
-  await store.updateTarget(packageId, version, (m) => {
+  const waitUntil = blocked.size ? Math.max(...blocked.values()) : null;
+  await store.updateTarget(packageId, version, (m, record) => {
+    const at = now();
+    const kept = Object.entries(record.providerNotBefore ?? {}).filter(([, until]) => until > at);
+    record.providerNotBefore = Object.fromEntries([...kept, ...blocked]);
     m.phase = paused ? "paused" : "failed";
     m.lastError = paused
       ? null
-      : {
-          code: "network",
-          message: `${failures.length} map file${failures.length === 1 ? "" : "s"} couldn't be downloaded. Retry to fetch only those.`,
-          at: now(),
-        };
+      : waitUntil !== null
+        ? {
+            code: "rate-limited",
+            message: `${[...blocked.keys()].map((p) => PROVIDER_NAMES[p]).join(", ")} asked Fieldline to pause downloads until ${new Date(waitUntil).toLocaleString()}. ${failures.length} map file${failures.length === 1 ? "" : "s"} will download when you resume after that.`,
+            at,
+          }
+        : {
+            code: "network",
+            message: `${failures.length} map file${failures.length === 1 ? "" : "s"} couldn't be downloaded. Retry to fetch only those.`,
+            at,
+          };
     m.failures = paused ? [] : failures.slice(0, 50);
     m.progress.failed = paused ? 0 : failures.length;
   });

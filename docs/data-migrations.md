@@ -125,5 +125,5 @@ design in [storage.md](storage.md).
 
 | From | To | Result | Evidence |
 | --- | --- | --- | --- |
-| Layout 1 database (content only) | layout 2 | Offline stores added, content untouched | `backend.test.ts` "IndexedDB layout upgrades"; browser check opens a fresh database at version 2 |
+| Layout 1 database (content only) | layout 2 | Offline stores added, content untouched | `backend.test.ts` "IndexedDB layout upgrades"; `scripts/offline-browser-check.mjs` builds a populated version-1 database in Chromium with `UPGRADES[1]`, opens it with this build, and compares every content record |
 | Layout 2 database | layout-1 build | Refused (`future-version`), left untouched | By construction (`openIndexedDbBackend` version check, wave-1 tests) |

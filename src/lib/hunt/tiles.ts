@@ -44,7 +44,10 @@ export function cachedTile(template: string): string {
 
 /** Bytes for a tile from a verified offline package (src/lib/offline/serve.ts). */
 export type PackagedTile = { data: ArrayBuffer; contentType?: string; status?: number };
-export type PackageTileSource = (url: string) => Promise<PackagedTile | null>;
+export type PackageTileSource = (
+  url: string,
+  options?: { substituteVersions?: boolean },
+) => Promise<PackagedTile | null>;
 
 let packageSource: PackageTileSource | null = null;
 const stats = { package: 0, cache: 0, network: 0, failed: 0 };
@@ -102,21 +105,44 @@ export async function loadTile(
       : params.type === "string"
         ? { data: new TextDecoder().decode(data) }
         : { data };
+  const offline = globalThis.navigator?.onLine === false;
 
-  if (packageSource) {
+  /** Packaged copy; with `substitute`, another packaged data version of the same tile. */
+  const fromPackage = async (substitute: boolean) => {
+    if (!packageSource) return null;
     let hit: PackagedTile | null = null;
     try {
-      hit = await packageSource(url);
+      hit = await packageSource(url, { substituteVersions: substitute });
     } catch {
       hit = null;
     }
-    if (hit) {
-      stats.package += 1;
-      // The provider has no tile here (stored as a 404 when the package was made).
-      if (hit.status === 404) throw new Error("404");
-      return respond(hit.data);
+    if (!hit) return null;
+    stats.package += 1;
+    // The provider has no tile here (confirmed when the package was made).
+    if (hit.status === 404) throw new Error("404");
+    return respond(hit.data);
+  };
+
+  // A TileJSON names the provider's current data version: online, always
+  // ask the network, so the map never stays pinned to an old packaged
+  // version. Packaged copies are the offline fallback.
+  if (params.type === "json") {
+    if (!offline) {
+      try {
+        return await fromNetwork(url, abort, respond, null);
+      } catch (error) {
+        const packaged = await fromPackage(true);
+        if (packaged) return packaged;
+        throw error;
+      }
     }
+    const packaged = await fromPackage(true);
+    if (packaged) return packaged;
+    return fromNetwork(url, abort, respond, null);
   }
+
+  const packaged = await fromPackage(offline);
+  if (packaged) return packaged;
 
   let cache: Cache | null = null;
   try {
@@ -136,6 +162,25 @@ export async function loadTile(
     }
   }
 
+  try {
+    return await fromNetwork(url, abort, respond, cache);
+  } catch (error) {
+    // The network failed (offline without navigator.onLine knowing): a
+    // packaged copy under another data version still beats a blank map.
+    if (!offline) {
+      const substitute = await fromPackage(true);
+      if (substitute) return substitute;
+    }
+    throw error;
+  }
+}
+
+async function fromNetwork(
+  url: string,
+  abort: AbortController,
+  respond: (data: ArrayBuffer) => { data: unknown },
+  cache: Cache | null,
+): Promise<{ data: unknown }> {
   let response: Response;
   try {
     response = await fetch(url, { signal: abort.signal });

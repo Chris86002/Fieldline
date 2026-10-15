@@ -21,6 +21,10 @@ export type FakeProvider = {
   maxInFlightTotal: () => number;
   /** Content generation: bump to simulate a provider data update. */
   revision: number;
+  /** OpenFreeMap data version the fake TileJSON names. */
+  ofmVersion: string;
+  /** The init object of every request, in order. */
+  inits: (RequestInit | undefined)[];
   /** Return a response (or throw) instead of the default; `call` is the 1-based request number. */
   override: ((url: string, call: number) => Response | Error | null) | null;
 };
@@ -34,10 +38,13 @@ export function fakeProvider(options: { delayMs?: number } = {}): FakeProvider {
     maxInFlight: new Map(),
     maxInFlightTotal: () => maxTotal,
     revision: 1,
+    ofmVersion: FIXTURE_OFM_VERSION,
+    inits: [],
     override: null,
-    fetch: (async (input: RequestInfo | URL) => {
+    fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input instanceof Request ? input.url : input);
       provider.calls.push(url);
+      provider.inits.push(init);
       const call = provider.calls.length;
       const host = new URL(url).host;
       inFlight.set(host, (inFlight.get(host) ?? 0) + 1);
@@ -52,7 +59,7 @@ export function fakeProvider(options: { delayMs?: number } = {}): FakeProvider {
         const custom = provider.override?.(url, call);
         if (custom instanceof Error) throw custom;
         if (custom) return custom;
-        return defaultResponse(url, provider.revision);
+        return defaultResponse(url, provider.revision, provider.ofmVersion);
       } finally {
         inFlight.set(host, inFlight.get(host)! - 1);
         total -= 1;
@@ -62,11 +69,11 @@ export function fakeProvider(options: { delayMs?: number } = {}): FakeProvider {
   return provider;
 }
 
-function defaultResponse(url: string, revision: number): Response {
+function defaultResponse(url: string, revision: number, ofmVersion: string): Response {
   if (url === "https://tiles.openfreemap.org/planet") {
     return Response.json({
       tilejson: "3.0.0",
-      tiles: [`https://tiles.openfreemap.org/planet/${FIXTURE_OFM_VERSION}/{z}/{x}/{y}.pbf`],
+      tiles: [`https://tiles.openfreemap.org/planet/${ofmVersion}/{z}/{x}/{y}.pbf`],
       minzoom: 0,
       maxzoom: 14,
     });
@@ -122,6 +129,7 @@ export function downloadOptions(
     persist: async () => "granted",
     estimate: async () => ({ usage: null, quota: null }),
     appOrigin: FIXTURE_APP_ORIGIN,
+    locks: null,
     ...extra,
   };
 }

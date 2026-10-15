@@ -69,7 +69,12 @@ export type IntegrityStatus = {
   checkedAt: number | null;
   missingCount: number;
   corruptCount: number;
-  /** First entries; the full lists are in the version's asset list. */
+  /**
+   * Tiles the provider confirmed it doesn't have (HTTP 404 twice): complete,
+   * nothing to draw. For "N tiles had no data at the source".
+   */
+  absentCount: number;
+  /** First entries (display only); the full lists are in the version's asset list. */
   missing: string[];
   corrupt: string[];
 };
@@ -120,6 +125,11 @@ export type PackageRecord = {
   pending: ManifestSummary | null;
   /** Answer to navigator.storage.persist() at the last download start. */
   persistence: PersistenceResult | null;
+  /**
+   * Providers that asked us to stop until a time (Retry-After beyond the wait
+   * cap). No request goes to them before then, even after a restart.
+   */
+  providerNotBefore?: Partial<Record<ProviderId, number>>;
 };
 
 export type AssetList = {
@@ -147,9 +157,18 @@ export type AssetMeta = {
 export type PackageStatus = {
   packageId: string;
   name: string;
+  /**
+   * The current operation's state. During an update this describes the new
+   * version ("updating", "verifying", "paused", "failed"); `activeState` says
+   * whether the old version is still ready or stale.
+   */
   state: PackageState;
+  /** State of the verified version the map serves, or null when there is none. */
+  activeState: "ready" | "stale" | "failed" | null;
   /** A verified version exists and the map serves it (ready, stale, updating, or damaged-but-intact parts). */
   servable: boolean;
+  /** A provider asked us to wait until this time; resume after it. */
+  waitUntil: number | null;
   /** A download stopped without pausing (app closed, tab crashed); resume it. */
   interrupted: boolean;
   activeVersion: number | null;
@@ -212,6 +231,8 @@ export type CoverageResult = {
 };
 
 const STORES_ALL = ["packages", "packageAssets", "assets", "assetData"] as const;
+const OFM_VERSIONED_TILE =
+  /^https:\/\/tiles\.openfreemap\.org\/planet\/([A-Za-z0-9_.-]{1,64})\/(\d{1,2})\/(\d{1,6})\/(\d{1,6})\.pbf$/;
 const DAY_MS = 86_400_000;
 const LIST_PREVIEW = 50;
 
@@ -243,6 +264,7 @@ function emptyIntegrity(): IntegrityStatus {
     checkedAt: null,
     missingCount: 0,
     corruptCount: 0,
+    absentCount: 0,
     missing: [],
     corrupt: [],
   };
@@ -590,29 +612,69 @@ export class OfflinePackageStore {
 
   /**
    * Reads a packaged asset for the map, from the active (verified) version of
-   * any package. Assets the last verification found corrupt are skipped.
-   * Returns null when no package has it.
+   * any package, newest verification first. Assets the last verification
+   * found corrupt (the complete list) are skipped. Returns null when no
+   * package has it.
+   *
+   * OpenFreeMap tile URLs carry a data version. With `substituteVersions`
+   * (used offline), a vector tile requested under one version is answered
+   * from a package downloaded under another, so every package's tiles stay
+   * reachable whichever packaged TileJSON the map loaded.
    */
   async readServableAsset(
     url: string,
+    options: { substituteVersions?: boolean } = {},
   ): Promise<{ data: ArrayBuffer; contentType: string; status: number } | null> {
-    return this.backend.read(["packages", "assets", "assetData"], async (tx) => {
+    const stores = ["packages", "packageAssets", "assets", "assetData"] as const;
+    return this.backend.read(stores, async (tx) => {
       const metas = await tx.getRange<AssetMeta>("assets", assetPrefix(url));
-      if (!metas.length) return null;
-      const records = await tx.getAll<PackageRecord>("packages");
-      const servable = new Set<string>();
+      const ofm = OFM_VERSIONED_TILE.exec(url);
+      if (!metas.length && !(options.substituteVersions && ofm)) return null;
+      const records = (await tx.getAll<PackageRecord>("packages"))
+        .filter(
+          (record) =>
+            record.active &&
+            record.active.verifiedAt !== null &&
+            record.active.schemaVersion <= PACKAGE_SCHEMA_VERSION,
+        )
+        .sort((a, b) => (b.active!.verifiedAt ?? 0) - (a.active!.verifiedAt ?? 0));
+      const servable: { ref: string; record: PackageRecord; corrupt: Set<string> | null }[] = [];
       for (const record of records) {
-        const active = record.active;
-        if (!active || active.verifiedAt === null || active.schemaVersion > PACKAGE_SCHEMA_VERSION)
-          continue;
-        if (active.integrityStatus.corrupt.includes(url)) continue;
-        servable.add(versionRef(record.packageId, active.version));
+        const active = record.active!;
+        const ref = versionRef(record.packageId, active.version);
+        let corrupt: Set<string> | null = null;
+        if (active.integrityStatus.corruptCount > 0) {
+          const list = await tx.get<AssetList>("packageAssets", ref);
+          corrupt = new Set(list?.corrupt ?? active.integrityStatus.corrupt);
+        }
+        servable.push({ ref, record, corrupt });
       }
-      const meta = metas.find((m) => m.refs.some((ref) => servable.has(ref)));
-      if (!meta) return null;
-      const data = await tx.get<ArrayBuffer>("assetData", assetKey(meta.url, meta.sha256));
-      if (!data || data.byteLength !== meta.bytes) return null;
-      return { data, contentType: meta.contentType, status: meta.status };
+      const pick = async (candidate: string, candidates: AssetMeta[]) => {
+        for (const entry of servable) {
+          if (entry.corrupt?.has(candidate)) continue;
+          const meta = candidates.find((m) => m.refs.includes(entry.ref));
+          if (!meta) continue;
+          const data = await tx.get<ArrayBuffer>("assetData", assetKey(meta.url, meta.sha256));
+          if (!data || data.byteLength !== meta.bytes) continue;
+          return { data, contentType: meta.contentType, status: meta.status };
+        }
+        return null;
+      };
+      const exact = metas.length ? await pick(url, metas) : null;
+      if (exact || !options.substituteVersions || !ofm) return exact;
+      const tried = new Set([ofm[1]]);
+      for (const entry of servable) {
+        const version = entry.record.active!.sourceVersions["ofm-vector"];
+        if (!version || tried.has(version)) continue;
+        tried.add(version);
+        const alternative = `https://tiles.openfreemap.org/planet/${version}/${ofm[2]}/${ofm[3]}/${ofm[4]}.pbf`;
+        const hit = await pick(
+          alternative,
+          await tx.getRange<AssetMeta>("assets", assetPrefix(alternative)),
+        );
+        if (hit) return hit;
+      }
+      return null;
     });
   }
 
@@ -839,20 +901,27 @@ export class OfflinePackageStore {
       const list = await tx.get<AssetList>("packageAssets", listKey);
       if (!list) throw new StorageError("not-found", "The package's asset list is missing.");
       const missing = [...result.missing];
-      if (!missing.length && !result.corrupt.length) {
-        for (const url of list.urls) {
-          const metas = await tx.getRange<AssetMeta>("assets", assetPrefix(url));
-          if (!metas.some((m) => m.refs.includes(ref))) missing.push(url);
-        }
+      const corrupt = [...result.corrupt];
+      // Re-check inside this transaction: every asset must still be stored for
+      // this version with exactly the checksum that was just verified (another
+      // tab may have replaced or removed it after hashing).
+      const reported = new Set([...missing, ...corrupt]);
+      for (const url of list.urls) {
+        if (reported.has(url)) continue;
+        const metas = await tx.getRange<AssetMeta>("assets", assetPrefix(url));
+        const meta = metas.find((m) => m.refs.includes(ref));
+        if (!meta) missing.push(url);
+        else if (meta.sha256 !== result.checksums[url]) corrupt.push(url);
       }
-      const ok = missing.length === 0 && result.corrupt.length === 0;
+      const ok = missing.length === 0 && corrupt.length === 0;
       manifest.integrityStatus = {
         status: ok ? "ok" : "damaged",
         checkedAt: result.checkedAt,
         missingCount: missing.length,
-        corruptCount: result.corrupt.length,
+        corruptCount: corrupt.length,
+        absentCount: result.perLayer.reduce((sum, layer) => sum + layer.absent, 0),
         missing: missing.slice(0, LIST_PREVIEW),
-        corrupt: result.corrupt.slice(0, LIST_PREVIEW),
+        corrupt: corrupt.slice(0, LIST_PREVIEW),
       };
       manifest.layers.forEach((layer, index) => {
         const counts = result.perLayer[index] ?? { verified: 0, missing: 0, corrupt: 0, absent: 0 };
@@ -862,14 +931,14 @@ export class OfflinePackageStore {
         ...list,
         checksums: ok ? result.checksums : list.checksums,
         missing,
-        corrupt: result.corrupt,
+        corrupt,
       } satisfies AssetList);
       record.updatedAt = result.checkedAt;
       if (!ok) {
         manifest.phase = "failed";
         manifest.lastError = {
           code: "integrity",
-          message: `${missing.length} missing and ${result.corrupt.length} damaged map files. Repair downloads only those.`,
+          message: `${missing.length} missing and ${corrupt.length} damaged map files. Repair downloads only those.`,
           at: result.checkedAt,
         };
         await tx.put("packages", packageId, record);
@@ -922,9 +991,13 @@ export class OfflinePackageStore {
       state = p.phase;
       interrupted = p.interrupted;
     } else if (pending) {
+      // The update's own state; the old version's is in `activeState`.
       const p = phaseOf(pending);
       interrupted = p.interrupted;
-      state = p.phase === "verifying" ? "verifying" : "updating";
+      state =
+        p.phase === "planned" || p.phase === "downloading" || p.phase === "ready"
+          ? "updating"
+          : p.phase;
     } else if (active.phase !== "ready") {
       const p = phaseOf(active);
       interrupted = p.interrupted;
@@ -932,10 +1005,22 @@ export class OfflinePackageStore {
     } else {
       state = stale ? "stale" : "ready";
     }
+    const waits = Object.values(record.providerNotBefore ?? {}).filter(
+      (until): until is number => typeof until === "number" && until > now,
+    );
     return {
       packageId: record.packageId,
       name: record.name,
       state,
+      activeState:
+        !active || active.verifiedAt === null
+          ? null
+          : active.phase !== "ready"
+            ? "failed"
+            : stale
+              ? "stale"
+              : "ready",
+      waitUntil: waits.length ? Math.max(...waits) : null,
       servable: Boolean(active && active.verifiedAt !== null),
       interrupted,
       activeVersion: active?.verifiedAt != null ? active.version : null,

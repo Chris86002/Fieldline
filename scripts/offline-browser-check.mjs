@@ -9,13 +9,16 @@
  *   1. Bundles the offline library, tiles.ts and MapLibre with Vite.
  *   2. Serves a harness page at http://fieldline.test (Playwright routes, no
  *      real server; /api/dem proxies AWS terrain like the app's route).
- *   3. Online: plans and downloads a package into real IndexedDB, verifies it.
- *   4. context.setOffline(true), reload, and render a MapLibre map whose
+ *   3. Real layout upgrade: a populated IndexedDB version-1 database (built
+ *      with the version-1 UPGRADES step) is opened by this build; every
+ *      content record must be unchanged and the 4 offline stores must exist.
+ *   4. Online: plans and downloads a package into real IndexedDB, verifies it.
+ *   5. context.setOffline(true), reload, and render a MapLibre map whose
  *      sources all go through fltile:// (raster, OFM TileJSON + vector tiles,
  *      glyphs, raster-dem). Confirms every tile came from the package and the
  *      network was never used.
  *
- * Usage: node scripts/offline-browser-check.mjs
+ * Usage: node scripts/offline-browser-check.mjs   (env OFFLINE_CHECK_PORT names the origin's port)
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -26,7 +29,9 @@ import { chromium } from "playwright";
 import { build } from "vite";
 
 const root = resolve(fileURLToPath(new URL("..", import.meta.url)));
-const ORIGIN = "http://fieldline.test";
+// Served by Playwright routes (no socket is opened); the port only names the origin.
+const port = Number(process.env.OFFLINE_CHECK_PORT ?? 3301);
+const ORIGIN = `http://fieldline.test:${port}`;
 const outDir = mkdtempSync(join(tmpdir(), "fieldline-offline-check-"));
 const entry = join(outDir, "entry.ts");
 const src = (path) => JSON.stringify(join(root, "src", path).replaceAll("\\", "/"));
@@ -34,7 +39,7 @@ writeFileSync(
   entry,
   `export * as maplibregl from ${JSON.stringify(join(root, "node_modules/maplibre-gl/dist/maplibre-gl.mjs").replaceAll("\\", "/"))};
 export * from ${src("lib/offline/index.ts")};
-export { openIndexedDbBackend, requestPersistentStorage } from ${src("lib/storage/indexeddb.ts")};
+export { IDB_VERSION, openIndexedDbBackend, requestPersistentStorage, UPGRADES } from ${src("lib/storage/indexeddb.ts")};
 export { cachedTile, installTileProtocol, setPackageTileSource, tileProtocolStats, TILES } from ${src("lib/hunt/tiles.ts")};
 `,
 );
@@ -107,8 +112,95 @@ try {
     await page.waitForFunction(() => window.ready === true);
   };
 
-  // ---- Online: plan and download ----
+  // ---- Real IndexedDB layout upgrade: a populated version-1 database opened by this build ----
   await load();
+  const upgrade = await page.evaluate(async () => {
+    const lib = window.lib;
+    const name = "fieldline-upgrade-check";
+    const done = (req) =>
+      new Promise((resolve, reject) => {
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    await new Promise((resolve) => {
+      const req = indexedDB.deleteDatabase(name);
+      req.onsuccess = req.onerror = req.onblocked = resolve;
+    });
+    // TEST FIXTURE records (synthetic), written through the version-1 layout step.
+    const fixture = {
+      waypoints: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { id: "aaaaaaaa-0000-4000-8000-000000000001", name: "Fixture stand", kind: "stand", lng: -111.3, lat: 33.7, notes: "ünïcode", hunt: "", goodWinds: [0, 315], createdAt: 1 },
+      },
+      tracks: {
+        "bbbbbbbb-0000-4000-8000-000000000001": { id: "bbbbbbbb-0000-4000-8000-000000000001", name: "Fixture track", points: [{ lng: -111.3, lat: 33.7, t: 1 }, { lng: -111.31, lat: 33.71, t: 2 }], createdAt: 2, visible: true },
+      },
+      trash: {
+        "waypoint:cccccccc-0000-4000-8000-000000000001:5": { id: "waypoint:cccccccc-0000-4000-8000-000000000001:5", kind: "waypoint", itemId: "cccccccc-0000-4000-8000-000000000001", deletedAt: 5, item: { id: "cccccccc-0000-4000-8000-000000000001", name: "Gone", kind: "pin", lng: 0, lat: 0, notes: "", hunt: "", createdAt: 3 } },
+      },
+      sessions: { "dddddddd-0000-4000-8000-000000000001": { id: "dddddddd-0000-4000-8000-000000000001", name: "Rec", startedAt: 9, nextSeq: 1, fixCount: 1 } },
+      chunks: { "dddddddd-0000-4000-8000-000000000001:00000000": { seq: 0, fixes: [{ lng: 1, lat: 2, t: 3 }] } },
+      meta: { schema: { version: 1, createdAt: 1, lastStep: "v0-v1" } },
+    };
+    const open1 = indexedDB.open(name, 1);
+    open1.onupgradeneeded = () => lib.UPGRADES[1](open1.result);
+    const v1 = await done(open1);
+    const v1Stores = [...v1.objectStoreNames].sort();
+    const tx = v1.transaction(Object.keys(fixture), "readwrite");
+    for (const [store, records] of Object.entries(fixture))
+      for (const [key, value] of Object.entries(records)) tx.objectStore(store).put(value, key);
+    await new Promise((resolve, reject) => {
+      tx.oncomplete = resolve;
+      tx.onerror = () => reject(tx.error);
+    });
+    v1.close();
+
+    // This build opens it (IDB_VERSION 2): the upgrade runs for real.
+    const backend = await lib.openIndexedDbBackend({ name });
+    const contentStores = Object.keys(fixture);
+    const after = {};
+    await backend.read(contentStores, async (t) => {
+      for (const store of contentStores) {
+        const keys = await t.getAllKeys(store);
+        after[store] = {};
+        for (const key of keys) after[store][key] = await t.get(store, key);
+      }
+    });
+    const offlineCounts = await backend.read(
+      ["packages", "packageAssets", "assets", "assetData"],
+      async (t) => [await t.count("packages"), await t.count("packageAssets"), await t.count("assets"), await t.count("assetData")],
+    );
+    backend.close();
+    const reopened = await done(indexedDB.open(name));
+    const v2 = { version: reopened.version, stores: [...reopened.objectStoreNames].sort() };
+    reopened.close();
+    indexedDB.deleteDatabase(name);
+    return {
+      v1Stores,
+      v2,
+      intact: JSON.stringify(after) === JSON.stringify(fixture),
+      offlineCounts,
+      expectedVersion: lib.IDB_VERSION,
+    };
+  });
+  assert.deepEqual(upgrade.v1Stores, ["chunks", "meta", "sessions", "tracks", "trash", "waypoints"]);
+  assert.equal(upgrade.v2.version, 2);
+  assert.equal(upgrade.expectedVersion, 2);
+  assert.deepEqual(upgrade.v2.stores, [
+    "assetData",
+    "assets",
+    "chunks",
+    "meta",
+    "packageAssets",
+    "packages",
+    "sessions",
+    "tracks",
+    "trash",
+    "waypoints",
+  ]);
+  assert.equal(upgrade.intact, true, "every content record survived the upgrade unchanged");
+  assert.deepEqual(upgrade.offlineCounts, [0, 0, 0, 0]);
+
+  // ---- Online: plan and download ----
   const online = await page.evaluate(
     async ({ center, zoom }) => {
       const lib = window.lib;
@@ -260,7 +352,7 @@ try {
   assert.deepEqual(errors, []);
 
   console.log("offline browser check passed (Chromium %s)", browser.version());
-  console.log(JSON.stringify({ online, fetchedDuringDownload, offline }, null, 2));
+  console.log(JSON.stringify({ upgrade, online, fetchedDuringDownload, offline }, null, 2));
 } finally {
   await browser?.close();
   rmSync(outDir, { recursive: true, force: true });
