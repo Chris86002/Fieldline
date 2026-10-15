@@ -21,7 +21,7 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { Toggle } from "@/components/hunt/controls";
+import { RadioRow, Toggle } from "@/components/hunt/controls";
 import { MapCanvas, type GpsFix, type MapHandle } from "@/components/hunt/MapCanvas";
 import { MARK_ORDER, MARKS } from "@/components/hunt/marks";
 import { PRESETS, type AppSettings, type CoordinateFormat, type DistanceUnit, type SettingKey } from "@/features/settings/schema";
@@ -977,7 +977,12 @@ export function HuntApp() {
       setPackNote("This browser can't download areas, and the Terrain and Field styles are streamed live here. Switch to USGS imagery or the USGS topo scan to save a base map.");
       return;
     }
-    const swapNote = swapped ? " Esri imagery can't be stored, so USGS imagery was saved instead; switch the base map to USGS when you're offline." : "";
+    const vectorBase = settings.basemap === "terrain" || settings.basemap === "field";
+    const swapNote = swapped
+      ? " Esri imagery can't be stored, so USGS imagery was saved instead; switch the base map to USGS when you're offline."
+      : vectorBase
+        ? " Only public land was saved: the Terrain and Field base (land, water, contours) isn't kept by this one-zoom save. Switch to USGS imagery or the USGS topo scan to save a base map."
+        : "";
     setPacking(true);
     setPackNote("Preparing this view…");
     try {
@@ -1774,41 +1779,27 @@ export function HuntApp() {
               {PRESETS[activePreset].label} preset is on. Changing a layer it controls edits the preset; turn presets off in Settings.
             </p>
           ) : null}
-          <div className="grid grid-cols-3 gap-1 rounded-lg bg-bg p-2" role="radiogroup" aria-label="Map style">
-            {MAP_STYLES.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                role="radio"
-                aria-checked={mapStyle === item.id}
-                data-on={mapStyle === item.id}
-                onClick={() => {
-                  if (mapStyle !== item.id) setSetting("basemap", item.base);
-                }}
-                className="h-10 rounded-md text-sm text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
+          <RadioRow
+            label="Map style"
+            describedBy="layers-style-hint"
+            options={MAP_STYLES.map((item) => ({ value: item.id, label: item.label }))}
+            value={mapStyle}
+            onChange={(id) => {
+              const style = MAP_STYLES.find((item) => item.id === id);
+              if (style && mapStyle !== id) setSetting("basemap", style.base);
+            }}
+          />
           {STYLE_BASES[mapStyle].length > 0 ? (
-            <div className="mt-1 grid grid-cols-2 gap-1 rounded-lg bg-bg p-2" role="radiogroup" aria-label={mapStyle === "satellite" ? "Imagery" : "Terrain base"}>
-              {STYLE_BASES[mapStyle].map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={settings.basemap === item.id}
-                  data-on={settings.basemap === item.id}
-                  onClick={() => setSetting("basemap", item.id)}
-                  className="h-10 rounded-md text-sm text-muted data-[on=true]:bg-surface-2 data-[on=true]:text-fg"
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
+            <RadioRow
+              className="mt-1"
+              label={mapStyle === "satellite" ? "Imagery" : "Terrain base"}
+              describedBy="layers-style-hint"
+              options={STYLE_BASES[mapStyle].map((item) => ({ value: item.id, label: item.label }))}
+              value={settings.basemap}
+              onChange={(id) => setSetting("basemap", id)}
+            />
           ) : null}
-          <p className="pb-1 pt-1 text-sm text-subtle">
+          <p id="layers-style-hint" className="pb-1 pt-1 text-sm text-subtle">
             {STYLE_BASES[mapStyle].find((item) => item.id === settings.basemap)?.hint ??
               "High contrast for a phone outdoors: fewer classes, bigger names, strong trails. Downloadable."}
           </p>

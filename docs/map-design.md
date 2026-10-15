@@ -200,7 +200,11 @@ vector map (land color, water, wood, park) with the same overlays.
 
 The Layers panel shows Terrain / Satellite / Field, then the base inside
 the style (Terrain: Fieldline or USGS topo; Satellite: Esri or USGS), a
-one-line note on the base, and Contours and Land cover switches. Settings
+one-line note on the base (linked to both pickers with `aria-describedby`),
+and Contours and Land cover switches. The two pickers are radio groups with
+the standard keyboard pattern (one tab stop, arrow keys move and select,
+Home/End; `RadioRow`, `radio-keys.ts`) and 44-px targets. If the contour
+chunk fails to load, the map starts without contours instead of failing. Settings
 lists all five as "Map style".
 
 **Saved settings** (`BASEMAP_ALIASES`, docs/data-migrations.md):
@@ -257,9 +261,20 @@ style switch (Field's larger names). Nothing rebuilds the style.
   `fltile://` handler (`loadTile`): package, then network. Contour tiles are
   512-px vector tiles at the map zoom, each traced from DEM tile z/x/y plus
   its eight neighbors (`DEM_ZOOM_OFFSET` 0), up to tile z15 (z14 DEM split).
-  Packages hold terrain from min(5, min − 1) to max + 1, so these are always
-  packaged. A neighbor that fails (edge of an area offline) leaves only that
-  tile edge blank; the tile itself fails only if its own DEM tile fails.
+  Packages hold terrain from min(5, min − 1) to max + 1, so inside a
+  downloaded area the DEM tiles for map zooms up to the package's top zoom
+  + 1 are packaged. Deeper than that, offline, `loadTile` enlarges a packaged
+  ancestor (up to 4 levels), so contours there are traced from enlarged,
+  coarser terrain. Outside the area, a neighbor DEM tile with no packaged
+  ancestor fails; that is tolerated only when there is no network (browser
+  offline or a fetch `TypeError`) and leaves that tile edge without lines; a
+  gapped tile isn't kept in the generator's cache, and coming back online
+  re-traces contour tiles. Any other neighbor failure (HTTP error, timeout)
+  fails the tile so MapLibre retries, and the tile always fails if its own DEM
+  tile does. A failed DEM URL is remembered for 45 s, so adjacent tiles don't
+  each ask again. Zooms without contour levels (z9 at Standard, z9–10 at
+  Wider) return an empty tile without fetching any DEM. Tests:
+  `contour-source.test.ts`.
 - **Tried and dropped:** a vector source with `tileSize: 256` (to match the
   hillshade's deeper zoom) makes MapLibre 6.13 silently never finish loading
   the style (reproduced in isolation); a 2×2 mosaic of the deeper DEM tiles
@@ -391,6 +406,17 @@ Worse or unresolved:
   no packaged tile reached the network, and turning contours off changed
   5.3 % of the map's pixels. The only terrain requests that went out were the
   16 neighbor tiles around the packaged 3×3 block (contour tile edges).
+- After the CC-12 review fixes (merged with `feature/cc04-cc05` b2b0c32):
+  `npm test` 408 pass (new `contour-source.test.ts`: neighbor failures
+  tolerated only without network, own-DEM failure, abort re-throw, `fltile://`
+  fetching, no-levels short-circuit, 45 s failed-tile memory, gapped tiles not
+  cached; `radio-keys.test.ts`), typecheck, lint, build, smoke.
+  `offline-contours-check` now also zooms two levels past the package on
+  Field with sun shade off: 25 terrain requests for 25 tiles, none repeated
+  (the review's 38 for 29 came from the elevation tint and hillshade, which
+  request the same URLs as a separate MapLibre source). Probe at map zoom 9.5
+  on Terrain: no z9 terrain requests (contours have no levels there); the
+  Layers pickers keep one tab stop, arrows move and select, buttons are 44 px.
 - `node scripts/offline-ui-check.mjs` (updated for the style picker):
   passed.
 - Real-browser probes (headless Chromium, production build): contour
@@ -403,6 +429,14 @@ Worse or unresolved:
 - Night mode and high contrast beyond the Field style (spec: night preserves
   categories) are not done.
 - Contour tracing is on the main thread (see Performance).
+- The contour generator and MapLibre's `dem` source (hillshade, elevation
+  tint, 3D terrain) fetch terrain separately, so a tile both use is fetched
+  twice when the browser cache can't answer (offline past a package: each
+  tries the network once, then enlarges a packaged ancestor). Sharing them
+  would need maplibre-contour's shared-DEM protocol on the `dem` source.
+- Downgrade: a pre-MAP-03 development build reading settings v1 falls back
+  to its defaults for the new values (docs/data-migrations.md).
+- Unused: the library bundles a blob worker URL Fieldline never starts.
 - Land-cover provenance date is not shown; land cover is only as good as
   OSM mapping in the area.
 - Field preset does not switch to the Field style; Field style does not turn

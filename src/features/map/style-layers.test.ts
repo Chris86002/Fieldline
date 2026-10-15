@@ -204,15 +204,28 @@ describe("map style layers", () => {
     for (const value of [tokens.scrub, tokens.grass, tokens.wetland, tokens.rock]) assert.ok(color.includes(value));
   });
 
-  it("matches the built style's visibility with the runtime table for every base and switch", () => {
+  it("shows the layers each base map is meant to show, with every switch on", () => {
+    // Written out by hand (not derived from styleVisibility): what each style draws.
+    const expected: Record<(typeof BASEMAPS)[number], string[]> = {
+      terrain: ["terrain-tint", "vx-landcover", "vx-wood", "vx-landuse", "vx-park", "vx-water", "hillshade", "contours", "contour-labels", "vx-local", "vx-place-town"],
+      field: ["vx-landcover", "vx-wood", "vx-landuse", "vx-water", "hillshade", "contours", "contour-labels", "vx-local", "vx-place-town"],
+      satellite: ["satellite", "hillshade", "contours", "contour-labels", "vx-local", "vx-place-town"],
+      usgs: ["usgs", "hillshade", "contours", "contour-labels", "vx-local", "vx-place-town"],
+      topo: ["topo"],
+    };
+    const checked = ["satellite", "usgs", "topo", "terrain-tint", "vx-landcover", "vx-wood", "vx-landuse", "vx-park", "vx-water", "hillshade", "contours", "contour-labels", "vx-local", "vx-place-town"];
     for (const basemap of BASEMAPS) {
-      for (const flags of [{}, { showContours: false, showLandCover: false, showRoads: false, showShade: false, showPublic: false }]) {
-        const o = options({ basemap, ...flags });
-        const layers = buildLayers(o);
-        for (const [id, on] of Object.entries(styleVisibility(o))) {
-          assert.equal(find(layers, id).layout?.visibility ?? "visible", on ? "visible" : "none", `${basemap} ${id} ${JSON.stringify(flags)}`);
-        }
-      }
+      const layers = buildLayers(options({ basemap }));
+      const shown = checked.filter((id) => (find(layers, id).layout?.visibility ?? "visible") === "visible");
+      assert.deepEqual(shown, checked.filter((id) => expected[basemap].includes(id)), basemap);
+    }
+  });
+
+  it("covers every layer the style switches in the runtime visibility table", () => {
+    // MapCanvas applies styleVisibility at runtime; a layer missing from it would keep its build-time visibility forever.
+    const ids = Object.keys(styleVisibility(options()));
+    for (const id of ["satellite", "usgs", "topo", "terrain-tint", ...LAND_COVER_LAYERS, "vx-water", "hillshade", "contours", "contour-labels", "sma", "vx-track", "vx-creek", "vx-peak", "vx-road-minor"]) {
+      assert.ok(ids.includes(id), id);
     }
   });
 
@@ -257,6 +270,8 @@ describe("three styles", () => {
     assert.equal(contoursShown({ basemap: "usgs", showContours: false, showImageryContours: true }), true);
     assert.equal(contoursShown({ basemap: "terrain", showContours: true, showImageryContours: false }), true);
     assert.equal(contoursShown({ basemap: "field", showContours: false, showImageryContours: true }), false);
+    // Never on the topo scan (it has its own), so offline plans don't preselect terrain tiles for them.
+    assert.equal(contoursShown({ basemap: "topo", showContours: true, showImageryContours: true }), false);
   });
 
   it("draws larger names in Field and the same sizes elsewhere", () => {

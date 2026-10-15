@@ -12,7 +12,10 @@
  * vector tiles and fonts, terrain tiles), then blocks every tile host and the
  * terrain proxy and reloads. It checks that no tile the package holds reached
  * the network, that contours are drawn (screenshots with contours on and off
- * differ along the lines), and saves the screenshots. Contour tiles are made
+ * differ along the lines), then zooms two levels past the package on the Field
+ * style with sun shade off (contours the only terrain consumer) and checks
+ * that no terrain tile was asked for twice (failed tiles are remembered), and
+ * saves the screenshots. Contour tiles are made
  * in the browser from the packaged terrain tiles; nothing about them is
  * downloaded separately.
  */
@@ -150,6 +153,32 @@ try {
   assert.ok(changed > 0.01, "contours drew from the package while offline");
   assert.deepEqual(missed, []);
   console.log(`Tiles outside the package the map asked for (expected at the edges): ${outside.length ? outside.join(", ") : "none"}`);
+
+  // Contours back on, two zooms past the package: terrain is enlarged from packaged
+  // ancestors, and a terrain tile that can't load is asked for once, not by every
+  // contour tile next to it. Field style (no elevation tint) and sun shade off, so
+  // contours are the only terrain consumer (tint and hillshade ask for the same URLs).
+  await visible("Layers").click();
+  await page.getByRole("switch", { name: "Contours" }).click();
+  await page.getByRole("switch", { name: "Sun shade" }).click();
+  await page.getByRole("radio", { name: "Field", exact: true }).click();
+  assert.equal(await page.getByRole("switch", { name: "Contours" }).getAttribute("aria-checked"), "true", "Field shares the Terrain contour switch");
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  const before = outside.length;
+  const box = await page.locator(".maplibregl-canvas").boundingBox();
+  await page.mouse.move(box.x + box.width * 0.6, box.y + box.height / 2);
+  for (let i = 0; i < 6; i += 1) {
+    await page.mouse.wheel(0, -250);
+    await page.waitForTimeout(250);
+  }
+  await page.waitForTimeout(8000);
+  await page.screenshot({ path: join(shots, "contours-offline-4-past-package.png") });
+  const deeper = outside.slice(before).filter((entry) => entry.startsWith("dem "));
+  const repeated = deeper.filter((entry, index) => deeper.indexOf(entry) !== index);
+  console.log(`Terrain requests past the package: ${deeper.length} for ${new Set(deeper).size} tiles${repeated.length ? `; repeated: ${[...new Set(repeated)].join(", ")}` : ""}`);
+  assert.ok(deeper.length > 0, "contours asked for terrain past the package");
+  assert.deepEqual(repeated, [], "each terrain tile is asked for once");
+  assert.deepEqual(missed, [], `packaged tiles reached the network: ${missed.join(", ")}`);
   assert.deepEqual(errors, []);
   console.log(`offline-contours-check passed; screenshots in ${shots}`);
 } finally {

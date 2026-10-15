@@ -171,7 +171,7 @@ function demTemplate(): string {
   return `${window.location.origin}/api/dem/{z}/{x}/{y}`;
 }
 
-function buildStyle(opts: StyleOptions, contourTiles: string): StyleSpecification {
+function buildStyle(opts: StyleOptions, contourTiles: string | null): StyleSpecification {
   const dem = demTemplate();
   // Fonts, OpenFreeMap and terrain go through fltile:// so downloaded offline areas serve them.
   return {
@@ -194,7 +194,10 @@ function buildStyle(opts: StyleOptions, contourTiles: string): StyleSpecificatio
       // Contours traced in the browser from the same terrain tiles (src/features/map/contour-source.ts),
       // at the map zoom (the zoom 3D terrain and offline packages use). Same credit as the terrain
       // source, so MapLibre shows it once (a separate line wrapped to a third row on phones).
-      contours: { type: "vector", tiles: [contourTiles], maxzoom: CONTOUR_SOURCE_MAX_ZOOM, attribution: "Terrain © AWS Terrain Tiles" },
+      // Without the contour module (its chunk failed to load) the layers get an empty source.
+      contours: contourTiles
+        ? { type: "vector", tiles: [contourTiles], maxzoom: CONTOUR_SOURCE_MAX_ZOOM, attribution: "Terrain © AWS Terrain Tiles" }
+        : { type: "geojson", data: EMPTY },
       tracks: { type: "geojson", data: EMPTY },
       live: { type: "geojson", data: EMPTY },
       measure: { type: "geojson", data: EMPTY },
@@ -233,6 +236,7 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
   const mlRef = useRef<typeof import("maplibre-gl") | null>(null);
   const scaleRef = useRef<{ setUnit: (unit: "imperial" | "metric") => void } | null>(null);
   const contourUrlRef = useRef<((unit: ElevationUnit, detail: ContourDetail) => string) | null>(null);
+  const contourResetRef = useRef<(() => void) | null>(null);
   const onMapClickRef = useRef(props.onMapClick);
   const onContextRef = useRef(props.onContextMenu);
   const onPointerMoveRef = useRef(props.onPointerMove);
@@ -321,18 +325,33 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
 
     void (async () => {
       try {
-        const [ml, contour] = await Promise.all([import("maplibre-gl"), import("@/features/map/contour-source")]);
+        // Contours are optional: if their chunk can't load (e.g. offline right after an update), the map runs without them.
+        const contourModule = import("@/features/map/contour-source").catch((error: unknown) => {
+          console.warn("Contours unavailable:", error);
+          return null;
+        });
+        const ml = await import("maplibre-gl");
+        const contour = await contourModule;
         if (dead) return;
         ml.setWorkerUrl(maplibreWorkerUrl);
         installTileProtocol(ml);
-        contour.installContourProtocol(ml, demTemplate());
-        contourUrlRef.current = contour.contourTilesUrl;
+        let contourTiles: string | null = null;
+        if (contour) {
+          try {
+            contour.installContourProtocol(ml, demTemplate());
+            contourTiles = contour.contourTilesUrl(propsRef.current.elevationUnit, propsRef.current.contourDetail);
+            contourUrlRef.current = contour.contourTilesUrl;
+            contourResetRef.current = contour.resetContours;
+          } catch (error) {
+            console.warn("Contours unavailable:", error);
+          }
+        }
         mlRef.current = ml;
         const state = propsRef.current;
         const saved = state.initialView;
         map = new ml.Map({
           container: el,
-          style: buildStyle(styleOptions(state), contour.contourTilesUrl(state.elevationUnit, state.contourDetail)),
+          style: buildStyle(styleOptions(state), contourTiles),
           center: [saved.lng, saved.lat],
           zoom: saved.zoom,
           bearing: saved.bearing,
@@ -534,6 +553,21 @@ export const MapCanvas = forwardRef<MapHandle, Props>(function MapCanvas(props, 
     const next = url(props.elevationUnit, props.contourDetail);
     if (source?.setTiles && source.tiles?.[0] !== next) source.setTiles([next]);
   }, [ready, props.elevationUnit, props.contourDetail]);
+
+  // Back online: contour tiles traced with a missing neighbor (edge gaps while offline) are traced again.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!ready || !map) return;
+    const retrace = () => {
+      const url = contourUrlRef.current;
+      const source = map.getSource("contours") as { setTiles?: (tiles: string[]) => void } | undefined;
+      if (!url || !source?.setTiles) return;
+      contourResetRef.current?.();
+      source.setTiles([url(propsRef.current.elevationUnit, propsRef.current.contourDetail)]);
+    };
+    window.addEventListener("online", retrace);
+    return () => window.removeEventListener("online", retrace);
+  }, [ready]);
 
   useEffect(() => {
     const map = mapRef.current;

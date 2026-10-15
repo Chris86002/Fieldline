@@ -673,6 +673,8 @@ export function buildLayers(o: StyleOptions): LayerSpecification[] {
  * default, so imagery users don't see lines appear after an update.
  */
 export function contoursShown(o: { basemap: Basemap; showContours: boolean; showImageryContours: boolean }): boolean {
+  // The USGS topo scan prints its own contours; Fieldline's are never drawn over it.
+  if (o.basemap === "topo") return false;
   return styleFamily(o.basemap) === "imagery" ? o.showImageryContours : o.showContours;
 }
 
