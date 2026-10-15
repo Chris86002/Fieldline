@@ -15,7 +15,7 @@ Checked 2026-10-13. Territories are not listed yet.
 ## The layers
 
 - **Land management** (`blm-sma`): the BLM Surface Management Agency map. It shows which agency manages the surface. It is not parcel ownership and not permission to hunt or enter.
-- **Hunt units**: Arizona (`azgfd-gmu`, Arizona Game and Fish), Idaho (`idfg-gmu`, Idaho Fish and Game) and Montana (`mtfwp-deer-elk-lion`, Montana Fish, Wildlife & Parks) only. Montana covers the deer, elk and mountain lion hunting districts only; Montana's districts for other species (antelope, moose, sheep, goat, bear, birds) are not included. Unit lines are for reference, not the legal description; check current regulations and district descriptions. Everywhere else, use the state wildlife agency's maps.
+- **Hunt units**: Arizona (`azgfd-gmu`, Arizona Game and Fish), Idaho (`idfg-gmu`, Idaho Fish and Game), Montana (`mtfwp-deer-elk-lion`, Montana Fish, Wildlife & Parks) and Colorado (`cpw-gmu`, Colorado Parks and Wildlife) only. Montana covers the deer, elk and mountain lion hunting districts only; Montana's districts for other species (antelope, moose, sheep, goat, bear, birds) are not included. Colorado covers the big-game GMUs only; its bighorn sheep and mountain goat units are not included. Unit lines are for reference, not the legal description; check current regulations and district descriptions. Everywhere else, use the state wildlife agency's maps.
 - **Parcels**: no parcel or owner source anywhere yet.
 - **Access**: no access, closure or road-status source anywhere yet. Check with the land manager.
 - **Legal hours**: Fieldline doesn't hold verified legal shooting-hour rules anywhere. Sunrise and sunset are astronomy only; check the agency for legal hours.
@@ -33,7 +33,7 @@ Each link returned HTTP 200 after redirects on 2026-10-13 and is the agency's ow
 | Arizona (AZ) | available (blm-sma) | available (azgfd-gmu) | unavailable | unavailable | unavailable | [Arizona Game and Fish Department](https://www.azgfd.com/) |
 | Arkansas (AR) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Arkansas Game and Fish Commission](https://www.agfc.com/) |
 | California (CA) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [California Department of Fish and Wildlife](https://wildlife.ca.gov/) |
-| Colorado (CO) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Colorado Parks and Wildlife](https://cpw.state.co.us/) |
+| Colorado (CO) | available (blm-sma) | available (cpw-gmu; big-game GMUs only) | unavailable | unavailable | unavailable | [Colorado Parks and Wildlife](https://cpw.state.co.us/) |
 | Connecticut (CT) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Connecticut Department of Energy and Environmental Protection](https://portal.ct.gov/deep) |
 | Delaware (DE) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [Delaware Division of Fish and Wildlife](https://dnrec.delaware.gov/fish-wildlife/) |
 | District of Columbia (DC) | available (blm-sma) | unavailable | unavailable | unavailable | unavailable | [District of Columbia Department of Energy and Environment](https://doee.dc.gov/) |

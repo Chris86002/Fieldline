@@ -173,6 +173,20 @@ This register lists every external data provider that Fieldline calls today, plu
 - **Fallback/exit:** The last validated copy; FWP's district PDFs and regulations at fwp.mt.gov.
 - **Sources checked:** https://fwp-gis.mt.gov/arcgis/rest/services/admbnd/huntingDistricts/MapServer?f=pjson , https://fwp-gis.mt.gov/arcgis/rest/services/admbnd/huntingDistricts/MapServer/11?f=pjson
 
+### 7b. Colorado Parks and Wildlife — CPWAdminData FeatureServer, layer 6 "CPW GMU Boundary (Big Game)"
+- **Used by:** `src/features/catalog/adapters/cpw.ts` (added in CC-03 through the adapter kit, with no app-shell change), same validated pipeline as entry 6. Labels read "GMU <n>".
+- **Endpoint host:** `services5.arcgis.com/ttNGmDvKQA7oeDQ3/arcgis/rest/services/CPWAdminData/FeatureServer/6`. This is ArcGIS Online hosting (shared host; the org id `ttNGmDvKQA7oeDQ3` is CPW's); item `168fccb0583f42f1afe57de6c9ce846d`, owner `rsaccoCPW`, access public, accessInformation "Colorado Parks and Wildlife".
+- **Status:** in use (since 2026-10-14).
+- **Layer:** Big-game GMU polygons digitized by the CPW GIS group from 1:24,000 DRGs (layer description). Fields used: FID (object id), GMUID (integer unit code), DEERDAU / ELKDAU / ANTDAU / MOOSEDAU / BEARDAU / LIONDAU (herd-unit codes, shown as "Herd units (DAU)"; codes ending "-99" are left out because the source doesn't define them), SqMilesGIS. COUNTY is free text with misspellings and is not shown. maxRecordCount 2000; pagination supported; JSON, geoJSON, PBF; native spatial reference 3857. editingInfo.dataLastEditDate 2026-08-27, so a refresh with an unchanged date and count skips the download. Live check 2026-10-14: 186 features → 186 GMUs (see the adapter's live test for numbers).
+- **License / terms:** The item licenseInfo says the data are "product and property of the Colorado Parks and Wildlife" and are provided "AS IS" without warranty, at the user's sole risk, with an indemnity clause. The service description says it was published "for public distribution". No license grant for storage or redistribution is stated: download and redistribution are **unknown**. copyrightText: "Colorado Parks and Wildlife GIS Group" (layer), "Colorado Parks and Wildlife" (service).
+- **Auth:** None (public service).
+- **Rate policy:** `maxRecordCount` 2000. No published rate limit.
+- **Attribution:** "Colorado Parks and Wildlife".
+- **Coverage:** Colorado only (data extent −109.06, 36.99 to −102.04, 41.00). Big-game GMUs only; bighorn sheep (layer 7) and mountain goat (layer 8) units in the same service are not included.
+- **Maintainer:** unassigned.
+- **Fallback/exit:** The last validated copy; CPW's big-game brochure and GMU maps at cpw.state.co.us.
+- **Sources checked:** https://services5.arcgis.com/ttNGmDvKQA7oeDQ3/ArcGIS/rest/services/CPWAdminData/FeatureServer?f=json , https://services5.arcgis.com/ttNGmDvKQA7oeDQ3/ArcGIS/rest/services/CPWAdminData/FeatureServer/6?f=json , https://www.arcgis.com/sharing/rest/content/items/168fccb0583f42f1afe57de6c9ce846d?f=json
+
 ### 8. Open-Meteo — Forecast API and Elevation API
 - **Used by:**
   - Forecast: `src/lib/hunt/weather.ts:346` (primary weather; fallback to NWS at `weather.ts:577-586`).
@@ -380,7 +394,7 @@ This register lists every external data provider that Fieldline calls today, plu
 6. **Photon** has undefined limits and no custom User-Agent. Commercial and attribution terms are not stated.
 7. **NWS User-Agent** lacks the recommended contact information. NWS says UA identification "will be replaced with an API key in the future".
 8. **AWS Terrain Tiles:** the attribution does not match joerd's required per-source credits. The data is frozen (v1.1, 2017) with "regular updates are not planned". Hawaii resolution is unverified.
-9. **AZGFD hunt units:** no licence is stated, and the data was last edited in 2020. Redistributing it in offline packages needs confirmation from AZGFD.
+9. **AZGFD hunt units:** no licence is stated, and the data was last edited in 2020. Redistributing it in offline packages needs confirmation from AZGFD. **CPW GMUs** are the same: "property of" CPW with an as-is disclaimer, no licence grant; confirm with CPW before offline packaging. The `services5.arcgis.com` allowlist entry admits any ArcGIS Online org on that shared host, as `services8.arcgis.com` does for AZGFD.
 10. **BLM SMA redistribution** is unverified for the exact service used. Another BLM SMA service reportedly carries "INTERNAL USE ONLY" wording in its use limits.
 11. **Coverage gaps for the nationwide goal:**
     - NAIP is CONUS-only.

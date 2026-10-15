@@ -305,7 +305,7 @@ describe("MTFWP registry entry", () => {
   it("is registered as a third unit adapter with honest info", () => {
     assert.deepEqual(
       UNIT_ADAPTERS.map((adapter) => adapter.info.id),
-      ["azgfd-gmu", "idfg-gmu", "mtfwp-deer-elk-lion"],
+      ["azgfd-gmu", "idfg-gmu", "mtfwp-deer-elk-lion", "cpw-gmu"],
     );
     const info = unitAdapterById("mtfwp-deer-elk-lion")?.info;
     assert.ok(info);

@@ -53,6 +53,10 @@ const HUNT_UNIT_PROVIDERS: Partial<Record<JurisdictionId, { providerId: string; 
     providerId: "azgfd-gmu",
     note: "Arizona Game and Fish hunt units. Reference lines, not the legal description.",
   },
+  "us-co": {
+    providerId: "cpw-gmu",
+    note: "Colorado Parks and Wildlife big-game game management units; bighorn sheep and mountain goat units are not included. Reference boundaries; check the current Colorado big-game brochure and GMU descriptions.",
+  },
   "us-id": {
     providerId: "idfg-gmu",
     note: "Idaho Fish and Game game management units. Reference lines, not the legal description.",
