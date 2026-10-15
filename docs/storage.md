@@ -1,4 +1,4 @@
-# Durable storage (CC-05 wave 1)
+# Durable storage and offline packages (CC-05 waves 1–2)
 
 `src/lib/storage/` moves personal content (waypoints, tracks, trash,
 active-recording checkpoints) off the single `fieldline-v1` localStorage blob
@@ -23,7 +23,7 @@ Settings stay in `fieldline-settings` (ADR-001) and are carried by backups.
 
 ## Backend and stores
 
-IndexedDB database `fieldline-content`, IndexedDB version 1. Object stores
+IndexedDB database `fieldline-content`, IndexedDB version 2. Object stores
 (out-of-line string keys):
 
 | Store | Key | Value | Class |
@@ -33,13 +33,19 @@ IndexedDB database `fieldline-content`, IndexedDB version 1. Object stores
 | `trash` | `${kind}:${itemId}:${deletedAt}` | `TrashEntry` | personal |
 | `sessions` | session id | `RecordingSession` | personal |
 | `chunks` | `${sessionId}:${seq, 8 digits}` | `FixChunk` | personal |
-| `meta` | `schema`, `migration:v0-v1` | schema and migration records | bookkeeping |
+| `meta` | `schema`, `migration:v0-v1` | schema and migration records | bookkeeping (personal) |
+| `packages` | package id | `PackageRecord` (state, active + pending manifest) | replaceable (v2) |
+| `packageAssets` | `${packageId}@${version}` | required asset URLs, checksums, last verification | replaceable (v2) |
+| `assets` | `${canonicalUrl}#${sha256}` | `AssetMeta` (bytes, type, status, `refs`) | replaceable (v2) |
+| `assetData` | same as `assets` | `ArrayBuffer` | replaceable (v2) |
 
-`REPLACEABLE_STORES` is empty in schema 1. Offline package caches (wave 2)
-will be added there. Cache clearing (`clearReplaceableData(stores?)`) first
+`PERSONAL_STORES` = the six content stores; `REPLACEABLE_STORES` = the four
+offline package stores. Cache clearing (`clearReplaceableData(stores?)`) first
 calls `assertEvictable`, which throws (clearing nothing) if any requested
 store is personal or unlisted, or if any store is classified both personal
-and replaceable; it can never empty the trash or delete content.
+and replaceable; it can never empty the trash or delete content. The offline
+stores are cleared all together or not at all (`invalid` otherwise), so no
+package is left claiming assets that are gone.
 
 Transactions (`backend.read/write(stores, fn)`) are atomic across stores:
 all writes commit or none do. `write` resolves only after commit, with strict
@@ -65,9 +71,10 @@ fallback when IndexedDB can't be opened (`openContentStorage` returns
 
 Two independent versions:
 
-- **IndexedDB version** (`IDB_VERSION = 1`) — object-store layout. Upgrades
-  are ordered functions in `UPGRADES`. A database with a higher version is
-  never opened: `future-version`.
+- **IndexedDB version** (`IDB_VERSION = 2`) — object-store layout. Upgrades
+  are ordered functions in `UPGRADES`, each naming its own stores (1: content
+  stores; 2: offline package stores) and only adding stores. A database with
+  a higher version is never opened: `future-version`.
 - **Content schema** (`CONTENT_SCHEMA_VERSION = 1`, `meta/schema`) — record
   formats. Absent until the first migration completes. Every repository and
   checkpoint write checks it inside its transaction: no schema → `not-ready`;
@@ -271,10 +278,243 @@ the transaction).
 8. Add an ADR (content in IndexedDB; `fieldline-v1` frozen after migration)
    and update `implementation-status.md`.
 
+## Offline packages (CC-05 wave 2)
+
+`src/lib/offline/` downloads a rectangle of map data into IndexedDB so every
+advertised layer works with no network. Library only; the coordinator builds
+the screens.
+
+| File | Purpose |
+| --- | --- |
+| `sources.ts` | Packageable layers, provider limits, `packageRuleFor` (the only allowlist the downloader trusts), canonical URLs |
+| `plan.ts` | `planPackage`, tile math (antimeridian aware), bounds helpers |
+| `package-store.ts` | `OfflinePackageStore`: records, shared assets with reference counts, states, coverage, serving reads |
+| `download.ts` | `downloadPackage`, `repairPackage` |
+| `verify.ts` | `verifyPackage` |
+| `serve.ts` | `createPackageTileSource` for the `fltile://` protocol |
+| `test-fixtures.ts` | Fake providers for tests only |
+
+### Layers and provider rules
+
+| Layer id | Source | Zooms | Stale after | Notes |
+| --- | --- | --- | --- | --- |
+| `usgs-imagery` | USGS TNM USGSImageryOnly | ≤ 16 | 365 days | |
+| `usgs-topo` | USGS TNM USGSTopo | ≤ 16 | 365 days | |
+| `blm-sma` | BLM SMA cached tiles | ≤ 16 | 90 days | ≤ 2 parallel requests |
+| `ofm-vector` | OpenFreeMap TileJSON + vector tiles | ≤ 14 | 60 days | tile URL is versioned; version read from the TileJSON at download time |
+| `dem` | AWS Terrain Tiles via the app's `/api/dem` | ≤ 14 | 3650 days | stored under the upstream S3 URL, so any app origin serves it |
+| `glyphs` | OpenFreeMap fonts | — | 365 days | added to every package: Noto Sans Regular/Bold/Italic × ranges 0-255, 256-511, 8192-8447 (marks, sun labels and place names need them) |
+
+Never packaged, reported in `plan.excluded` with a reason: `esri-imagery` /
+`satellite` / `hybrid` (Esri's terms; ADR-006) and `hunt-units` / `units`
+(download rights unverified). `packageRuleFor` refuses Esri hosts
+(`*.arcgisonline.com`, `*.arcgis.com`) and every host not listed, before any
+request, even if a stored asset list is tampered with.
+
+Limits enforced at planning (`plan.violations`, `plan.ok = false`), when the
+asset list is resolved, and again on real bytes while downloading:
+
+- OpenFreeMap: ≤ 3,000 files (tiles + TileJSON + glyphs) and ≤ 50 MB per
+  package; ≤ 4 parallel requests.
+- USGS ≤ 4, BLM ≤ 2, terrain ≤ 4 parallel requests; ≤ 6 overall. These
+  limits are tab-wide (module-level semaphores shared by every download in
+  the tab), so two packages downloading at once still send at most 4
+  OpenFreeMap requests together.
+- One tab downloads at a time: the first download in a tab takes the Web
+  Lock `fieldline-offline-download` (`navigator.locks`, `ifAvailable`) and
+  the tab holds it while any of its downloads (and their verification) run.
+  A download started in another tab rejects immediately with a `conflict`
+  `StorageError` ("Another Fieldline tab or window is downloading…") and
+  sends no request; the UI should say so and offer to retry later. That
+  other tab sees the downloading package as `paused` with
+  `interrupted: true` until the first tab finishes. Without Web Locks
+  (insecure http origins, old runtimes) there is no cross-tab exclusion.
+- Package hard cap: 20,000 files, zoom ≤ 16, one file ≤ 8 MB, and 1 GB —
+  estimated at planning and enforced again on real downloaded bytes (each
+  asset counted once, so a repaired file replaces its old size rather than
+  adding to it; the same applies to OpenFreeMap's 50 MB).
+- Before starting: the remaining estimate × 1.1 must fit in
+  `navigator.storage.estimate()` headroom, else `quota` (nothing downloaded).
+- OpenFreeMap asks for a unique User-Agent. Browsers don't let pages set it;
+  `downloadPackage({ requestHeaders })` passes one where the runtime allows
+  (desktop). See "Known gaps".
+
+### Manifest and states
+
+`getManifest(id)` returns spec §8's manifest: `packageId`, `schemaVersion`
+(`PACKAGE_SCHEMA_VERSION = 1`), `bounds`, `createdAt`, `sourceVersions`
+(OFM tile version, terrain dataset version; null when unknown), `zoomRange`,
+`layerIds`, `requiredAssets` (canonical URLs), `checksums` (URL → SHA-256,
+set when verified), `expectedBytes`, `actualBytes`, `progress`,
+`integrityStatus` (`unverified | ok | damaged`, `missingCount`,
+`corruptCount`, `absentCount` — tiles the source confirmed it has no data
+for, for "N tiles had no data at the source" — and the first 50 missing /
+corrupt URLs for display; the complete lists live in the version's asset
+list and are what serving and repair use), `expiryPolicy` (`maxAgeDays` =
+shortest layer, `expiresAt`),
+`attribution`; plus per-layer `done/verified/missing/corrupt/absent`,
+`lastError`, `failures`.
+
+States (`PackageStatus.state`):
+
+```
+planned → downloading → paused | failed → (resume) downloading → verifying → ready
+ready → stale (time) → updating → verifying → ready
+```
+
+- **ready** only after `verifyPackage` re-hashed every required asset and
+  found it with its recorded size and SHA-256, committed in a transaction
+  that re-checks, for every asset, that it is still stored for this version
+  with exactly the verified checksum (bytes replaced by another tab after
+  hashing are reported corrupt, never ready). A partly downloaded package is
+  never ready.
+- **stale**: the active version is older than `expiryPolicy` (computed from
+  `now` at read time, never stored as ready). Still served; offer an update.
+- **updating**: a pending version is downloading. During an update `state`
+  describes the new version (`updating`, `verifying`, `paused`, `failed`);
+  `activeState` (`ready` / `stale`) and `servable` describe the old version,
+  which stays served until the new one verifies; then one transaction swaps
+  them and releases the old version's references. A failed update reports
+  `state: "failed"` with `activeState: "ready"`, `servable: true` and
+  `update.lastError`; retry with `downloadPackage` (or `repairPackage`) or
+  drop it with `discardPending` (back to `ready`).
+- **paused**: aborted by the caller, or `interrupted: true` when a download
+  stopped without pausing (tab closed, crash, another tab). Resume with
+  `downloadPackage`.
+- **failed**: network failures (`failures` lists them), provider limit, disk
+  full (`lastError.code = "quota"`), or a verification that found damage.
+  `servable` stays true for a once-verified package; corrupt files are not
+  served.
+
+### Storage behavior and guarantees
+
+- Assets are content-addressed under their canonical URL
+  (`${url}#${sha256}`), with `refs` listing the package versions using them
+  (reference count = `refs.length`). Overlapping packages share one copy;
+  a new package adopts copies fetched in the last 7 days instead of
+  downloading them (an update adopts only copies fetched since it started).
+  Deleting a package releases its references in one transaction and deletes
+  only assets nobody else references.
+- Per-asset progress is persisted: each stored asset carries the version's
+  reference, written with its bytes and progress in one transaction (batches
+  of up to 32). After a restart, `downloadPackage` fetches only what's
+  missing.
+- SHA-256 is computed outside transactions; every transaction awaits only its
+  own operations.
+- Fetching: timeout 20 s, up to 4 attempts with exponential backoff
+  (0.5–30 s, jittered); 429/503 honor `Retry-After` (seconds or date) for
+  the whole provider, tab-wide. A Retry-After beyond 120 s stops that
+  provider for the rest of the run: its remaining files are reported failed
+  without being requested, the time is persisted in the package record
+  (`providerNotBefore`, surfaced as `status.waitUntil` and
+  `progress.waitUntil`; `lastError.code = "rate-limited"`), and a resume
+  before that time — even after a restart — sends nothing to that provider.
+  Other providers keep downloading.
+- A 404 is accepted as "no tile here" only when a second request later in
+  the same run also returns 404; it is then stored as an empty "absent" tile
+  and counted in `absentCount` / per-layer `absent`. A 404 followed by data
+  stores the data. Other 4xx, HTML/JSON error pages and oversize files fail.
+- Redirects are never followed (`redirect: "manual"`): a 3xx or opaque
+  redirect fails the file, so no request reaches a host outside the
+  allowlist.
+- Storage errors reject with a typed `StorageError` (`quota`, …) and leave the
+  package failed (or paused/interrupted if even that write fails); batches are
+  atomic, so bytes, metadata and references are never half-written.
+- `navigator.storage.persist()` is requested at every download start; the
+  answer is in `result.persistence` and `status.persistence`.
+
+### Serving
+
+`fltile://` (src/lib/hunt/tiles.ts) now tries, in order: verified packages
+(`setPackageTileSource`), the `fieldline-tiles-v1` cache (unchanged:
+`OFFLINE_TEMPLATES` only), the network. Plain http is allowed only for this
+origin's `/api/dem/`. `tileProtocolStats()` counts package/cache/network/
+failed responses.
+
+OpenFreeMap's TileJSON names its current data version (tile URLs are
+versioned), so it is handled differently:
+
+- Online (`navigator.onLine !== false`), the TileJSON always comes from the
+  network, so the map follows the provider's current version and never
+  stays pinned to an old packaged one; a packaged copy is used only if that
+  request fails. Offline, a packaged copy is used directly. Either way its
+  tile URLs are wrapped in `fltile://`.
+- A vector tile is served from a package that stored exactly that URL.
+  Offline (or when the network request fails), a tile requested under one
+  data version is answered from any ready package that has the same z/x/y
+  under another version (`readServableAsset(url, { substituteVersions })`),
+  newest verification first — so packages downloaded months apart under
+  different OpenFreeMap versions all stay reachable whichever packaged
+  TileJSON the map loaded. Online, tiles of the current version come from
+  the network.
+- Corrupt assets are never served: the complete corrupt list from the last
+  verification is consulted, not the 50-entry display preview.
+
+### Wiring it in (coordinator)
+
+1. Startup, after `openContentStorage`: `const packages = new
+   OfflinePackageStore(storage.backend)` (needs `storage.durable`; otherwise
+   hide downloads and say why), then
+   `setPackageTileSource(createPackageTileSource(packages))`.
+2. MapCanvas `buildStyle` (only these three lines change):
+   - `glyphs: cachedTile(GLYPHS)`
+   - `ofm: { type: "vector", url: cachedTile(OFM), … }`
+   - `dem: { type: "raster-dem", tiles: [cachedTile(dem)], … }`
+
+   `usgs`, `topo`, `sma` already use `cachedTile`; `satellite` (Esri) must
+   stay plain HTTPS.
+3. Download screen: `planPackage({ bounds: map.getBounds(), minZoom, maxZoom,
+   layers })` → show `layers[].assetCount/estimatedBytes`, `totals`,
+   `excluded[].reason`, `violations[].message`, `attribution`; disable the
+   button unless `plan.ok`. Then `createPackage(plan, { name })` and
+   `downloadPackage(packages, id, { signal, onProgress })`; abort the signal
+   to pause; call `downloadPackage` again to resume; show
+   `result.persistence`.
+   A `conflict` rejection means another tab is downloading: say so.
+4. Package list: `listPackages()` → `state`, `activeState`, `servable`,
+   `interrupted`, `stale`, `expiresAt`, `waitUntil`, `manifest.progress`,
+   `manifest.lastError`, `manifest.integrityStatus.absentCount`, `update`.
+   Actions: `verifyPackage`, `repairPackage`, `startUpdate` +
+   `downloadPackage`, `discardPending`, `deletePackage` (pause first),
+   `storageUsage()`.
+5. FIELD-01: `packages.coverage({ lng, lat } | bounds)` → `covered`,
+   `packages[]` (usable, per-layer `complete` and zooms), `incomplete[]`,
+   `layers` (usable zoom ranges per layer). Draw `manifest.bounds` on the map.
+6. Desktop: give OpenFreeMap requests an identifying User-Agent (e.g.
+   `session.webRequest.onBeforeSendHeaders` for `tiles.openfreemap.org`).
+
+### Verification
+
+- `npm test`: `src/lib/offline/plan.test.ts` (exclusions, OFM limits, hard
+  cap, antimeridian, zoom clamping, source allowlist, canonical URLs) and
+  `packages.test.ts` (resume after failure and restart, pause/interrupted,
+  missing/corrupt verify + targeted repair, shared assets and deletion,
+  update success/failure/failed verification, disk full mid-download, quota
+  simulation, budget refusal, Retry-After and parallel caps, long
+  Retry-After stopping a provider across resumes, tab-wide caps across
+  concurrent downloads, the cross-tab lock, two OpenFreeMap versions offline
+  and online, corrupt assets beyond the first 50, refused redirects,
+  checksum re-check at commit, repair byte accounting, confirmed 404s,
+  real-byte package cap, failed-update reporting and discard, stale, Esri
+  tampering, serving through `fltile://` with the network down, unverified
+  packages not served, coverage).
+- `node scripts/offline-browser-check.mjs` (live, about 50 polite requests;
+  not in `npm test`): first a real IndexedDB upgrade (a populated version-1
+  database built with `UPGRADES[1]` is opened by this build: every content
+  record unchanged, the four offline stores present, version 2); then
+  downloads a small Flagstaff package (zooms 11–12: topo,
+  SMA, OFM + glyphs, terrain) into real IndexedDB in Chromium, verifies it,
+  then `context.setOffline(true)`, reloads, renders a MapLibre map whose
+  sources all use `fltile://` and asserts every tile came from the package
+  (no network, no tile errors, vector features decoded, labels placed).
+
 ## Known gaps
 
-- Offline package manifests, the package state machine and `PackageStore`
-  are wave 2.
+- Offline packages: rectangle selection only (no polygon / route corridor);
+  no sprites (the style uses none); no local search index or hunt-unit
+  identify data; OFM User-Agent can't be set from a browser page; staleness
+  is time-based (no upstream version check); a package downloading in
+  another tab shows as "paused (interrupted)" here until that tab finishes.
 - Not wired into the app; no UI; no cross-tab change notification.
 - No undo/redo stack yet (trash only).
 - Backup restore of a single huge file runs in one transaction on the main

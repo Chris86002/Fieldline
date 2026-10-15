@@ -1,6 +1,7 @@
 import {
+  CONTENT_STORES,
+  OFFLINE_STORES,
   PREFIX_END,
-  STORES,
   StorageError,
   type ReadTx,
   type StorageBackend,
@@ -11,8 +12,9 @@ import {
 /**
  * IndexedDB backend for the content repository.
  *
- * Database `fieldline-content`, IndexedDB version 1: one object store per
- * entry in `STORES`, out-of-line string keys. Layout changes bump
+ * Database `fieldline-content`, IndexedDB version 2: one object store per
+ * entry in `STORES` (version 1: content stores; version 2 adds the offline
+ * package stores), out-of-line string keys. Layout changes bump
  * `IDB_VERSION` and add an ordered step to `UPGRADES`; content-level schema
  * changes are tracked separately in the `meta` store (see migrations.ts).
  *
@@ -25,14 +27,22 @@ export const IDB_NAME = "fieldline-content";
 
 const INACTIVE_MESSAGE =
   "The transaction is no longer active. Inside a transaction, await only its own operations.";
-export const IDB_VERSION = 1;
+export const IDB_VERSION = 2;
 
-/** Ordered layout upgrades, indexed by the version they upgrade to. */
-const UPGRADES: Record<number, (db: IDBDatabase) => void> = {
-  1: (db) => {
-    for (const store of STORES)
-      if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
-  },
+function createStores(db: IDBDatabase, stores: readonly StoreName[]) {
+  for (const store of stores) if (!db.objectStoreNames.contains(store)) db.createObjectStore(store);
+}
+
+/**
+ * Ordered layout upgrades, indexed by the version they upgrade to. Each step
+ * names its own stores (never "all current stores"), so replaying an old step
+ * creates exactly that version's layout. Steps only add stores; content is
+ * never touched by a layout upgrade.
+ */
+export const UPGRADES: Record<number, (db: IDBDatabase) => void> = {
+  1: (db) => createStores(db, CONTENT_STORES),
+  // 2 (CC-05 wave 2): offline map packages.
+  2: (db) => createStores(db, OFFLINE_STORES),
 };
 
 export type OpenIndexedDbOptions = {

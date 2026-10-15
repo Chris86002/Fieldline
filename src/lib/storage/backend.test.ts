@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { MemoryBackend, StorageError } from "./backend.ts";
-import { sha256Hex, sha256HexFallback } from "./digest.ts";
-import { openIndexedDbBackend, toStorageError } from "./indexeddb.ts";
+import { MemoryBackend, StorageError, STORES } from "./backend.ts";
+import { sha256Hex, sha256HexBytes, sha256HexFallback } from "./digest.ts";
+import { IDB_VERSION, openIndexedDbBackend, toStorageError, UPGRADES } from "./indexeddb.ts";
 import { runMigrations } from "./migrations.ts";
 import { canonicalJson, isSafeId } from "./records.ts";
 import { ContentRepository } from "./repository.ts";
@@ -171,6 +171,35 @@ describe("IndexedDB open", () => {
   });
 });
 
+describe("IndexedDB layout upgrades", () => {
+  function fakeDb(existing: string[] = []) {
+    const names = new Set(existing);
+    const created: string[] = [];
+    const db = {
+      objectStoreNames: { contains: (name: string) => names.has(name) },
+      createObjectStore: (name: string) => {
+        names.add(name);
+        created.push(name);
+      },
+    } as unknown as IDBDatabase;
+    return { db, created, names };
+  }
+
+  it("version 1 creates only the content stores; version 2 adds the offline package stores", () => {
+    assert.equal(IDB_VERSION, 2);
+    const fresh = fakeDb();
+    UPGRADES[1](fresh.db);
+    assert.deepEqual(fresh.created, ["waypoints", "tracks", "trash", "sessions", "chunks", "meta"]);
+    UPGRADES[2](fresh.db);
+    assert.deepEqual(fresh.created.slice(6), ["packages", "packageAssets", "assets", "assetData"]);
+    assert.deepEqual([...fresh.names].sort(), [...STORES].sort());
+    // Upgrading an existing version-1 database only adds stores.
+    const v1 = fakeDb(["waypoints", "tracks", "trash", "sessions", "chunks", "meta"]);
+    UPGRADES[2](v1.db);
+    assert.deepEqual(v1.created, ["packages", "packageAssets", "assets", "assetData"]);
+  });
+});
+
 describe("IndexedDB error mapping", () => {
   it("maps browser storage exceptions to typed errors", () => {
     const cases = {
@@ -223,5 +252,15 @@ describe("record helpers", () => {
       sha256HexFallback(new TextEncoder().encode("abc")),
       "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
     );
+    assert.equal(
+      await sha256HexBytes(new TextEncoder().encode("abc").buffer as ArrayBuffer),
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
+  });
+
+  it("counts binary values by their bytes for the simulated quota", async () => {
+    const backend = new MemoryBackend();
+    await backend.write(["assetData"], (tx) => tx.put("assetData", "k", new ArrayBuffer(5000)));
+    assert.ok(backend.sizeBytes() >= 5000);
   });
 });

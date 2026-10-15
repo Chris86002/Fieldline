@@ -15,17 +15,38 @@
  *   error is rethrown, as a `StorageError` when it came from storage.
  */
 
-/** Object stores in content schema 1. */
-export const STORES = ["waypoints", "tracks", "trash", "sessions", "chunks", "meta"] as const;
+/** Personal-content stores (IndexedDB layout version 1). */
+export const CONTENT_STORES = [
+  "waypoints",
+  "tracks",
+  "trash",
+  "sessions",
+  "chunks",
+  "meta",
+] as const;
+
+/**
+ * Offline map package stores (IndexedDB layout version 2, src/lib/offline):
+ * package records, per-version asset lists, asset metadata (checksums, sizes,
+ * references) and asset bytes. Replaceable provider data, never personal content.
+ */
+export const OFFLINE_STORES = ["packages", "packageAssets", "assets", "assetData"] as const;
+
+/** Every object store in the current layout. */
+export const STORES = [...CONTENT_STORES, ...OFFLINE_STORES] as const;
 export type StoreName = (typeof STORES)[number];
 
 /**
- * Every store in schema 1 holds personal content or its bookkeeping. Cache
- * eviction (clearing replaceable provider data) must never touch these;
- * replaceable stores (offline package caches, wave 2) will be listed separately.
+ * Personal content and its bookkeeping. Cache eviction (clearing replaceable
+ * provider data) must never touch these.
  */
-export const PERSONAL_STORES: readonly StoreName[] = STORES;
-export const REPLACEABLE_STORES: readonly StoreName[] = [];
+export const PERSONAL_STORES: readonly StoreName[] = CONTENT_STORES;
+/**
+ * Replaceable provider data: offline map packages. They can be cleared
+ * (always together, so no package is left pointing at missing assets) and
+ * downloaded again.
+ */
+export const REPLACEABLE_STORES: readonly StoreName[] = OFFLINE_STORES;
 
 /**
  * Throws unless every store is replaceable and none is personal. Cache
@@ -154,11 +175,11 @@ export class MemoryBackend implements StorageBackend {
     for (const store of STORES) this.data.set(store, new Map());
   }
 
-  /** Approximate stored size: the JSON length of every value. */
+  /** Approximate stored size: the JSON length of every value (binary values count their bytes). */
   sizeBytes(data: Map<StoreName, Map<string, unknown>> = this.data): number {
     let total = 0;
     for (const [, records] of data) {
-      for (const [key, value] of records) total += key.length + JSON.stringify(value).length;
+      for (const [key, value] of records) total += key.length + approximateSize(value);
     }
     return total;
   }
@@ -277,6 +298,12 @@ export class MemoryBackend implements StorageBackend {
 }
 
 type TxState = { active: boolean };
+
+function approximateSize(value: unknown): number {
+  if (value instanceof ArrayBuffer) return value.byteLength;
+  if (ArrayBuffer.isView(value)) return value.byteLength;
+  return JSON.stringify(value)?.length ?? 0;
+}
 
 /**
  * IndexedDB auto-commits a transaction once control returns to the event loop
